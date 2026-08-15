@@ -1,0 +1,51 @@
+{
+  "name": "tool-dich-truyen",
+  "version": "1.2.0",
+  "description": "Ứng dụng Windows dịch truyện Trung - Việt qua ChatGPT Web và chia chương tự động.",
+  "main": "./out/main/index.js",
+  "author": "Local",
+  "license": "UNLICENSED",
+  "private": true,
+  "packageManager": "pnpm@11.16.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
+    "typecheck": "pnpm run typecheck:node && pnpm run typecheck:web",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "pnpm run build && node tests/e2e/electron-smoke.mjs",
+    "test:e2e:live": "pnpm run build && node tests/e2e/chatgpt-live-smoke.mjs",
+    "build": "pnpm run typecheck && electron-vite build",
+    "package:win": "pnpm run build && electron-builder --win nsis portable"
+  },
+  "dependencies": {
+    "@google/genai": "2.16.0",
+    "playwright-core": "1.62.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "26.2.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "5.2.0",
+    "@vitest/coverage-v8": "4.1.10",
+    "electron": "43.3.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "jsdom": "30.0.1",
+    "typescript": "7.0.2",
+    "vite": "7.3.6",
+    "vitest": "4.1.10"
+  }
+}

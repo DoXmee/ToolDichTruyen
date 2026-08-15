@@ -1,0 +1,30 @@
+appId: com.local.tooldichtruyen
+productName: Tool dịch truyện
+directories:
+  output: release
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  # Runtime prompts stay below Electron's resources directory.
+  - from: resources/prompts
+    to: resources/prompts
+# This must be a directly selectable unpacked-extension folder.  On Windows
+# extraFiles is copied beside ToolDichTruyen.exe rather than below resources.
+extraFiles:
+  - from: resources/huli-browser-helper
+    to: Huli Browser Helper
+asarUnpack:
+  - node_modules/playwright-core/**/*
+win:
+  executableName: ToolDichTruyen
+  target:
+    - nsis
+    - portable
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+portable:
+  artifactName: ToolDichTruyen-Portable-${version}.${ext}

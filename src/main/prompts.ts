@@ -1,0 +1,93 @@
+import { access, readFile } from "node:fs/promises";
+import path from "node:path";
+
+export type SupportedPromptMode = "historical" | "modern" | "custom";
+
+export interface PromptCatalog {
+  historical: string;
+  modern: string;
+}
+const FILE_CANDIDATES: Record<Exclude<SupportedPromptMode, "custom">, readonly string[]> = {
+  historical: ["nien-dai.txt", "niên đại.txt", "historical.txt"],
+  modern: ["hien-dai.txt", "hiện đại.txt", "modern.txt"],
+};
+
+function stripBom(value: string): string {
+  return value.replace(/^\uFEFF/u, "").trim();
+}
+export function normalizePromptMode(value: unknown): SupportedPromptMode {
+  if (typeof value !== "string") {
+    throw new TypeError("Chế độ prompt không hợp lệ.");
+  }
+
+  const normalized = value.trim().toLocaleLowerCase("vi-VN");
+  if (["historical", "period", "era", "nien-dai", "niên đại"].includes(normalized)) {
+    return "historical";
+  }
+  if (["modern", "hien-dai", "hiện đại"].includes(normalized)) {
+    return "modern";
+  }
+  if (["custom", "other", "khac", "khác"].includes(normalized)) {
+    return "custom";
+  }
+  throw new TypeError(`Không hỗ trợ chế độ prompt: ${value}`);
+}
+
+export class PromptLoader {
+  private readonly roots: readonly string[];
+
+  public constructor(roots: readonly string[]) {
+    this.roots = [...new Set(roots.map((root) => path.resolve(root)))];
+  }
+
+  public async loadCatalog(): Promise<PromptCatalog> {
+    const [historical, modern] = await Promise.all([
+      this.loadBuiltIn("historical"),
+      this.loadBuiltIn("modern"),
+    ]);
+    return { historical, modern };
+  }
+
+  public async resolve(modeValue: unknown, customPrompt?: unknown): Promise<string> {
+    const mode = normalizePromptMode(modeValue);
+    if (mode === "custom") {
+      if (typeof customPrompt !== "string" || customPrompt.trim().length === 0) {
+        throw new TypeError("Vui lòng nhập prompt tùy chỉnh.");
+      }
+      if (customPrompt.length > 100_000) {
+        throw new RangeError("Prompt tùy chỉnh quá dài (tối đa 100.000 ký tự).");
+      }
+      return stripBom(customPrompt);
+    }
+    return this.loadBuiltIn(mode);
+  }
+
+  private async loadBuiltIn(mode: Exclude<SupportedPromptMode, "custom">): Promise<string> {
+    const attempted: string[] = [];
+    for (const root of this.roots) {
+      for (const fileName of FILE_CANDIDATES[mode]) {
+        const filePath = path.join(root, fileName);
+        attempted.push(filePath);
+        try {
+          await access(filePath);
+          const content = stripBom(await readFile(filePath, "utf8"));
+          if (content.length === 0) {
+            throw new Error(`File prompt trống: ${filePath}`);
+          }
+          return content;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "ENOENT" && code !== "ENOTDIR") {
+            throw error;
+          }
+        }
+      }
+    }
+
+    throw new Error(
+      `Không tìm thấy prompt ${mode === "historical" ? "truyện niên đại" : "truyện hiện đại"}. ` +
+        `Đã kiểm tra: ${attempted.join(", ")}`,
+    );
+  }
+}
+

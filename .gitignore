@@ -1,0 +1,46 @@
+node_modules/
+.pnpm-store/
+out/
+release/
+release-*/
+backups/
+deployment-backups/
+coverage/
+.vite/
+*.tsbuildinfo
+*.log
+.env
+.env.*
+!.env.example
+*.local.json
+playwright-report/
+test-results/
+handoff/
+
+# Dữ liệu máy cục bộ / Electron / Chromium. Không bao giờ commit.
+tool-dich-truyen/
+user-data/
+UserData/
+chatgpt-browser-profile/
+story-source-browser-profile/
+jobs/
+draft*.json
+settings.json
+chatgpt-tool-conversation.json
+Cookies
+Login Data*
+Local State
+DevToolsActivePort
+Singleton*
+
+# Bản dịch, gói chuyển máy và artifact nén.
+*.zip
+*.7z
+*.rar
+*.exe
+*.blockmap
+
+# Generated local bundles and recovery artifacts. Source lives in src/, resources/ and tests/.
+*.asar
+index.js
+index-*.js

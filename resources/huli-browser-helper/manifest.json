@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Tool Dịch Truyện - Huli Browser Helper",
+  "version": "1.0.4",
+  "description": "Đọc trang Huliwang bằng hồ sơ trình duyệt thường sau khi người dùng chủ động ghép nối với Tool Dịch Truyện.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyCumvjqQrCC/Tg3dHgPHQnLYHudLI6mNACg9POVPLOuwBQI62bNIk6CtN/r3IxnZ6/FPL1y2g/2j32q1zpq2qTyc2Enks1c2XFDCHgdnN0dNykksK4zn6KBj6fj2EHgtxUHb7s0eNhDiL5DGukFY5bNBF2sHJiIHJlXA7Jf3Cd0Av9vZVDCcvwiBsVI+qrliDlZWUF+wpuSigmUho/4TG2FDvox4yivA1h0k4UMGhsv8mTmkdOAxY7+AsFB84hyGpQLWyLjW/D4Gm2lCmQourGwdW0ynW3NR/YyWIOli7zWerYuvT5H3GrERHef84epYy5LOPoolCjxqH6s5fWdDrwIDAQAB",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://m.huliwang.net/*",
+    "https://www.huliwang.net/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/*"],
+      "js": ["pairing-content.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://m.huliwang.net/*", "https://www.huliwang.net/*"],
+      "js": ["huli-content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Huli Browser Helper",
+    "default_popup": "popup.html"
+  }
+}

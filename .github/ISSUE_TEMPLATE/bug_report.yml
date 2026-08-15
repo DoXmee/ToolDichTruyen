@@ -1,0 +1,32 @@
+name: Báo lỗi
+description: Báo một lỗi có thể tái hiện.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Không gửi cookie, ảnh chứa thông tin đăng nhập, khóa API hoặc nội dung truyện riêng tư."
+  - type: textarea
+    id: summary
+    attributes:
+      label: Mô tả lỗi
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Các bước tái hiện
+      placeholder: "1. ...\n2. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Kết quả mong đợi
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Phiên bản ứng dụng
+      placeholder: "Ví dụ: 1.2.0"
