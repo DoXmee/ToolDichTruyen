@@ -3,6 +3,8 @@ node_modules/
 out/
 release/
 release-*/
+transfer-staging-*/
+update-script-smoke-*/
 backups/
 deployment-backups/
 coverage/
