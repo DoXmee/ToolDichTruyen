@@ -9,10 +9,12 @@ interface PromptSelectorProps {
   outputChapterStart?: number;
   /** First source chapter selected in the catalog, shown as the safe default. */
   suggestedChapterStart?: number;
+  omitOutputChapterTitles: boolean;
   loading?: boolean;
   onModeChange: (mode: PromptMode) => void;
   onCustomPromptChange: (value: string) => void;
   onOutputChapterStartChange: (value: number | undefined) => void;
+  onOmitOutputChapterTitlesChange: (value: boolean) => void;
 }
 
 interface PromptCardProps {
@@ -52,10 +54,12 @@ export function PromptSelector({
   customPrompt,
   outputChapterStart,
   suggestedChapterStart,
+  omitOutputChapterTitles,
   loading = false,
   onModeChange,
   onCustomPromptChange,
   onOutputChapterStartChange,
+  onOmitOutputChapterTitlesChange,
 }: PromptSelectorProps) {
   const promptMeta = (value: string) => loading ? 'Đang nạp…' : value ? `${value.length.toLocaleString('vi-VN')} ký tự` : 'Chưa có prompt';
   const canRenumberLinkChapters = typeof suggestedChapterStart === 'number';
@@ -133,6 +137,16 @@ export function PromptSelector({
               );
             }}
           />
+        </label>
+        <label className="chapter-numbering-control__toggle" htmlFor="omit-output-chapter-titles">
+          <input
+            checked={omitOutputChapterTitles}
+            disabled={!canRenumberLinkChapters}
+            id="omit-output-chapter-titles"
+            type="checkbox"
+            onChange={(event) => onOmitOutputChapterTitlesChange(event.target.checked)}
+          />
+          <span>Không lấy tên chương</span>
         </label>
         <p id="output-chapter-number-hint">{numberingHint}</p>
         <p className="chapter-numbering-control__scope">Chỉ dùng khi nhập link chương truyện hoặc bộ truyện.</p>

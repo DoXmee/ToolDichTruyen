@@ -902,6 +902,29 @@ main {
   background: #f0efe9;
 }
 
+.chapter-numbering-control__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chapter-numbering-control__toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--green);
+}
+
+.chapter-numbering-control__toggle:has(input:disabled) {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 .chapter-numbering-control p {
   margin: 0;
   color: var(--muted);

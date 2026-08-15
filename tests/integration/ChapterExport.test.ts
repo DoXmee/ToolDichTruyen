@@ -158,6 +158,22 @@ describe('chapter TXT export', () => {
     expect(repeated.records[0]?.status).toBe('skipped-existing');
   });
 
+  it('exports a numbered-only chapter without a descriptive filename or heading suffix', async () => {
+    const directory = await temporaryDirectory();
+    const input = chapter({
+      index: 101,
+      sourceChapterNumber: 40,
+      title: 'Chương 101',
+      content: 'Nội dung chỉ đánh số.',
+    });
+    const result = await exportChapterFiles({ directory, chapters: [input] });
+
+    expect(result.records[0]?.fileName).toBe('c.gốc 40 - Chương 101.txt');
+    expect(await readFile(result.records[0]?.filePath ?? '', 'utf8')).toBe(
+      'Chương 101\r\n\r\nNội dung chỉ đánh số.',
+    );
+  });
+
   it('keeps the original source number in renamed filenames while writing the new display heading', async () => {
     const directory = await temporaryDirectory();
     const input = chapter({

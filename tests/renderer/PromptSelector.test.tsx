@@ -5,16 +5,19 @@ import { PromptSelector } from '../../src/renderer/features/translation/PromptSe
 
 function NumberingHarness({ suggestedChapterStart }: { suggestedChapterStart?: number }) {
   const [outputChapterStart, setOutputChapterStart] = useState<number | undefined>();
+  const [omitOutputChapterTitles, setOmitOutputChapterTitles] = useState(false);
 
   return (
     <PromptSelector
       customPrompt=""
       mode="period"
+      omitOutputChapterTitles={omitOutputChapterTitles}
       outputChapterStart={outputChapterStart}
       prompts={{ historical: 'Prompt cổ trang', modern: 'Prompt hiện đại' }}
       suggestedChapterStart={suggestedChapterStart}
       onCustomPromptChange={() => undefined}
       onModeChange={() => undefined}
+      onOmitOutputChapterTitlesChange={setOmitOutputChapterTitles}
       onOutputChapterStartChange={setOutputChapterStart}
     />
   );
@@ -45,5 +48,15 @@ describe('PromptSelector chapter output numbering', () => {
     expect(screen.getByLabelText('Số chương xuất bắt đầu')).toBeDisabled();
     expect(screen.getByText('Chỉ dùng khi nhập link chương truyện hoặc bộ truyện.')).toBeInTheDocument();
     expect(screen.getByText('Chọn chương từ link truyện ở Bước 1 để đặt lại số chương xuất.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Không lấy tên chương')).toBeDisabled();
+  });
+
+  it('cho phép bỏ tên chương khi xuất link và lưu lại lựa chọn', () => {
+    render(<NumberingHarness suggestedChapterStart={7} />);
+
+    const toggle = screen.getByLabelText('Không lấy tên chương');
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    expect(toggle).toBeChecked();
   });
 });

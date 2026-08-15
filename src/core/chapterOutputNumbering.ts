@@ -44,11 +44,16 @@ function renamedTitle(title: string, index: number): string {
   return `Chương ${index}${suffix ? `: ${suffix}` : ''}`;
 }
 
-function asExportInput(chapter: Chapter, index: number, sourceChapterNumber?: number): FinalChapterExportInput {
+function asExportInput(
+  chapter: Chapter,
+  index: number,
+  sourceChapterNumber?: number,
+  omitTitle = false,
+): FinalChapterExportInput {
   return {
     index,
     ...(sourceChapterNumber === undefined ? {} : { sourceChapterNumber }),
-    title: sourceChapterNumber === undefined ? chapter.title : renamedTitle(chapter.title, index),
+    title: omitTitle ? `Chương ${index}` : sourceChapterNumber === undefined ? chapter.title : renamedTitle(chapter.title, index),
     content: chapter.content,
     wordCount: chapter.wordCount,
   };
@@ -62,12 +67,13 @@ function asExportInput(chapter: Chapter, index: number, sourceChapterNumber?: nu
 export function renumberFinalExportChapters(
   chapters: readonly Chapter[],
   outputChapterStart: number | undefined,
+  omitTitle = false,
 ): FinalChapterExportInput[] {
   const start = assertOutputStart(outputChapterStart, chapters.length);
   return chapters.map((chapter, ordinal) => (
     start === undefined
-      ? asExportInput(chapter, chapter.index)
-      : asExportInput(chapter, start + ordinal, sourceChapterNumberOf(chapter))
+      ? asExportInput(chapter, chapter.index, undefined, omitTitle)
+      : asExportInput(chapter, start + ordinal, sourceChapterNumberOf(chapter), omitTitle)
   ));
 }
 
@@ -101,16 +107,16 @@ export function renumberOriginalExportChapters(
   originalChapters: readonly Chapter[],
   finalChapters: readonly Chapter[],
   outputChapterStart: number | undefined,
+  omitTitle = false,
 ): FinalChapterExportInput[] {
   const start = assertOutputStart(outputChapterStart, finalChapters.length);
-  if (start === undefined) return originalChapters.map((chapter) => asExportInput(chapter, chapter.index));
+  if (start === undefined) return originalChapters.map((chapter) => asExportInput(chapter, chapter.index, undefined, omitTitle));
 
   let fallbackOrdinal = 0;
   return originalChapters.map((chapter) => {
     const finalOrdinal = firstFinalPartIndexForOriginal(chapter, finalChapters);
     const ordinal = finalOrdinal === undefined ? fallbackOrdinal : finalOrdinal;
     fallbackOrdinal = Math.max(fallbackOrdinal, ordinal + 1);
-    return asExportInput(chapter, start + ordinal, sourceChapterNumberOf(chapter));
+    return asExportInput(chapter, start + ordinal, sourceChapterNumberOf(chapter), omitTitle);
   });
 }
-

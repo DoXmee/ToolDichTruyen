@@ -71,4 +71,20 @@ describe('chapter output renumbering', () => {
       wordCount: 3,
     }]);
   });
+
+  it('removes descriptive titles while retaining sequential output and source provenance', () => {
+    const finalChapters = [
+      chapter(40, 'Chương 40: Mở đầu', 40, 10, 20),
+      chapter(41, 'Chương 41: Tiếp theo', 41, 20, 30),
+    ];
+
+    expect(renumberFinalExportChapters(finalChapters, 101, true)).toEqual([
+      expect.objectContaining({ index: 101, sourceChapterNumber: 40, title: 'Chương 101' }),
+      expect.objectContaining({ index: 102, sourceChapterNumber: 41, title: 'Chương 102' }),
+    ]);
+    expect(renumberOriginalExportChapters(finalChapters, finalChapters, 101, true)).toEqual([
+      expect.objectContaining({ index: 101, sourceChapterNumber: 40, title: 'Chương 101' }),
+      expect.objectContaining({ index: 102, sourceChapterNumber: 41, title: 'Chương 102' }),
+    ]);
+  });
 });

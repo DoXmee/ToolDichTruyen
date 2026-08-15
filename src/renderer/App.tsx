@@ -55,8 +55,12 @@ interface RendererDraft {
   exportCombinedChapters: boolean;
   /** Optional first number for renamed link-chapter exports. Undefined preserves source numbers. */
   outputChapterStart?: number;
+  /** Omit descriptive chapter names from automatic link-chapter exports. */
+  omitOutputChapterTitles?: boolean;
   /** Immutable copy of outputChapterStart captured when this link job began. */
   autoExportOutputChapterStart?: number;
+  /** Immutable copy of the title omission option captured when this link job began. */
+  autoExportOmitOutputChapterTitles?: boolean;
   autoExportJobId: string;
   autoExportStartedAt: number;
   /** Original selected website chapter range; split indexes are unrelated. */
@@ -297,12 +301,14 @@ export default function App() {
   const [exportOriginalChapters, setExportOriginalChapters] = useState(true);
   const [exportCombinedChapters, setExportCombinedChapters] = useState(true);
   const [outputChapterStart, setOutputChapterStart] = useState<number | undefined>();
+  const [omitOutputChapterTitles, setOmitOutputChapterTitles] = useState(false);
   const [autoExportJobId, setAutoExportJobId] = useState('');
   const [autoExportStartedAt, setAutoExportStartedAt] = useState(0);
   const [autoExportRange, setAutoExportRange] = useState<ExportRange | undefined>();
   // Unlike the editable field in Step 2, this value never changes after the
   // user presses “Tải, dịch và lưu”. Every checkpoint and recovery uses it.
   const [autoExportOutputChapterStart, setAutoExportOutputChapterStart] = useState<number | undefined>();
+  const [autoExportOmitOutputChapterTitles, setAutoExportOmitOutputChapterTitles] = useState(false);
   const [autoExportOutput, setAutoExportOutput] = useState('');
   const [exportedRecords, setExportedRecords] = useState<ChapterExportRecord[]>([]);
   const [originalExportedRecords, setOriginalExportedRecords] = useState<ChapterExportRecord[]>([]);
@@ -407,6 +413,8 @@ export default function App() {
         setExportCombinedChapters(draft.exportCombinedChapters !== false);
         const restoredOutputChapterStart = optionalChapterNumber(draft.outputChapterStart);
         setOutputChapterStart(restoredOutputChapterStart);
+        const restoredOmitOutputChapterTitles = draft.omitOutputChapterTitles === true;
+        setOmitOutputChapterTitles(restoredOmitOutputChapterTitles);
         const restoredAutoExportJobId = typeof draft.autoExportJobId === 'string' ? draft.autoExportJobId : '';
         // Make the persisted association available during this same startup
         // turn. A main-process checkpoint can arrive before React runs the
@@ -420,6 +428,11 @@ export default function App() {
           ?? (restoredAutoExportJobId ? restoredOutputChapterStart : undefined);
         autoExportOutputChapterStartRef.current = restoredAutoExportOutputChapterStart;
         setAutoExportOutputChapterStart(restoredAutoExportOutputChapterStart);
+        setAutoExportOmitOutputChapterTitles(
+          typeof draft.autoExportOmitOutputChapterTitles === 'boolean'
+            ? draft.autoExportOmitOutputChapterTitles
+            : restoredAutoExportJobId ? restoredOmitOutputChapterTitles : false,
+        );
         setAutoExportStartedAt(typeof draft.autoExportStartedAt === 'number' ? draft.autoExportStartedAt : 0);
         if (isExportRange(draft.autoExportRange)) setAutoExportRange(draft.autoExportRange);
         // v2 drafts from before incremental export do not yet have a separate
@@ -460,10 +473,12 @@ export default function App() {
         exportOriginalChapters,
         exportCombinedChapters,
         ...(outputChapterStart !== undefined ? { outputChapterStart } : {}),
+        ...(omitOutputChapterTitles ? { omitOutputChapterTitles } : {}),
         autoExportJobId,
         autoExportStartedAt,
         ...(autoExportRange ? { autoExportRange } : {}),
         ...(autoExportOutputChapterStart !== undefined ? { autoExportOutputChapterStart } : {}),
+        ...(autoExportJobId ? { autoExportOmitOutputChapterTitles } : {}),
         ...(autoExportOutput ? { autoExportOutput } : {}),
         exportedRecords,
         originalExportedRecords,
@@ -485,12 +500,14 @@ export default function App() {
     autoExportStartedAt,
     autoExportRange,
     autoExportOutputChapterStart,
+    autoExportOmitOutputChapterTitles,
     autoExportOutput,
     customPrompt,
     exportDirectory,
     exportOriginalChapters,
     exportCombinedChapters,
     outputChapterStart,
+    omitOutputChapterTitles,
     exportedRecords,
     originalExportedRecords,
     combinedExport,
@@ -861,9 +878,11 @@ export default function App() {
     const nextAutoExportOutputChapterStart = automaticExportDirectory
       ? outputChapterStart
       : undefined;
+    const nextAutoExportOmitOutputChapterTitles = Boolean(automaticExportDirectory) && omitOutputChapterTitles;
     setAutoExportRange(nextExportRange);
     autoExportOutputChapterStartRef.current = nextAutoExportOutputChapterStart;
     setAutoExportOutputChapterStart(nextAutoExportOutputChapterStart);
+    setAutoExportOmitOutputChapterTitles(nextAutoExportOmitOutputChapterTitles);
     segmentOutputsRef.current.clear();
     try {
       if (automaticExportDirectory) {
@@ -884,12 +903,14 @@ export default function App() {
           exportOriginalChapters,
           exportCombinedChapters,
           ...(outputChapterStart !== undefined ? { outputChapterStart } : {}),
+          ...(omitOutputChapterTitles ? { omitOutputChapterTitles } : {}),
           autoExportJobId: 'pending',
           autoExportStartedAt: pendingStartedAt,
           ...(nextExportRange ? { autoExportRange: nextExportRange } : {}),
           ...(nextAutoExportOutputChapterStart !== undefined
             ? { autoExportOutputChapterStart: nextAutoExportOutputChapterStart }
             : {}),
+          autoExportOmitOutputChapterTitles: nextAutoExportOmitOutputChapterTitles,
           autoExportOutput: '',
           exportedRecords: [],
           originalExportedRecords: [],
@@ -935,6 +956,7 @@ export default function App() {
         setAutoExportStartedAt(0);
         autoExportOutputChapterStartRef.current = undefined;
         setAutoExportOutputChapterStart(undefined);
+        setAutoExportOmitOutputChapterTitles(false);
         try {
           await getStoryTool().saveDraft({
             version: 2,
@@ -949,9 +971,11 @@ export default function App() {
             exportOriginalChapters,
             exportCombinedChapters,
             ...(outputChapterStart !== undefined ? { outputChapterStart } : {}),
+            ...(omitOutputChapterTitles ? { omitOutputChapterTitles } : {}),
             autoExportJobId: '',
             autoExportStartedAt: 0,
             ...(nextExportRange ? { autoExportRange: nextExportRange } : {}),
+            autoExportOmitOutputChapterTitles: false,
             autoExportOutput: '',
             exportedRecords: [],
             originalExportedRecords: [],
@@ -1272,6 +1296,7 @@ export default function App() {
     const chapters = renumberFinalExportChapters(
       splitSealedChapters(autoExportOutput, splitForAutomaticExport, terminal),
       autoExportOutputChapterStart,
+      autoExportOmitOutputChapterTitles,
     );
     const known = new Set(exportedRecords.map(exportRecordKey));
     const pending = chapters.filter((chapter) => !known.has(exportInputKey(activeJobId, exportDirectory, chapter)));
@@ -1308,6 +1333,7 @@ export default function App() {
     appAvailable,
     autoExportJobId,
     autoExportOutputChapterStart,
+    autoExportOmitOutputChapterTitles,
     exportDirectory,
     exportedRecords,
     autoExportOutput,
@@ -1335,6 +1361,7 @@ export default function App() {
       originalChapters,
       splitSealedChapters(autoExportOutput, splitForAutomaticExport, terminal),
       autoExportOutputChapterStart,
+      autoExportOmitOutputChapterTitles,
     );
     const known = new Set(originalExportedRecords.map(exportRecordKey));
     const pending = chapters.filter((chapter) => !known.has(exportInputKey(activeJobId, exportDirectory, chapter)));
@@ -1371,6 +1398,7 @@ export default function App() {
     appAvailable,
     autoExportJobId,
     autoExportOutputChapterStart,
+    autoExportOmitOutputChapterTitles,
     exportDirectory,
     exportOriginalChapters,
     originalExportedRecords,
@@ -1397,6 +1425,7 @@ export default function App() {
     const chapters = renumberFinalExportChapters(
       splitSealedChapters(autoExportOutput, splitForAutomaticExport, true),
       autoExportOutputChapterStart,
+      autoExportOmitOutputChapterTitles,
     );
     if (!chapters.length) return;
     const splitKnown = new Set(exportedRecords.map(exportRecordKey));
@@ -1457,6 +1486,7 @@ export default function App() {
     appAvailable,
     autoExportJobId,
     autoExportOutputChapterStart,
+    autoExportOmitOutputChapterTitles,
     autoExportRange,
     combinedExport,
     exportCombinedChapters,
@@ -1479,7 +1509,11 @@ export default function App() {
       || !autoExportOutput.trim()
     ) return;
     const rawSplitChapters = splitSealedChapters(autoExportOutput, splitForAutomaticExport, true);
-    const splitChapters = renumberFinalExportChapters(rawSplitChapters, autoExportOutputChapterStart);
+    const splitChapters = renumberFinalExportChapters(
+      rawSplitChapters,
+      autoExportOutputChapterStart,
+      autoExportOmitOutputChapterTitles,
+    );
     const splitKnown = new Set(exportedRecords.map(exportRecordKey));
     if (splitChapters.some((chapter) => !splitKnown.has(exportInputKey(activeJobId, exportDirectory, chapter)))) return;
 
@@ -1488,6 +1522,7 @@ export default function App() {
         splitSealedOriginalChapters(autoExportOutput, splitForAutomaticExport, true),
         rawSplitChapters,
         autoExportOutputChapterStart,
+        autoExportOmitOutputChapterTitles,
       );
       const originalKnown = new Set(originalExportedRecords.map(exportRecordKey));
       if (originals.some((chapter) => !originalKnown.has(exportInputKey(activeJobId, exportDirectory, chapter)))) return;
@@ -1504,6 +1539,7 @@ export default function App() {
         setAutoExportStartedAt(0);
         autoExportOutputChapterStartRef.current = undefined;
         setAutoExportOutputChapterStart(undefined);
+        setAutoExportOmitOutputChapterTitles(false);
         return;
       }
       const summaryStartChapter = autoExportOutputChapterStart === undefined
@@ -1528,12 +1564,14 @@ export default function App() {
     setAutoExportStartedAt(0);
     autoExportOutputChapterStartRef.current = undefined;
     setAutoExportOutputChapterStart(undefined);
+    setAutoExportOmitOutputChapterTitles(false);
     setAppNotice('Đã hoàn tất dịch, chia theo đoạn và lưu toàn bộ các định dạng đã chọn.');
   }, [
     activeJobId,
     autoExportJobId,
     autoExportRange,
     autoExportOutputChapterStart,
+    autoExportOmitOutputChapterTitles,
     combinedExport,
     exportCombinedChapters,
     exportOriginalChapters,
@@ -1696,6 +1734,7 @@ export default function App() {
             customPrompt={customPrompt}
             loading={promptsLoading}
             mode={promptMode}
+            omitOutputChapterTitles={omitOutputChapterTitles}
             outputChapterStart={outputChapterStart}
             prompts={prompts}
             suggestedChapterStart={sourceMode === 'link' ? suggestedOutputChapterStart : undefined}
@@ -1704,6 +1743,7 @@ export default function App() {
               if (value.length > 0) setPromptMode('custom');
             }}
             onModeChange={setPromptMode}
+            onOmitOutputChapterTitlesChange={setOmitOutputChapterTitles}
             onOutputChapterStartChange={setOutputChapterStart}
           />
 
