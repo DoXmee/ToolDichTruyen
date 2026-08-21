@@ -19,6 +19,7 @@ Các thay đổi đáng chú ý của Tool Dịch Truyện được ghi lại t�
 - Khôi phục xuất file sau khi tiến trình bị ngắt hoặc tiếp tục từ checkpoint.
 - Lọc chặt nội dung đầu/cuối chương và ghép các trang con cùng chương.
 - Gói chuyển máy đặt Browser Helper ngoài cùng và tạo shortcut Unicode an toàn.
+- Shortcut Desktop dùng ICO độc lập có tên theo hash, xóa các shortcut cũ và làm mới cache icon Windows khi cập nhật.
 
 ### Kiểm thử
 

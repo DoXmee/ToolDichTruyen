@@ -12,10 +12,11 @@ Môi trường: Windows x64, Electron 43.3.0, React 19.2.8, Node.js 24, TypeScri
 | Electron smoke | **Đạt** | 41 phương thức preload; sáng/tối, link truyện, màn hình hẹp và công cụ chia chương |
 | Production build | **Đạt** | Main, preload và renderer production được build lại |
 | App đang cài | **Đạt** | SHA-256 `13FE69F0E1904A1FB51DAF7E99E0DAB469983A2C609B47CA958CA4669BC6409C` |
-| ZIP chuyển máy | **Đạt** | SHA-256 `0256D536D980B5C52706670AE69D4A3987075119BBD4EE90FD64206545F79891` |
+| ZIP chuyển máy | **Đạt** | SHA-256 `6701682332D21E030F65A8BC5FFBB294D6784EE836750CCFBF5A8CA3EF5DCAAA` |
 | Payload ZIP so với app | **Trùng khớp** | `app.asar` trong ZIP có cùng SHA-256 với app đang chạy |
 | Browser Helper | **Đạt** | Manifest 1.0.6; có cả cạnh app và ngoài cùng gói ZIP |
-| Cài đặt trên đường dẫn Unicode | **Đạt** | Xóa marker bản cũ, cài bản mới, tạo shortcut và mở đúng executable |
+| Cài đặt trên đường dẫn Unicode | **Đạt** | Xóa marker bản cũ, cài bản mới, tạo shortcut và xác minh Target/Icon |
+| Logo Desktop sau nâng cấp | **Đạt** | Xóa ba biến thể shortcut cũ; shortcut mới dùng ICO tên theo hash `29B307D1186E` và làm mới cache Explorer |
 
 ## Phạm vi kiểm tra bắt buộc
 
@@ -40,6 +41,7 @@ Quy trình đã chạy trên chính file ZIP cuối cùng:
 4. Giải nén ZIP vào đường dẫn chứa dấu tiếng Việt.
 5. Tạo một thư mục app cũ giả lập và marker cũ.
 6. Chạy script cài đặt: marker cũ bị xóa, app/helper mới được chép đầy đủ.
-7. Kiểm tra shortcut Unicode và mở shortcut để xác nhận đúng executable.
+7. Kiểm tra shortcut Unicode; bộ cài tự đọc ngược shortcut để xác nhận đúng executable và file ICO.
+8. Giả lập Desktop có cả ba tên shortcut cũ (liền chữ, có dấu và không dấu); sau cập nhật chỉ còn một shortcut mới.
 
 Live test gọi website/ChatGPT thật không chạy trong bộ mặc định vì cần phiên đăng nhập, mạng và thao tác xác minh của người dùng. Không coi test mock là bằng chứng vượt CAPTCHA hoặc xác minh website.

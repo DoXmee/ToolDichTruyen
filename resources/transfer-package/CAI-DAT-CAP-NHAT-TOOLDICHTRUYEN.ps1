@@ -12,6 +12,7 @@ function Resolve-AbsolutePath([string] $Path) {
 # so both the install directory and Desktop path remain fully Unicode-safe.
 Add-Type -TypeDefinition @'
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Text;
@@ -42,18 +43,47 @@ internal interface IShellLinkW {
 }
 
 public static class UnicodeShortcut {
-  public static void Create(string shortcutPath, string targetPath, string workingDirectory, string description) {
+  public static void Create(string shortcutPath, string targetPath, string workingDirectory, string description, string iconPath) {
     object instance = new ShellLinkObject();
     try {
       IShellLinkW link = (IShellLinkW)instance;
       link.SetPath(targetPath);
       link.SetWorkingDirectory(workingDirectory);
       link.SetDescription(description);
-      link.SetIconLocation(targetPath, 0);
+      link.SetIconLocation(iconPath, 0);
       ((IPersistFile)link).Save(shortcutPath, true);
     } finally {
       Marshal.FinalReleaseComObject(instance);
     }
+  }
+
+  public static bool Matches(string shortcutPath, string targetPath, string iconPath) {
+    object instance = new ShellLinkObject();
+    try {
+      IShellLinkW link = (IShellLinkW)instance;
+      ((IPersistFile)link).Load(shortcutPath, 0);
+      StringBuilder actualTarget = new StringBuilder(32768);
+      StringBuilder actualIcon = new StringBuilder(32768);
+      int iconIndex;
+      link.GetPath(actualTarget, actualTarget.Capacity, IntPtr.Zero, 0);
+      link.GetIconLocation(actualIcon, actualIcon.Capacity, out iconIndex);
+      return string.Equals(Path.GetFullPath(actualTarget.ToString()), Path.GetFullPath(targetPath), StringComparison.OrdinalIgnoreCase)
+        && string.Equals(Path.GetFullPath(actualIcon.ToString()), Path.GetFullPath(iconPath), StringComparison.OrdinalIgnoreCase)
+        && iconIndex == 0;
+    } finally {
+      Marshal.FinalReleaseComObject(instance);
+    }
+  }
+}
+
+public static class NativeShellRefresh {
+  [DllImport("shell32.dll")]
+  private static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
+
+  public static void RefreshIcons() {
+    const uint SHCNE_ASSOCCHANGED = 0x08000000;
+    const uint SHCNF_IDLIST = 0x0000;
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, IntPtr.Zero, IntPtr.Zero);
   }
 }
 '@
@@ -109,12 +139,53 @@ if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf) -or -not (Test-Pa
   throw 'New app copy is incomplete; Desktop shortcut was not created.'
 }
 
+# Point the shortcut at a versioned standalone ICO rather than at the EXE.
+# Explorer caches icons aggressively by path; reusing ToolDichTruyen.exe can
+# therefore keep showing an older Electron/app icon after a clean update.
+$packagedIcon = Join-Path $installRoot 'resources\ToolDichTruyen.ico'
+if (-not (Test-Path -LiteralPath $packagedIcon -PathType Leaf)) {
+  throw "Packaged app icon is missing: $packagedIcon"
+}
+$iconHash = (Get-FileHash -LiteralPath $packagedIcon -Algorithm SHA256).Hash.Substring(0, 12)
+$shortcutIcon = Join-Path $installRoot "ToolDichTruyen-$iconHash.ico"
+Copy-Item -LiteralPath $packagedIcon -Destination $shortcutIcon -Force
+
 New-Item -ItemType Directory -Force -Path $desktopRoot | Out-Null
 $shortcutPath = Join-Path $desktopRoot 'ToolDichTruyen.lnk'
-[UnicodeShortcut]::Create($shortcutPath, $installedExe, $installRoot, 'Mở Tool Dịch Truyện')
+function ConvertTo-ShortcutKey([string] $Name) {
+  $normalized = $Name.Normalize([Text.NormalizationForm]::FormD)
+  $key = [Text.StringBuilder]::new()
+  foreach ($character in $normalized.ToCharArray()) {
+    $category = [Globalization.CharUnicodeInfo]::GetUnicodeCategory($character)
+    if ($category -ne [Globalization.UnicodeCategory]::NonSpacingMark -and [char]::IsLetterOrDigit($character)) {
+      [void] $key.Append([char]::ToLowerInvariant($character))
+    }
+  }
+  return $key.ToString()
+}
+$desktopShortcuts = @(Get-ChildItem -LiteralPath $desktopRoot -Filter '*.lnk' -File -ErrorAction SilentlyContinue)
+$desktopShortcuts | ForEach-Object {
+  if ((ConvertTo-ShortcutKey $_.BaseName) -eq 'tooldichtruyen') {
+    Remove-Item -LiteralPath $_.FullName -Force
+  }
+}
+[UnicodeShortcut]::Create($shortcutPath, $installedExe, $installRoot, 'Open ToolDichTruyen', $shortcutIcon)
+if (-not [UnicodeShortcut]::Matches($shortcutPath, $installedExe, $shortcutIcon)) {
+  throw 'Desktop shortcut verification failed: target or icon does not match the newly installed app.'
+}
+[NativeShellRefresh]::RefreshIcons()
+
+# Ask Explorer to repaint the current user's icons immediately. This is a
+# best-effort refresh only; installation remains successful if Windows omits
+# this legacy utility on a future release.
+$iconRefresh = Join-Path $env:SystemRoot 'System32\ie4uinit.exe'
+if (Test-Path -LiteralPath $iconRefresh -PathType Leaf) {
+  & $iconRefresh -show 2>$null
+}
 
 Write-Host 'New clean version installed.' -ForegroundColor Green
 Write-Host "App: $installedExe"
 Write-Host "Shortcut Desktop: $shortcutPath"
+Write-Host "Shortcut icon: $shortcutIcon"
 Write-Host "Browser helper: $(Join-Path $installRoot 'Huli Browser Helper')"
 Write-Host "Choose this folder in Edge/Chrome: $payloadHelperRoot"

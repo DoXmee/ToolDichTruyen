@@ -15,6 +15,7 @@ LƯU Ý QUAN TRỌNG
   Chúng KHÔNG bị xóa khi cập nhật app.
 - Desktop chỉ có shortcut ToolDichTruyen.lnk. Toàn bộ thư mục app không bị đưa ra Desktop.
 - Tên người dùng hoặc đường dẫn Desktop có dấu tiếng Việt vẫn được hỗ trợ khi tạo shortcut.
+- Bộ cài xóa shortcut cũ, dùng file logo mới có tên theo phiên bản và yêu cầu Windows làm mới bộ nhớ đệm biểu tượng.
 
 CÀI TIỆN ÍCH HULIWANG
 ---------------------
