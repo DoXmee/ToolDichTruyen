@@ -13,12 +13,16 @@ import {
 const catalog = {
   period: 'PROMPT NIÊN ĐẠI',
   modern: 'PROMPT HIỆN ĐẠI',
+  ancient: 'PROMPT CỔ TRANG',
+  cultivation: 'PROMPT TU TIÊN',
 };
 
 describe('prompt builder', () => {
   it('resolves the selected prompt and rejects a blank custom prompt', () => {
     expect(resolvePrompt({ mode: 'period' }, catalog)).toBe('PROMPT NIÊN ĐẠI');
     expect(resolvePrompt({ mode: 'modern' }, catalog)).toBe('PROMPT HIỆN ĐẠI');
+    expect(resolvePrompt({ mode: 'ancient' }, catalog)).toBe('PROMPT CỔ TRANG');
+    expect(resolvePrompt({ mode: 'cultivation' }, catalog)).toBe('PROMPT TU TIÊN');
     expect(resolvePrompt({ mode: 'custom', customPrompt: '  Riêng  ' }, catalog)).toBe(
       'Riêng',
     );
@@ -44,7 +48,7 @@ describe('prompt builder', () => {
     expect(prompt).toContain('Chỉ trả về bản dịch hoàn chỉnh');
   });
 
-  it('builds a retry prompt containing source, failed output, and every issue', () => {
+  it('builds a retry prompt with the base prompt, source, and faulty samples only', () => {
     const source = '中'.repeat(60);
     const previousTranslation = 'Bản dịch: 中…';
     const validation = validateTranslation(source, previousTranslation);
@@ -58,13 +62,14 @@ describe('prompt builder', () => {
       totalSegments: 1,
     });
 
-    expect(prompt).toContain('LẦN SỬA 2');
+    expect(prompt).toContain('DỊCH LẠI ĐOẠN NÀY (LẦN 2)');
     expect(prompt).toContain('[han_remaining]');
     expect(prompt).toContain('[too_short]');
     expect(prompt).toContain(catalog.modern);
     expect(prompt).toContain(source);
-    expect(prompt).toContain(previousTranslation);
-    expect(prompt).toContain('dịch lại TOÀN BỘ');
+    expect(prompt).not.toContain('BẢN DỊCH TRƯỚC CÓ LỖI');
+    expect(prompt).not.toContain('<BAN_DICH_LOI>');
+    expect(prompt).toContain('dịch TOÀN BỘ đoạn nguồn dưới đây từ đầu');
   });
 
   it('builds a base-prompt batch Han repair with stable target codes', () => {

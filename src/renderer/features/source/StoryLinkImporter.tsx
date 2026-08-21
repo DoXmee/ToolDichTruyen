@@ -43,7 +43,19 @@ function siteLabel(site: StorySourceAnalysis['site']): string {
   if (site === 'huliwang') return 'Huliwang';
   if (site === 'timotxt') return 'TimoTXT';
   if (site === 'qingrenyouxi') return 'Qingrenyouxi';
+  if (site === 'xszj') return 'XSZJ/爱下电子书';
   return 'Xbanxia';
+}
+
+function manualVerificationLabel(url: string): string {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return ['xszj.org', 'www.xszj.org', 'ixdzs8.com', 'www.ixdzs8.com'].includes(hostname)
+      ? 'XSZJ/爱下电子书'
+      : 'Huliwang';
+  } catch {
+    return 'Huliwang';
+  }
 }
 
 export function StoryLinkImporter({
@@ -82,6 +94,7 @@ export function StoryLinkImporter({
   const savedSplitCount = exportedRecords.filter((record) => record.status === 'saved').length;
   const savedOriginalCount = originalExportedRecords.filter((record) => record.status === 'saved').length;
   const hasExportHistory = exportedRecords.length > 0 || originalExportedRecords.length > 0 || Boolean(combinedExport);
+  const verificationLabel = manualVerificationLabel(url);
 
   return (
     <div className="story-link-importer">
@@ -97,7 +110,7 @@ export function StoryLinkImporter({
             onKeyDown={(event) => {
               if (event.key === 'Enter' && url.trim() && !busy && !disabled && !manualVerificationPending) onAnalyze();
             }}
-            placeholder="Dán link Huliwang, TimoTXT, Qingrenyouxi hoặc Xbanxia…"
+            placeholder="Dán link Huliwang, XSZJ, TimoTXT, Qingrenyouxi hoặc Xbanxia…"
           />
         </label>
         <button
@@ -113,7 +126,7 @@ export function StoryLinkImporter({
 
       {!analysis && (
         <p className="story-link-support" role="note">
-          <strong>Hỗ trợ nhập link truyện:</strong> Huliwang, TimoTXT, Qingrenyouxi và Xbanxia. Dán link rồi bấm <strong>Phân tích</strong> để đọc danh sách chương.
+          <strong>Hỗ trợ nhập link truyện:</strong> Huliwang, XSZJ/爱下电子书, TimoTXT, Qingrenyouxi và Xbanxia. Dán link rồi bấm <strong>Phân tích</strong> để đọc danh sách chương.
         </p>
       )}
 
@@ -121,7 +134,7 @@ export function StoryLinkImporter({
         <div className="story-manual-verification" role="alert">
           <Icon name="alert" />
           <div>
-            <strong>Huliwang cần Microsoft Edge hoặc Google Chrome và profile bạn dùng hằng ngày.</strong>
+            <strong>{verificationLabel} cần Microsoft Edge hoặc Google Chrome và profile bạn dùng hằng ngày.</strong>
             <span>Kết nối tiện ích cục bộ, sau đó tool sẽ tự phân tích lại link bằng đúng phiên trình duyệt này.</span>
             <span>Lần đầu: bấm Mở thư mục tiện ích (Huli Browser Helper nằm ngay cạnh ToolDichTruyen.exe), vào edge://extensions hoặc chrome://extensions, bật Chế độ nhà phát triển và chọn Tải tiện ích đã giải nén. Tool không dùng Cốc Cốc cho bước này.</span>
           </div>
@@ -158,7 +171,7 @@ export function StoryLinkImporter({
             <strong>{manualVerificationState === 'opening' ? 'Đang chờ trình duyệt mặc định kết nối…' : 'Trình duyệt đã kết nối.'}</strong>
             <span>{manualVerificationState === 'opening'
               ? 'Hãy mở trang ghép nối bằng đúng profile bạn dùng hằng ngày và bảo đảm tiện ích đã được cài. Kết nối xong, tool tự phân tích lại link.'
-              : 'Tool đang chuyển sang phân tích lại link Huliwang.'}</span>
+              : `Tool đang chuyển sang phân tích lại link ${verificationLabel}.`}</span>
           </div>
           {onRevealBrowserHelper && (
             <button
@@ -205,7 +218,7 @@ export function StoryLinkImporter({
           {analysis.verification === 'user-action-required' && (
             <div className="inline-notice inline-notice--info">
               <Icon name="alert" />
-              <span>Phiên Huliwang cần được kết nối qua trình duyệt mặc định. Hãy dùng nút kết nối ở phía trên rồi để tool tự phân tích lại link.</span>
+              <span>Phiên {siteLabel(analysis.site)} cần được kết nối qua trình duyệt mặc định. Hãy dùng nút kết nối ở phía trên rồi để tool tự phân tích lại link.</span>
             </div>
           )}
 

@@ -20,13 +20,17 @@ describe("Huli normal-browser helper", () => {
   it("has a narrowly scoped MV3 manifest with a stable extension id key", async () => {
     const manifest = JSON.parse(await readFile(resolve(root, "manifest.json"), "utf8"));
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("1.0.4");
-    expect(manifest.name).toBe("Tool Dịch Truyện - Huli Browser Helper");
+    expect(manifest.version).toBe("1.0.6");
+    expect(manifest.name).toBe("Tool Dịch Truyện - Browser Helper");
     expect(manifest.description).toContain("Đọc trang Huliwang");
     expect(manifest.permissions).toEqual(["storage"]);
     expect(manifest.host_permissions).toEqual([
       "https://m.huliwang.net/*",
       "https://www.huliwang.net/*",
+      "https://xszj.org/*",
+      "https://www.xszj.org/*",
+      "https://ixdzs8.com/*",
+      "https://www.ixdzs8.com/*",
       "http://127.0.0.1/*",
     ]);
     expect(manifest.permissions).not.toEqual(expect.arrayContaining(["cookies", "history", "debugger", "webRequest", "scripting"]));
@@ -214,14 +218,14 @@ describe("Huli normal-browser helper", () => {
   });
 
   it("contains no forbidden browser automation or sensitive-data API usage", async () => {
-    const files = ["service-worker.js", "pairing-content.js", "huli-content.js", "popup.js"];
+    const files = ["service-worker.js", "pairing-content.js", "huli-content.js", "xszj-content.js", "popup.js"];
     const source = (await Promise.all(files.map((file) => readFile(resolve(root, file), "utf8")))).join("\n");
     expect(source).not.toMatch(/chrome\.(?:cookies|history|debugger|webRequest)|remote-debugging|playwright|turnstile.*click/iu);
     expect(source).not.toMatch(/document\.cookie|localStorage|sessionStorage/iu);
   });
 
   it("keeps both manifest content scripts valid classic scripts", async () => {
-    for (const file of ["pairing-content.js", "huli-content.js"]) {
+    for (const file of ["pairing-content.js", "huli-content.js", "xszj-content.js"]) {
       const source = await readFile(resolve(root, file), "utf8");
       expect(source).not.toMatch(/^\s*(?:import|export)\s/mu);
       expect(() => new Function(source)).not.toThrow();
@@ -412,6 +416,7 @@ describe("Huli normal-browser helper", () => {
     const worker = await readFile(resolve(root, "service-worker.js"), "utf8");
     const pairing = await readFile(resolve(root, "pairing-content.js"), "utf8");
     const huli = await readFile(resolve(root, "huli-content.js"), "utf8");
+    const xszj = await readFile(resolve(root, "xszj-content.js"), "utf8");
     const manifest = JSON.parse(await readFile(resolve(root, "manifest.json"), "utf8"));
     expect(worker).not.toMatch(/pollLoop|onStartup/u);
     expect(worker).not.toContain('message?.type === "poll"');
@@ -421,11 +426,14 @@ describe("Huli normal-browser helper", () => {
     expect(worker).toContain("awaitingPairing: true");
     expect(pairing).toContain("chrome.runtime.connect({ name: HEARTBEAT_PORT_NAME })");
     expect(huli).toContain("chrome.runtime.connect({ name: HEARTBEAT_PORT_NAME })");
+    expect(xszj).toContain("chrome.runtime.connect({ name: HEARTBEAT_PORT_NAME })");
     expect(pairing).not.toContain('sendMessage({ type: "poll" })');
     expect(huli).not.toContain('sendMessage({ type: "poll" })');
+    expect(xszj).not.toContain('sendMessage({ type: "poll" })');
     expect(manifest.content_scripts.map((entry: { js: string[] }) => entry.js)).toEqual([
       ["pairing-content.js"],
       ["huli-content.js"],
+      ["xszj-content.js"],
     ]);
     expect(worker).toMatch(/retryAfterMs:\s*0,\s*commandProcessed/u);
   });

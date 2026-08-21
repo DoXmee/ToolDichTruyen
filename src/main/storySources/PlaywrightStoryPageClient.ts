@@ -13,10 +13,11 @@ import {
   installStoryNetworkRoutes,
   StoryNetworkGuard,
 } from "./networkSafety.js";
+import { parseStoryUrl } from "./urlRules.js";
 
 const SNAPSHOT_SELECTORS = [
   "h1", "h2", ".title", ".bookTitle", ".readTitle", ".info", ".meta-dir",
-  "#nr_title", "#nr", "#nr1", ".chapter-content .content", "#htmlContent",
+  "#nr_title", "#nr", "#nr1", ".chapter-content .content", "#htmlContent", "#content", "article.page-content",
   ".chaplist .all", "#list-chapterAll .panel-chapterlist", ".panel-chapterlist",
   ".book-list", ".book-describe h1", ".book-describe p", ".book-describe a[href^='/author/']",
   "#bookIntro", "[rel=author]", ".author", ".booktag", ".nr_page",
@@ -29,6 +30,24 @@ function abortError(signal?: AbortSignal): unknown {
 interface FontAssetCandidate {
   family: string;
   url: string;
+}
+
+export function classifyCloudflareChallenge(input: {
+  title: string;
+  bodyText: string;
+  hasStorySurface: boolean;
+  hasVisibleChallengeControl: boolean;
+}): "none" | "passive" | "interactive" {
+  // A normal story page can contain a cached/hidden Cloudflare string. Such
+  // text is not a challenge. A recognized story surface always wins.
+  if (input.hasStorySurface) return "none";
+  if (input.hasVisibleChallengeControl) return "interactive";
+
+  const title = input.title.trim();
+  const titleIsChallenge = /^(?:just a moment|checking your browser)[.!…\s]*$/iu.test(title);
+  const mentionsChecking = /checking your browser|performing security verification/iu.test(input.bodyText);
+  const hasCloudflareIdentity = /cloudflare ray id|\bcf-chl-/iu.test(input.bodyText);
+  return titleIsChallenge || (mentionsChecking && hasCloudflareIdentity) ? "passive" : "none";
 }
 
 export function raceStoryOperationWithAbort<T>(
@@ -114,10 +133,15 @@ async function snapshot(
     const textOf = (element: Element | null): string => {
       if (!element) return "";
       const clone = element.cloneNode(true) as Element;
-      if (element.matches("#nr, #nr1, .chapter-content .content, #htmlContent")) {
+      if (element.matches("#nr, #nr1, .chapter-content .content, #htmlContent, #content, article.page-content")) {
         clone.querySelectorAll(
-          'script, style, iframe, ins, figure, .adBlock, .gadBlock, .cf-unit, #comment, .bh-rec-embed, .recommend-wrap, [class^="ad-"], [class*=" ad-"]',
+          'script, style, iframe, ins, figure, .adBlock, .gadBlock, .cf-unit, #comment, .bh-rec-embed, .recommend-wrap, [class^="ad-"], [class*=" ad-"], [style*="height: 0"]',
         ).forEach((node) => node.remove());
+        // XSZJ inserts an ad container as a direct child of #booktxt between
+        // real paragraph nodes. That container never belongs to prose.
+        if (element.matches("#content")) {
+          clone.querySelectorAll("#booktxt > div, #booktxt > ins, #booktxt > iframe").forEach((node) => node.remove());
+        }
       }
       clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
       return (clone.textContent ?? "").normalize("NFC").trim();
@@ -148,7 +172,7 @@ async function snapshot(
     }));
     const canonical = document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.href;
     const fontFamilies = new Set<string>();
-    for (const element of Array.from(document.querySelectorAll("#nr, #nr1, .chapter-content .content, #htmlContent"))) {
+    for (const element of Array.from(document.querySelectorAll("#nr, #nr1, .chapter-content .content, #htmlContent, #content, article.page-content"))) {
       const style = getComputedStyle(element);
       style.fontFamily.split(",").forEach((family) => fontFamilies.add(family.replace(/["']/gu, "").trim()));
     }
@@ -178,10 +202,15 @@ async function snapshot(
       sourceId: /sid\s*:\s*['"]?(\d+)['"]?/u.exec(readInit)?.[1],
     };
     const bodyText = textOf(document.body);
-    const interactive = Boolean(document.querySelector(
+    const storySurfaceSelectors = "#nr, #nr1, .chapter-content .content, #htmlContent, #content, article.page-content, .chaplist .all, #list-chapterAll .panel-chapterlist, .panel-chapterlist, .u-chapter, #list";
+    const hasStorySurface = Array.from(document.querySelectorAll(storySurfaceSelectors)).some((element) => textOf(element).length >= 40);
+    const hasVisibleChallengeControl = Array.from(document.querySelectorAll(
       'iframe[src*="challenges.cloudflare.com"], input[name="cf-turnstile-response"], .cf-turnstile',
-    ));
-    const passive = /Just a moment|Checking your browser|cf-chl-|Cloudflare Ray ID/iu.test(`${document.title}\n${bodyText}`);
+    )).some((element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && Number.parseFloat(style.opacity || "1") > 0 && rect.width >= 8 && rect.height >= 8;
+    });
     return {
       url: location.href,
       title: document.title,
@@ -194,16 +223,24 @@ async function snapshot(
       fontFamilies: [...fontFamilies],
       fontAssets,
       readerMetadata: Object.values(metadata).some(Boolean) ? metadata : undefined,
-      challenge: interactive ? "interactive" as const : passive ? "passive" as const : "none" as const,
+      hasStorySurface,
+      hasVisibleChallengeControl,
     };
   }, SNAPSHOT_SELECTORS);
   const fontAssets = await hashFontAssets(page, data.fontAssets, signal, guard);
   const fontHashes = [...new Set(fontAssets.map((asset) => asset.sha256))];
   const fontUrls = [...new Set(data.fontAssets.map((asset) => asset.url))];
+  const { hasStorySurface, hasVisibleChallengeControl, ...snapshotData } = data;
   return {
     requestedUrl,
     ...(status === undefined ? {} : { status }),
-    ...data,
+    ...snapshotData,
+    challenge: classifyCloudflareChallenge({
+      title: data.title,
+      bodyText: data.bodyText,
+      hasStorySurface,
+      hasVisibleChallengeControl,
+    }),
     fontUrls,
     fontHashes,
     fontAssets,
@@ -250,8 +287,9 @@ export class PlaywrightPageClient implements StoryPageClient {
         if (current?.requestedUrl === url && current.status === undefined && status !== undefined) {
           this.lastNavigation = { ...current, status };
         }
-        const result = await snapshot(page, url, undefined, signal, this.networkGuard);
-        return this.withLatestNavigationStatus(result, url);
+        await this.expandIxdzsCatalog(page, url, signal);
+        const expanded = await snapshot(page, url, undefined, signal, this.networkGuard);
+        return this.withLatestNavigationStatus(expanded, url);
       })(), signal, () => this.discardPage(page));
     } catch (error) {
       const networkFailure = this.networkGuard.takeNavigationFailure();
@@ -343,6 +381,18 @@ export class PlaywrightPageClient implements StoryPageClient {
       this.lastNavigation = undefined;
     }
     await page.close({ runBeforeUnload: false }).catch(() => undefined);
+  }
+
+  /** Opens only Ixdzs' in-page full catalog control; no arbitrary DOM action. */
+  private async expandIxdzsCatalog(page: Page, requestedUrl: string, signal?: AbortSignal): Promise<void> {
+    let parsed;
+    try { parsed = parseStoryUrl(requestedUrl); } catch { return; }
+    if (parsed.site !== "xszj" || parsed.kind !== "book" || !/^https:\/\/ixdzs8\.com\/read\//u.test(parsed.normalizedUrl)) return;
+    const trigger = page.locator("li.catalog-all");
+    if (await trigger.count() !== 1) return;
+    const before = await page.locator(".u-chapter a[href*='/p']").count();
+    await raceStoryOperationWithAbort(trigger.click({ timeout: 8_000 }), signal, () => this.discardPage(page));
+    await raceStoryOperationWithAbort(page.waitForFunction((count) => document.querySelectorAll(".u-chapter a[href*='/p']").length > count, before, { timeout: 8_000 }), signal, () => this.discardPage(page));
   }
 
   private trackMainFrameResponses(page: Page): void {

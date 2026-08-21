@@ -121,6 +121,10 @@ function huliCatalog(): StoryPageSnapshot {
 const XBANXIA_BOOK_URL = "https://www.xbanxia.cc/books/143300.html";
 const XBANXIA_INTRO_URL = "https://www.xbanxia.cc/books/143300/28251880.html";
 const XBANXIA_CHAPTER_ONE_URL = "https://www.xbanxia.cc/books/143300/28251886.html";
+const XSZJ_BOOK_URL = "https://xszj.org/b/485734";
+const XSZJ_CATALOG_URL = "https://xszj.org/b/485734/cs/1";
+const XSZJ_CHAPTER_URL = "https://xszj.org/b/485734/c/856451";
+const IXDZS_BOOK_URL = "https://ixdzs8.com/read/646225/";
 
 function xbanxiaCatalog(overrides: Partial<StoryPageSnapshot> = {}): StoryPageSnapshot {
   const chapterLinks = Array.from({ length: 164 }, (_, index) => {
@@ -421,6 +425,68 @@ describe("StorySourceService integration", () => {
     expect(fetched.chapters[0]?.sourceText).toContain("普通浏览器");
     // releasePageClient after fetch closes only the Playwright boundary; the
     // paired companion persists for the full book until service shutdown.
+    expect(session.close).not.toHaveBeenCalled();
+    await source.close();
+    expect(session.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires the paired daily browser for XSZJ and reads it without launching Playwright", async () => {
+    const storyText = "这是由日常浏览器读取的 XSZJ 正文，人物在雨夜里做出了新的决定，故事继续向前发展。";
+    const catalog = page(XSZJ_CATALOG_URL, {
+      title: "XSZJ 目录",
+      elements: { h1: ["XSZJ 测试小说"] },
+      links: [link(XSZJ_CHAPTER_URL, "第1章 测试开篇", ["#list"])],
+    });
+    const companionClient = new FakeClient(new Map([
+      [XSZJ_BOOK_URL, page(XSZJ_BOOK_URL, {
+        title: "XSZJ 测试小说",
+        elements: { h1: ["XSZJ 测试小说"] },
+      })],
+      [XSZJ_CATALOG_URL, catalog],
+      [XSZJ_CHAPTER_URL, page(XSZJ_CHAPTER_URL, {
+        elements: {
+          h1: ["第1章 测试开篇"],
+          "#content": [storyText],
+        },
+      })],
+    ]));
+    const playwrightFactory = vi.fn(async () => new FakeClient(new Map()));
+    const session = {
+      bridgeOrigin: "http://127.0.0.1:45678",
+      pairingUrl: "http://127.0.0.1:45678/v1/pair#tdt-pair=test-payload",
+      client: companionClient,
+      waitUntilPaired: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const source = new StorySourceService({
+      pageClientFactory: playwrightFactory,
+      huliwangCompanionFactory: vi.fn(async () => session),
+      manualVerificationLauncher: vi.fn(async () => undefined),
+      minRequestIntervalMs: 0,
+      verificationWaitMs: 0,
+    });
+
+    await expect(source.analyzeUrl(XSZJ_BOOK_URL)).rejects.toMatchObject({
+      code: "USER_ACTION_REQUIRED",
+      message: expect.stringMatching(/XSZJ\/爱下电子书/u),
+    });
+    expect(playwrightFactory).not.toHaveBeenCalled();
+
+    await source.openManualVerification(XSZJ_BOOK_URL);
+    const analysis = await source.analyzeUrl(XSZJ_BOOK_URL);
+    const fetched = await source.fetchChapters({
+      analysisId: analysis.analysisId,
+      chapterIds: analysis.defaultSelectedChapterIds,
+    });
+
+    expect(playwrightFactory).not.toHaveBeenCalled();
+    expect(companionClient.visits).toEqual(expect.arrayContaining([
+      XSZJ_BOOK_URL,
+      XSZJ_CATALOG_URL,
+      XSZJ_CHAPTER_URL,
+    ]));
+    expect(fetched.chapters).toHaveLength(1);
+    expect(fetched.chapters[0]?.sourceText).toContain("日常浏览器");
     expect(session.close).not.toHaveBeenCalled();
     await source.close();
     expect(session.close).toHaveBeenCalledTimes(1);
@@ -1265,5 +1331,85 @@ describe("StorySourceService integration", () => {
     await expect(source.fetchChapters({ analysisId: analysis.analysisId, chapterIds: [analysis.chapters[0]!.id, analysis.chapters[0]!.id] }))
       .rejects.toThrow(/trùng ID/u);
     expect(client.visits).toHaveLength(visitCount);
+  });
+
+  it("collects the full XSZJ catalog and merges all three verified pages of one chapter", async () => {
+    const secondPage = `${XSZJ_CHAPTER_URL}?page=2`;
+    const thirdPage = `${XSZJ_CHAPTER_URL}?page=3`;
+    const pages = new Map<string, StoryPageSnapshot>([
+      [XSZJ_BOOK_URL, page(XSZJ_BOOK_URL, {
+        title: "年代港姐挺孕肚，大佬夜夜急红眼全文免费阅读",
+        elements: { h1: ["年代港姐挺孕肚，大佬夜夜急红眼"] },
+      })],
+      [XSZJ_CATALOG_URL, page(XSZJ_CATALOG_URL, {
+        elements: { h1: ["年代港姐挺孕肚，大佬夜夜急红眼"] },
+        links: [
+          link(XSZJ_CHAPTER_URL, "第1章 炮灰前妻怀孕了", ["#list"]),
+          link("https://xszj.org/b/485734/c/856452", "第2章 后续", ["#list"]),
+        ],
+      })],
+      [XSZJ_CHAPTER_URL, page(XSZJ_CHAPTER_URL, {
+        title: "第1章 炮灰前妻怀孕了",
+        elements: { h1: ["第1章 炮灰前妻怀孕了 （1/3）"], "#content": ["第一段正文，承接人物和事件，也交代了故事开始时的重要背景。"] },
+        links: [link(secondPage, "下一页", [".bottem1"])],
+      })],
+      [secondPage, page(secondPage, {
+        title: "第1章 炮灰前妻怀孕了",
+        canonicalUrl: secondPage,
+        elements: { h1: ["第1章 炮灰前妻怀孕了 （2/3）"], "#content": ["第二段正文，必须紧接第一段，并继续描写人物之间的矛盾发展。"] },
+        links: [link(thirdPage, "下一页", [".bottem1"])],
+      })],
+      [thirdPage, page(thirdPage, {
+        title: "第1章 炮灰前妻怀孕了",
+        canonicalUrl: thirdPage,
+        elements: { h1: ["第1章 炮灰前妻怀孕了 （3/3）"], "#content": ["第三段正文，完整收束本章，同时留下自然的后续情节线索。"] },
+      })],
+    ]);
+    const source = service(new FakeClient(pages));
+    const analysis = await source.analyzeUrl(XSZJ_BOOK_URL);
+    expect(analysis).toMatchObject({ site: "xszj", bookId: "485734" });
+    expect(analysis.chapters).toHaveLength(2);
+    const result = await source.fetchChapters({ analysisId: analysis.analysisId, chapterIds: [analysis.chapters[0]!.id] });
+    expect(result.chapters[0]).toMatchObject({ mergedPartCount: 3 });
+    expect(result.chapters[0]?.sourceText).toBe("第一段正文，承接人物和事件，也交代了故事开始时的重要背景。\n\n第二段正文，必须紧接第一段，并继续描写人物之间的矛盾发展。\n\n第三段正文，完整收束本章，同时留下自然的后续情节线索。");
+  });
+
+  it("fails closed if XSZJ declares more chapter pages but omits the exact next-page link", async () => {
+    const pages = new Map<string, StoryPageSnapshot>([
+      [XSZJ_BOOK_URL, page(XSZJ_BOOK_URL, { elements: { h1: ["Sách XSZJ"] } })],
+      [XSZJ_CATALOG_URL, page(XSZJ_CATALOG_URL, {
+        elements: { h1: ["Sách XSZJ"] }, links: [link(XSZJ_CHAPTER_URL, "第1章 Mở đầu", ["#list"])],
+      })],
+      [XSZJ_CHAPTER_URL, page(XSZJ_CHAPTER_URL, {
+        elements: { h1: ["第1章 Mở đầu （1/3）"], "#content": ["Đây là nội dung hợp lệ nhưng chưa phải trang cuối."] },
+      })],
+    ]);
+    const source = service(new FakeClient(pages));
+    const analysis = await source.analyzeUrl(XSZJ_BOOK_URL);
+    await expect(source.fetchChapters({ analysisId: analysis.analysisId, chapterIds: analysis.defaultSelectedChapterIds }))
+      .rejects.toThrow(/chưa hết.*trang kế tiếp/u);
+  });
+
+  it("uses the already-expanded Ixdzs catalog without requiring an absent canonical tag", async () => {
+    const chapterUrl = "https://ixdzs8.com/read/646225/p1.html";
+    const pages = new Map<string, StoryPageSnapshot>([
+      [IXDZS_BOOK_URL, page(IXDZS_BOOK_URL, {
+        canonicalUrl: undefined,
+        elements: { h1: ["Truyện Ixdzs"] },
+        links: [
+          link(chapterUrl, "第一章 拒婚", [".u-chapter"]),
+          link("https://ixdzs8.com/read/646225/p2.html", "第二章 后续", [".u-chapter"]),
+        ],
+      })],
+      [chapterUrl, page(chapterUrl, {
+        canonicalUrl: undefined,
+        elements: { h1: ["第一章 拒婚"], "article.page-content": ["第一章 拒婚\n\n这是完整正文，不包含推荐、目录或下一章。"] },
+      })],
+    ]);
+    const source = service(new FakeClient(pages));
+    const analysis = await source.analyzeUrl(IXDZS_BOOK_URL);
+    expect(analysis.chapters).toHaveLength(2);
+    const fetched = await source.fetchChapters({ analysisId: analysis.analysisId, chapterIds: [analysis.chapters[0]!.id] });
+    expect(fetched.chapters[0]?.sourceText).toBe("这是完整正文，不包含推荐、目录或下一章。");
   });
 });

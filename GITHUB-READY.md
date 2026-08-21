@@ -26,4 +26,4 @@ git push -u origin main
 
 Không copy gói `Migration-PRIVATE`, `%APPDATA%\tool-dich-truyen` hoặc file `.env` thật vào repository.
 
-Lần xác minh bản giao này đã cài lại dependency từ lockfile trong thư mục trống, chạy 246 test không-live, typecheck, production build và Electron smoke thành công. Xem `SOURCE-VALIDATION.md`.
+Lần xác minh ngày 21/08/2026 chạy typecheck, 469 test không-live, production build, Electron smoke 41 API và cài thử ZIP trên đường dẫn Unicode thành công. Xem `docs/TEST_REPORT.md`.

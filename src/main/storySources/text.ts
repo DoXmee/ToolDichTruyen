@@ -11,6 +11,27 @@ const INLINE_NOISE = [
   /\s*(?:本站所收录|本站所收錄|所有内容均来自互联网)[\s\S]*$/iu,
 ];
 
+// These labels belong to Xbanxia's reader chrome. They are deliberately
+// line-anchored: prose that merely mentions a similar phrase stays untouched.
+const XBANXIA_EDGE_NOISE = /^(?:半夏小說\s*[，,]\s*快樂很多|每日推[薦荐](?:\s*[：:].*)?|錯誤提交|错误提交|問題類型|问题类型|章節錯誤|章节错误|閱讀全文|阅读全文|上一章(?:\s*[：:].*)?|下一章(?:\s*[：:].*)?|返回目錄|返回目录|加入書籤|加入书签)\s*$/iu;
+
+function trimXbanxiaEdgeNoise(text: string): string {
+  const lines = text.split('\n');
+  while (lines[0] && XBANXIA_EDGE_NOISE.test(lines[0].trim())) lines.shift();
+  while (lines.at(-1) && XBANXIA_EDGE_NOISE.test(lines.at(-1)!.trim())) lines.pop();
+  return lines.join('\n').trim();
+}
+
+/**
+ * A postcondition rather than a broad text replacement. If the page layout
+ * changes and reader chrome leaks into the selected #nr1 container, failing
+ * is safer than translating an unknown non-story fragment.
+ */
+export function assertCleanXbanxiaStoryText(text: string): void {
+  const leaked = text.split('\n').find((line) => XBANXIA_EDGE_NOISE.test(line.trim()));
+  if (leaked) throw new Error(`Nội dung Xbanxia còn phần giao diện: ${leaked.slice(0, 80)}`);
+}
+
 export function normalizeText(raw: string): string {
   let text = raw.normalize("NFC")
     .replace(/\u00a0/gu, " ")
@@ -41,12 +62,22 @@ export function removeRepeatedHeading(text: string, title: string): string {
  * an occurrence inside the actual narrative is preserved.
  */
 export function cleanXbanxiaStoryText(raw: string): string {
-  let text = normalizeText(raw)
-    .replace(/(?:^|\n)\s*半夏小說\s*[，,]\s*快樂很多\s*$/iu, "")
-    .trim();
-  const authorNote = /(?:^|\n)\s*作者有[話话]要[說说](?:\s*[：:]\s*[^\n]*)?/iu.exec(text);
+  let text = trimXbanxiaEdgeNoise(normalizeText(raw));
+  const authorNote = /(?:^|\n)\s*作者有[話话](?:要)?[說说](?:\s*[：:]\s*[^\n]*)?/iu.exec(text);
   if (authorNote?.index !== undefined && authorNote.index >= Math.floor(text.length / 2)) {
     text = text.slice(0, authorNote.index).trim();
+  }
+  return trimXbanxiaEdgeNoise(text);
+}
+
+/** Removes only an explicit terminal Ixdzs author/new-book note. */
+export function cleanIxdzsStoryText(raw: string): string {
+  let text = normalizeText(raw);
+  const lines = text.split("\n");
+  const markerLine = lines.findIndex((line) => /(?:好久不见[，,]\s*作者新书献上|作者有[话話]要[说說])/iu.test(line));
+  if (markerLine >= 0) {
+    const before = lines.slice(0, markerLine).join("\n").trim();
+    if (before.length) text = before;
   }
   return text;
 }
@@ -85,9 +116,6 @@ export function assertPlausibleStoryText(text: string, sourceLabel: string): voi
   const replacements = (text.match(/\uFFFD/gu) ?? []).length;
   if (replacements > Math.max(2, text.length * 0.001)) {
     throw new Error(`Nội dung ${sourceLabel} có dấu hiệu giải mã ký tự lỗi.`);
-  }
-  if (/Just a moment|Checking your browser|cf-chl-|Cloudflare Ray ID/iu.test(text)) {
-    throw new Error(`${sourceLabel} là trang xác minh chứ không phải nội dung truyện.`);
   }
 }
 

@@ -14,6 +14,7 @@ import type {
   SplitConfig,
   StorySourceAnalysis,
   StorySourceProgress,
+  TranslationActivityEntry,
   TranslationJobSnapshot,
 } from '../shared';
 import {
@@ -53,6 +54,8 @@ interface RendererDraft {
   exportOriginalChapters: boolean;
   /** Create the final all-split-chapters compilation once the job completes. */
   exportCombinedChapters: boolean;
+  /** Create one compilation from the immutable untranslated source chapters. */
+  exportCombinedSourceChapters?: boolean;
   /** Optional first number for renamed link-chapter exports. Undefined preserves source numbers. */
   outputChapterStart?: number;
   /** Omit descriptive chapter names from automatic link-chapter exports. */
@@ -67,12 +70,16 @@ interface RendererDraft {
   autoExportRange?: ExportRange;
   /** Immutable runner checkpoint used for automatic exports, never editor text. */
   autoExportOutput?: string;
+  /** A clean sibling folder selected only after a conflicting old TXT is found. */
+  autoExportResolvedDirectory?: string;
   /** Split 750--800 word files that were safely published already. */
   exportedRecords: ChapterExportRecord[];
   /** Whole translated source chapters published beside the split files. */
   originalExportedRecords: ChapterExportRecord[];
   /** The idempotent, final aggregate file, if it has been published. */
   combinedExport?: CombinedChapterExportResult;
+  /** The idempotent aggregate of untranslated website chapters. */
+  combinedSourceExport?: CombinedChapterExportResult;
   updatedAt: number;
 }
 
@@ -93,7 +100,8 @@ const DEFAULT_SPLIT_CONFIG: SplitConfig = {
   useAI: false,
 };
 
-const DEFAULT_PROMPTS = { historical: '', modern: '' };
+const DEFAULT_PROMPTS = { period: '', modern: '', ancient: '', cultivation: '' };
+const COLOR_THEME_STORAGE_KEY = 'tool-dich-truyen:color-theme';
 
 type ExportableChapter = FinalChapterExportInput;
 interface ExportRange {
@@ -214,6 +222,22 @@ function firstNumber(record: Record<string, unknown>, keys: string[]): number | 
   return undefined;
 }
 
+function asActivityEntry(value: unknown): TranslationActivityEntry | undefined {
+  const entry = asRecord(value);
+  if (
+    typeof entry.at !== 'string'
+    || typeof entry.message !== 'string'
+    || !['info', 'warning', 'error', 'success'].includes(String(entry.tone))
+  ) return undefined;
+  return {
+    at: entry.at,
+    message: entry.message,
+    tone: entry.tone as TranslationActivityEntry['tone'],
+    ...(typeof entry.segmentId === 'string' ? { segmentId: entry.segmentId } : {}),
+    ...(typeof entry.segmentIndex === 'number' ? { segmentIndex: entry.segmentIndex } : {}),
+  };
+}
+
 function optionalChapterNumber(value: unknown): number | undefined {
   return typeof value === 'number'
     && Number.isSafeInteger(value)
@@ -235,7 +259,7 @@ function isActiveTranslationConflict(error: unknown): boolean {
 }
 
 function normalizeMode(value: unknown): PromptMode {
-  return value === 'period' || value === 'modern' || value === 'custom' ? value : 'period';
+  return value === 'period' || value === 'modern' || value === 'ancient' || value === 'cultivation' || value === 'custom' ? value : 'period';
 }
 
 function loadSplitConfig(value: unknown): SplitConfig {
@@ -265,27 +289,42 @@ function connectionPresentation(state: ConnectionState) {
   }
 }
 
+type ManualVerificationSite = 'huliwang' | 'xszj';
+
 /**
- * The renderer only offers the manual browser flow for Huliwang. This is a
- * convenience guard, not a trust boundary: the main-process IPC validates the
- * URL again before it starts the local default-browser pairing flow.
+ * This is only a renderer convenience guard. The main process validates the
+ * URL again before pairing with the OS-default browser. Both verified XSZJ
+ * host families are kept explicit; this is not a generic browser gateway.
  */
-function isHuliwangStoryUrl(value: string): boolean {
+function manualVerificationSite(value: string): ManualVerificationSite | undefined {
   try {
     const url = new URL(value);
     const hostname = url.hostname.toLowerCase();
-    return (url.protocol === 'https:' || url.protocol === 'http:')
-      && ['huliwang.net', 'm.huliwang.net', 'www.huliwang.net'].includes(hostname);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
+    if (['huliwang.net', 'm.huliwang.net', 'www.huliwang.net'].includes(hostname)) return 'huliwang';
+    if (['xszj.org', 'www.xszj.org', 'ixdzs8.com', 'www.ixdzs8.com'].includes(hostname)) return 'xszj';
+    return undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
+function manualVerificationSiteLabel(site: ManualVerificationSite): string {
+  return site === 'huliwang' ? 'Huliwang' : 'XSZJ/爱下电子书';
+}
+
 function isCloudflareVerificationMessage(message: string): boolean {
-  return /Cloudflare|Turnstile|Just a moment|security verification|xác minh|trình duyệt mặc định|tiện ích Huliwang|Huli Browser Helper|tiện ích trình duyệt|kết nối tiện ích|cầu nối Huliwang|phiên bản.*tiện ích|Tải lại tiện ích|Reload|bridge/iu.test(message);
+  return /Cloudflare|Turnstile|Just a moment|security verification|xác minh|trình duyệt mặc định|tiện ích Huliwang|Huli Browser Helper|Browser Helper|tiện ích trình duyệt|kết nối tiện ích|cầu nối Huliwang|phiên bản.*tiện ích|Tải lại tiện ích|Reload|bridge/iu.test(message);
 }
 
 export default function App() {
+  const [colorTheme, setColorTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      return window.localStorage.getItem(COLOR_THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  });
   const [source, setSource] = useState('');
   const [output, setOutput] = useState('');
   const [sourceMode, setSourceMode] = useState<'text' | 'link'>('text');
@@ -300,6 +339,7 @@ export default function App() {
   // they are opt-out.  Old drafts without these fields retain that default.
   const [exportOriginalChapters, setExportOriginalChapters] = useState(true);
   const [exportCombinedChapters, setExportCombinedChapters] = useState(true);
+  const [exportCombinedSourceChapters, setExportCombinedSourceChapters] = useState(false);
   const [outputChapterStart, setOutputChapterStart] = useState<number | undefined>();
   const [omitOutputChapterTitles, setOmitOutputChapterTitles] = useState(false);
   const [autoExportJobId, setAutoExportJobId] = useState('');
@@ -310,9 +350,16 @@ export default function App() {
   const [autoExportOutputChapterStart, setAutoExportOutputChapterStart] = useState<number | undefined>();
   const [autoExportOmitOutputChapterTitles, setAutoExportOmitOutputChapterTitles] = useState(false);
   const [autoExportOutput, setAutoExportOutput] = useState('');
+  const [autoExportSource, setAutoExportSource] = useState('');
+  const [autoExportResolvedDirectory, setAutoExportResolvedDirectory] = useState<string | undefined>();
   const [exportedRecords, setExportedRecords] = useState<ChapterExportRecord[]>([]);
   const [originalExportedRecords, setOriginalExportedRecords] = useState<ChapterExportRecord[]>([]);
   const [combinedExport, setCombinedExport] = useState<CombinedChapterExportResult | undefined>();
+  const [combinedSourceExport, setCombinedSourceExport] = useState<CombinedChapterExportResult | undefined>();
+  // An export IPC call can fail transiently after the translation itself has
+  // safely completed.  A tick gives the three independent exporters a new
+  // render opportunity instead of leaving the last format stranded.
+  const [autoExportRetryTick, setAutoExportRetryTick] = useState(0);
   const [promptMode, setPromptMode] = useState<PromptMode>('period');
   const [customPrompt, setCustomPrompt] = useState('');
   const [prompts, setPrompts] = useState(DEFAULT_PROMPTS);
@@ -321,6 +368,8 @@ export default function App() {
   const [translationState, setTranslationState] = useState<TranslationState>('idle');
   const [activeJobId, setActiveJobId] = useState('');
   const [translationHistory, setTranslationHistory] = useState<TranslationJobSnapshot[]>([]);
+  const [activityLog, setActivityLog] = useState<TranslationActivityEntry[]>([]);
+  const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
   const [completedSegments, setCompletedSegments] = useState(0);
   const [totalSegments, setTotalSegments] = useState(0);
   const [segmentErrors, setSegmentErrors] = useState<SegmentError[]>([]);
@@ -347,7 +396,13 @@ export default function App() {
   const segmentOutputsRef = useRef<Map<string, SegmentOutput>>(new Map());
   const exportingJobsRef = useRef<Set<string>>(new Set());
   const exportingOriginalJobsRef = useRef<Set<string>>(new Set());
+  // A persisted record proves what a prior renderer intended to write, not
+  // that the file survived a crash. Each fresh renderer therefore performs
+  // one complete reconciliation pass per output snapshot and destination.
+  const reconciledAutoExportsRef = useRef<Set<string>>(new Set());
   const exportingCombinedJobsRef = useRef<Set<string>>(new Set());
+  const exportingCombinedSourceJobsRef = useRef<Set<string>>(new Set());
+  const autoExportRetryAttemptsRef = useRef<Map<string, number>>(new Map());
   const appAvailable = hasStoryTool();
 
   const refreshTranslationHistory = useCallback(async () => {
@@ -369,12 +424,51 @@ export default function App() {
   }, [activeJobId]);
 
   useEffect(() => {
+    const root = document.documentElement;
+    root.classList.add('theme-switching');
+    root.dataset.theme = colorTheme;
+    const setWindowTheme = getStoryTool().setWindowTheme;
+    // Two frames have distinct jobs: the first commits the complete renderer
+    // palette atomically; the second updates the native Windows edge. Doing
+    // both before the first paint can hold the compositor on a mixed palette.
+    let nativeThemeFrame = 0;
+    const rendererThemeFrame = window.requestAnimationFrame(() => {
+      nativeThemeFrame = window.requestAnimationFrame(() => {
+        root.classList.remove('theme-switching');
+        if (setWindowTheme) void setWindowTheme(colorTheme).catch(() => undefined);
+      });
+    });
+    try {
+      window.localStorage.setItem(COLOR_THEME_STORAGE_KEY, colorTheme);
+    } catch {
+      // Theme persistence is a convenience only; rendering must still work.
+    }
+    return () => {
+      root.classList.remove('theme-switching');
+      window.cancelAnimationFrame(rendererThemeFrame);
+      if (nativeThemeFrame) window.cancelAnimationFrame(nativeThemeFrame);
+    };
+  }, [colorTheme]);
+
+  useEffect(() => {
     autoExportJobRef.current = autoExportJobId;
   }, [autoExportJobId]);
 
   useEffect(() => {
     autoExportOutputChapterStartRef.current = autoExportOutputChapterStart;
   }, [autoExportOutputChapterStart]);
+
+  const scheduleAutoExportRetry = useCallback((jobId: string, format: 'chapters' | 'originals' | 'combined' | 'combined-source') => {
+    const key = `${jobId}:${format}`;
+    const attempts = autoExportRetryAttemptsRef.current.get(key) ?? 0;
+    // Initial attempt plus three bounded retry attempts.  The durable draft
+    // remains linked if all three fail, so reopening the app can resume later.
+    if (attempts >= 3) return;
+    autoExportRetryAttemptsRef.current.set(key, attempts + 1);
+    window.setTimeout(() => {
+      if (autoExportJobRef.current === jobId) setAutoExportRetryTick((tick) => tick + 1);
+    }, 750 * (attempts + 1));
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -411,6 +505,7 @@ export default function App() {
         setExportDirectory(typeof draft.exportDirectory === 'string' ? draft.exportDirectory : '');
         setExportOriginalChapters(draft.exportOriginalChapters !== false);
         setExportCombinedChapters(draft.exportCombinedChapters !== false);
+        setExportCombinedSourceChapters(draft.exportCombinedSourceChapters === true);
         const restoredOutputChapterStart = optionalChapterNumber(draft.outputChapterStart);
         setOutputChapterStart(restoredOutputChapterStart);
         const restoredOmitOutputChapterTitles = draft.omitOutputChapterTitles === true;
@@ -441,6 +536,11 @@ export default function App() {
         setAutoExportOutput(typeof draft.autoExportOutput === 'string'
           ? draft.autoExportOutput
           : restoredAutoExportJobId ? draftOutput : '');
+        setAutoExportResolvedDirectory(
+          typeof draft.autoExportResolvedDirectory === 'string' && draft.autoExportResolvedDirectory.trim()
+            ? draft.autoExportResolvedDirectory
+            : undefined,
+        );
         if (Array.isArray(draft.exportedRecords)) {
           setExportedRecords(draft.exportedRecords.filter(isChapterExportRecord));
         }
@@ -448,6 +548,7 @@ export default function App() {
           setOriginalExportedRecords(draft.originalExportedRecords.filter(isChapterExportRecord));
         }
         if (isCombinedExportResult(draft.combinedExport)) setCombinedExport(draft.combinedExport);
+        if (isCombinedExportResult(draft.combinedSourceExport)) setCombinedSourceExport(draft.combinedSourceExport);
       }
       setInitialized(true);
     };
@@ -472,6 +573,7 @@ export default function App() {
         exportDirectory,
         exportOriginalChapters,
         exportCombinedChapters,
+        ...(exportCombinedSourceChapters ? { exportCombinedSourceChapters: true } : {}),
         ...(outputChapterStart !== undefined ? { outputChapterStart } : {}),
         ...(omitOutputChapterTitles ? { omitOutputChapterTitles } : {}),
         autoExportJobId,
@@ -480,9 +582,11 @@ export default function App() {
         ...(autoExportOutputChapterStart !== undefined ? { autoExportOutputChapterStart } : {}),
         ...(autoExportJobId ? { autoExportOmitOutputChapterTitles } : {}),
         ...(autoExportOutput ? { autoExportOutput } : {}),
+        ...(autoExportResolvedDirectory ? { autoExportResolvedDirectory } : {}),
         exportedRecords,
         originalExportedRecords,
         ...(combinedExport ? { combinedExport } : {}),
+        ...(combinedSourceExport ? { combinedSourceExport } : {}),
         updatedAt: Date.now(),
       };
       try {
@@ -502,15 +606,18 @@ export default function App() {
     autoExportOutputChapterStart,
     autoExportOmitOutputChapterTitles,
     autoExportOutput,
+    autoExportResolvedDirectory,
     customPrompt,
     exportDirectory,
     exportOriginalChapters,
     exportCombinedChapters,
+    exportCombinedSourceChapters,
     outputChapterStart,
     omitOutputChapterTitles,
     exportedRecords,
     originalExportedRecords,
     combinedExport,
+    combinedSourceExport,
     initialized,
     output,
     promptMode,
@@ -526,6 +633,12 @@ export default function App() {
     const segment = asRecord(payload.segment);
     const job = asRecord(payload.job);
     const type = event.type.toLowerCase().replaceAll('_', '-').replaceAll(':', '-');
+    if (type === 'activity-log') {
+      const entry = asActivityEntry(payload.entry);
+      if (entry) {
+        setActivityLog((current) => [...current, entry].slice(-240));
+      }
+    }
     if (!activeJobRef.current && event.jobId && type === 'job-created') {
       activeJobRef.current = event.jobId;
       setActiveJobId(event.jobId);
@@ -610,19 +723,51 @@ export default function App() {
     if (status === 'failed') setTranslationState('error');
   }, []);
 
+  const bindAutoExportFromCheckpoint = useCallback((job: TranslationJobSnapshot): boolean => {
+    const binding = job.autoExport;
+    if (!binding) return false;
+    // This data belongs to the checkpoint, not to whatever the user has
+    // edited in the form since it was interrupted. Rebinding it here is what
+    // makes “Bắt đầu từ CP lỗi” keep writing into the original destination.
+    autoExportJobRef.current = job.id;
+    setAutoExportJobId(job.id);
+    setAutoExportStartedAt(Date.parse(job.createdAt ?? '') || Date.now());
+    setExportDirectory(binding.directory);
+    setAutoExportResolvedDirectory(binding.directory);
+    setExportOriginalChapters(binding.exportOriginalChapters);
+    setExportCombinedChapters(binding.exportCombinedChapters);
+    setExportCombinedSourceChapters(binding.exportCombinedSourceChapters === true);
+    setAutoExportRange({
+      startChapter: binding.startChapter,
+      endChapter: binding.endChapter,
+      sourceChapterNumbers: [...binding.sourceChapterNumbers],
+    });
+    autoExportOutputChapterStartRef.current = binding.outputChapterStart;
+    setAutoExportOutputChapterStart(binding.outputChapterStart);
+    setAutoExportOmitOutputChapterTitles(binding.omitOutputChapterTitles);
+    return true;
+  }, []);
+
   const reconcileTranslationJob = useCallback((job: TranslationJobSnapshot) => {
     if (activeJobRef.current && job.id !== activeJobRef.current) return;
     if (!activeJobRef.current) {
       activeJobRef.current = job.id;
       setActiveJobId(job.id);
     }
+    if (job.autoExport && job.id === activeJobRef.current) {
+      bindAutoExportFromCheckpoint(job);
+    }
 
     setTotalSegments(job.totalSegments);
     setCompletedSegments(job.completedSegments);
+    setActivityLog(job.activityLog ?? []);
     if (job.translatedText !== undefined) {
       outputRef.current = job.translatedText;
       setOutput(job.translatedText);
       if (job.id === autoExportJobRef.current) setAutoExportOutput(job.translatedText);
+    }
+    if (job.sourceText !== undefined && job.id === autoExportJobRef.current) {
+      setAutoExportSource(job.sourceText);
     }
 
     const failedSegments = job.segments
@@ -660,7 +805,7 @@ export default function App() {
       default:
         setTranslationState('idle');
     }
-  }, []);
+  }, [bindAutoExportFromCheckpoint]);
 
   const restoreActiveTranslationAfterConflict = useCallback(async (): Promise<boolean> => {
     try {
@@ -686,7 +831,16 @@ export default function App() {
       .then((jobs) => {
         if (disposed) return;
         const recoverable = latestRecoverableTranslation(jobs);
-        if (recoverable) reconcileTranslationJob(recoverable);
+        if (!recoverable) return;
+        if (recoverable.autoExport) {
+          void getStoryTool().getTranslation(recoverable.id)
+            .then((checkpoint) => {
+              if (!disposed) reconcileTranslationJob(checkpoint);
+            })
+            .catch(() => reconcileTranslationJob(recoverable));
+          return;
+        }
+        reconcileTranslationJob(recoverable);
       })
       .catch(() => undefined);
     return () => { disposed = true; };
@@ -760,6 +914,48 @@ export default function App() {
       });
     return () => { disposed = true; };
   }, [appAvailable, autoExportJobId, autoExportStartedAt, initialized, reconcileTranslationJob]);
+
+  // Older builds could clear `autoExportJobId` after all split TXT files were
+  // written but before a transient combined-file failure was retried.  Recover
+  // only when the persisted records prove one complete export set and the
+  // runner confirms that exact job is terminal; never infer completion from a
+  // partial live translation.
+  useEffect(() => {
+    if (
+      !appAvailable
+      || !initialized
+      || autoExportJobId
+      || !exportCombinedChapters
+      || combinedExport
+      || !autoExportOutput.trim()
+      || !exportedRecords.length
+    ) return;
+    const jobIds = [...new Set(exportedRecords.map((record) => record.exportJobId).filter(Boolean))];
+    if (jobIds.length !== 1) return;
+    const recoveredJobId = jobIds[0];
+    if (!recoveredJobId) return;
+    let disposed = false;
+    void getStoryTool().getTranslation(recoveredJobId)
+      .then((job) => {
+        if (disposed || job.id !== recoveredJobId || job.status !== 'completed') return;
+        autoExportJobRef.current = job.id;
+        activeJobRef.current = job.id;
+        setAutoExportJobId(job.id);
+        setActiveJobId(job.id);
+        setTranslationState('complete');
+        setAppNotice('Đang khôi phục lượt tạo file tổng hợp còn thiếu từ checkpoint đã hoàn tất.');
+      })
+      .catch(() => undefined);
+    return () => { disposed = true; };
+  }, [
+    appAvailable,
+    autoExportJobId,
+    autoExportOutput,
+    combinedExport,
+    exportCombinedChapters,
+    exportedRecords,
+    initialized,
+  ]);
 
   useEffect(() => {
     if (!appAvailable) return;
@@ -867,7 +1063,10 @@ export default function App() {
     setExportedRecords([]);
     setOriginalExportedRecords([]);
     setCombinedExport(undefined);
+    setCombinedSourceExport(undefined);
     setAutoExportOutput('');
+    setAutoExportSource(automaticExportDirectory ? sourceText : '');
+    setAutoExportResolvedDirectory(undefined);
     outputRef.current = '';
     const nextExportRange = automaticExportDirectory
       ? sourceChapterRange(sourceText, splitConfig)
@@ -902,6 +1101,7 @@ export default function App() {
           exportDirectory: automaticExportDirectory,
           exportOriginalChapters,
           exportCombinedChapters,
+          ...(exportCombinedSourceChapters ? { exportCombinedSourceChapters: true } : {}),
           ...(outputChapterStart !== undefined ? { outputChapterStart } : {}),
           ...(omitOutputChapterTitles ? { omitOutputChapterTitles } : {}),
           autoExportJobId: 'pending',
@@ -921,13 +1121,30 @@ export default function App() {
         source: sourceText,
         promptMode,
         customPrompt: promptMode === 'custom' ? customPrompt.trim() : undefined,
-        // Keep web automation responsive: each checkpoint is intentionally
-        // small, while a healthy long response receives enough time to finish.
+        // Link imports preserve an ordinary source chapter in one request;
+        // only unusually long chapters are split by the runner.
         settings: {
           maxRetries: 3,
-          maxCharsPerSegment: 3_000,
+          maxCharsPerSegment: 12_000,
           responseTimeoutMs: 480_000,
         },
+        ...(automaticExportDirectory && nextExportRange
+          ? {
+              autoExport: {
+                directory: automaticExportDirectory,
+                startChapter: nextExportRange.startChapter,
+                endChapter: nextExportRange.endChapter,
+                sourceChapterNumbers: [...nextExportRange.sourceChapterNumbers],
+                exportOriginalChapters,
+                exportCombinedChapters,
+                ...(exportCombinedSourceChapters ? { exportCombinedSourceChapters: true } : {}),
+                ...(nextAutoExportOutputChapterStart !== undefined
+                  ? { outputChapterStart: nextAutoExportOutputChapterStart }
+                  : {}),
+                omitOutputChapterTitles: nextAutoExportOmitOutputChapterTitles,
+              },
+            }
+          : {}),
       });
       activeJobRef.current = result.jobId;
       setActiveJobId(result.jobId);
@@ -970,6 +1187,7 @@ export default function App() {
             exportDirectory: automaticExportDirectory,
             exportOriginalChapters,
             exportCombinedChapters,
+            ...(exportCombinedSourceChapters ? { exportCombinedSourceChapters: true } : {}),
             ...(outputChapterStart !== undefined ? { outputChapterStart } : {}),
             ...(omitOutputChapterTitles ? { omitOutputChapterTitles } : {}),
             autoExportJobId: '',
@@ -1016,7 +1234,7 @@ export default function App() {
     } catch (error) {
       setStoryImportState('error');
       const message = error instanceof Error ? error.message : 'Không thể phân tích link truyện.';
-      const canVerifyManually = isHuliwangStoryUrl(requestedUrl) && isCloudflareVerificationMessage(message);
+      const canVerifyManually = Boolean(manualVerificationSite(requestedUrl)) && isCloudflareVerificationMessage(message);
       setManualVerificationState(canVerifyManually ? 'available' : 'none');
       setAppNotice(canVerifyManually
         ? `${message} Hãy kết nối tiện ích với trình duyệt mặc định và đúng profile bạn dùng hằng ngày. Kết nối xong, tool sẽ tự phân tích lại link.`
@@ -1026,7 +1244,8 @@ export default function App() {
 
   const openStoryManualVerification = async () => {
     const verificationUrl = storyUrl.trim();
-    if (!appAvailable || !isHuliwangStoryUrl(verificationUrl)) return;
+    const verificationSite = manualVerificationSite(verificationUrl);
+    if (!appAvailable || !verificationSite) return;
     const openVerification = getStoryTool().openManualStoryVerification;
     if (!openVerification) {
       setAppNotice('Phiên bản tool hiện tại chưa có chức năng kết nối trình duyệt mặc định. Hãy cập nhật tool rồi thử lại.');
@@ -1037,7 +1256,7 @@ export default function App() {
     try {
       await openVerification(verificationUrl);
       setManualVerificationState('open');
-      setAppNotice('Đã kết nối trình duyệt mặc định. Tool đang tự phân tích lại link Huliwang…');
+      setAppNotice(`Đã kết nối trình duyệt mặc định. Tool đang tự phân tích lại link ${manualVerificationSiteLabel(verificationSite)}…`);
       await analyzeStoryUrl(true);
     } catch (error) {
       setManualVerificationState('available');
@@ -1090,6 +1309,19 @@ export default function App() {
       setAppNotice('Hãy kết nối ChatGPT trước khi tải và dịch bộ truyện.');
       return;
     }
+    try {
+      // The chosen path can disappear after an old draft is restored. Check
+      // it before fetching or creating a translation job, not only later when
+      // checkpoint files are first written.
+      const verified = await getStoryTool().validateChapterDirectory(exportDirectory);
+      if (verified.directory !== exportDirectory) setExportDirectory(verified.directory);
+    } catch (error) {
+      setStoryImportState('ready');
+      setAppNotice(error instanceof Error
+        ? error.message
+        : 'Không tìm thấy thư mục xuất; không thể bắt đầu dịch.');
+      return;
+    }
     setStoryImportState('fetching');
     setExportedRecords([]);
     setOriginalExportedRecords([]);
@@ -1108,7 +1340,8 @@ export default function App() {
     } catch (error) {
       setStoryImportState('error');
       const message = error instanceof Error ? error.message : 'Không thể tải nội dung các chương đã chọn.';
-      const needsReconnect = storyAnalysis.site === 'huliwang' && isCloudflareVerificationMessage(message);
+      const needsReconnect = Boolean(manualVerificationSite(storyAnalysis.inputUrl))
+        && isCloudflareVerificationMessage(message);
       setManualVerificationState(needsReconnect ? 'available' : 'none');
       setAppNotice(needsReconnect
         ? `${message} Hãy kết nối lại trình duyệt mặc định, phân tích lại link rồi chọn tiếp các chương cần tải.`
@@ -1161,12 +1394,19 @@ export default function App() {
   const bindTranslationHistoryJob = (job: TranslationJobSnapshot) => {
     activeJobRef.current = job.id;
     setActiveJobId(job.id);
+    bindAutoExportFromCheckpoint(job);
     reconcileTranslationJob(job);
   };
 
   const resumeTranslationHistoryJob = async (job: TranslationJobSnapshot) => {
-    bindTranslationHistoryJob(job);
     try {
+      // History entries are lightweight. Fetch the full checkpoint first so
+      // its immutable export binding and already translated chapters are
+      // restored before the runner produces the next segment.
+      const checkpoint = job.autoExport
+        ? await getStoryTool().getTranslation(job.id)
+        : job;
+      bindTranslationHistoryJob(checkpoint);
       await getStoryTool().resumeTranslation(job.id);
       setTranslationState('running');
       setAppNotice('Đang tiếp tục tác vụ từ checkpoint đã lưu.');
@@ -1181,9 +1421,12 @@ export default function App() {
     job: TranslationJobSnapshot,
     segmentId: string,
   ) => {
-    bindTranslationHistoryJob(job);
-    setSegmentErrors((current) => current.filter((error) => error.segmentId !== segmentId));
     try {
+      const checkpoint = job.autoExport
+        ? await getStoryTool().getTranslation(job.id)
+        : job;
+      bindTranslationHistoryJob(checkpoint);
+      setSegmentErrors((current) => current.filter((error) => error.segmentId !== segmentId));
       await getStoryTool().retrySegment({ jobId: job.id, segmentId });
       setTranslationState('running');
       setAppNotice('Đang tiếp tục từ đúng đoạn lỗi trong checkpoint.');
@@ -1278,6 +1521,7 @@ export default function App() {
     // completed source chapter while later segments are still translating.
     autoDetectTitle: true,
   }), [splitConfig]);
+  const resolvedAutoExportDirectory = autoExportResolvedDirectory ?? exportDirectory;
 
   useEffect(() => {
     // A failed/cancelled job may be resumed. Its trailing source chapter is
@@ -1288,7 +1532,7 @@ export default function App() {
       !appAvailable
       || !activeJobId
       || activeJobId !== autoExportJobId
-      || !exportDirectory
+      || !resolvedAutoExportDirectory
       || !autoExportOutput.trim()
       || exportingJobsRef.current.has(activeJobId)
     ) return;
@@ -1298,24 +1542,34 @@ export default function App() {
       autoExportOutputChapterStart,
       autoExportOmitOutputChapterTitles,
     );
-    const known = new Set(exportedRecords.map(exportRecordKey));
-    const pending = chapters.filter((chapter) => !known.has(exportInputKey(activeJobId, exportDirectory, chapter)));
-    if (!pending.length) return;
+    // Always submit the complete currently-sealed set. Persisted records are
+    // only a progress cache: after a crash or Retry the old record can exist
+    // while its TXT was never published. The main process makes identical
+    // files idempotent and writes any missing file, so completion is based on
+    // actual durable output rather than stale renderer state.
+    if (!chapters.length) return;
+
+    const reconciliationKey = `split\u0000${activeJobId}\u0000${resolvedAutoExportDirectory}\u0000${chapters.map(chapterContentFingerprint).join(',')}`;
+    if (reconciledAutoExportsRef.current.has(reconciliationKey)) return;
 
     const jobId = activeJobId;
     exportingJobsRef.current.add(jobId);
     void (async () => {
       try {
         const result = await getStoryTool().exportChapters({
-          directory: exportDirectory,
+          directory: resolvedAutoExportDirectory,
           exportJobId: activeJobId,
-          chapters: pending.map(exportInput),
+          chapters: chapters.map(exportInput),
+          recoveryOnConflict: true,
         });
+        if (result.directory !== resolvedAutoExportDirectory) setAutoExportResolvedDirectory(result.directory);
         setExportedRecords((current) => {
           const records = new Map(current.map((record) => [exportRecordKey(record), record]));
           for (const record of result.records) records.set(exportRecordKey(record), record);
           return [...records.values()].sort((left, right) => left.index - right.index || left.title.localeCompare(right.title));
         });
+        reconciledAutoExportsRef.current.add(reconciliationKey);
+        autoExportRetryAttemptsRef.current.delete(`${jobId}:chapters`);
         const saved = result.records.filter((record) => record.status === 'saved').length;
         const skipped = result.records.length - saved;
         setAppNotice(
@@ -1324,6 +1578,7 @@ export default function App() {
         );
       } catch (error) {
         setAppNotice(error instanceof Error ? error.message : 'Không thể tự chia và lưu checkpoint đã dịch.');
+        scheduleAutoExportRetry(jobId, 'chapters');
       } finally {
         exportingJobsRef.current.delete(jobId);
       }
@@ -1334,9 +1589,11 @@ export default function App() {
     autoExportJobId,
     autoExportOutputChapterStart,
     autoExportOmitOutputChapterTitles,
-    exportDirectory,
+    autoExportRetryTick,
+    resolvedAutoExportDirectory,
     exportedRecords,
     autoExportOutput,
+    scheduleAutoExportRetry,
     splitForAutomaticExport,
     translationState,
   ]);
@@ -1351,7 +1608,7 @@ export default function App() {
       || !exportOriginalChapters
       || !activeJobId
       || activeJobId !== autoExportJobId
-      || !exportDirectory
+      || !resolvedAutoExportDirectory
       || !autoExportOutput.trim()
       || exportingOriginalJobsRef.current.has(activeJobId)
     ) return;
@@ -1363,24 +1620,32 @@ export default function App() {
       autoExportOutputChapterStart,
       autoExportOmitOutputChapterTitles,
     );
-    const known = new Set(originalExportedRecords.map(exportRecordKey));
-    const pending = chapters.filter((chapter) => !known.has(exportInputKey(activeJobId, exportDirectory, chapter)));
-    if (!pending.length) return;
+    if (!chapters.length) return;
+
+    const reconciliationKey = `original\u0000${activeJobId}\u0000${resolvedAutoExportDirectory}\u0000${chapters.map(chapterContentFingerprint).join(',')}`;
+    if (reconciledAutoExportsRef.current.has(reconciliationKey)) return;
 
     const jobId = activeJobId;
     exportingOriginalJobsRef.current.add(jobId);
     void (async () => {
       try {
         const result = await getStoryTool().exportOriginalChapters({
-          directory: exportDirectory,
+          directory: resolvedAutoExportDirectory,
           exportJobId: activeJobId,
-          chapters: pending.map(exportInput),
+          chapters: chapters.map(exportInput),
+          recoveryOnConflict: true,
         });
+        const parentDirectory = result.directory.endsWith('\\Chương dịch gốc chưa chia')
+          ? result.directory.slice(0, -'\\Chương dịch gốc chưa chia'.length)
+          : resolvedAutoExportDirectory;
+        if (parentDirectory !== resolvedAutoExportDirectory) setAutoExportResolvedDirectory(parentDirectory);
         setOriginalExportedRecords((current) => {
           const records = new Map(current.map((record) => [exportRecordKey(record), record]));
           for (const record of result.records) records.set(exportRecordKey(record), record);
           return [...records.values()].sort((left, right) => left.index - right.index || left.title.localeCompare(right.title));
         });
+        reconciledAutoExportsRef.current.add(reconciliationKey);
+        autoExportRetryAttemptsRef.current.delete(`${jobId}:originals`);
         const saved = result.records.filter((record) => record.status === 'saved').length;
         const skipped = result.records.length - saved;
         setAppNotice(
@@ -1389,6 +1654,7 @@ export default function App() {
         );
       } catch (error) {
         setAppNotice(error instanceof Error ? error.message : 'Không thể lưu checkpoint chương dịch gốc.');
+        scheduleAutoExportRetry(jobId, 'originals');
       } finally {
         exportingOriginalJobsRef.current.delete(jobId);
       }
@@ -1399,10 +1665,102 @@ export default function App() {
     autoExportJobId,
     autoExportOutputChapterStart,
     autoExportOmitOutputChapterTitles,
-    exportDirectory,
+    autoExportRetryTick,
+    resolvedAutoExportDirectory,
     exportOriginalChapters,
     originalExportedRecords,
     autoExportOutput,
+    scheduleAutoExportRetry,
+    splitForAutomaticExport,
+    translationState,
+  ]);
+
+  useEffect(() => {
+    if (
+      !appAvailable
+      || !exportCombinedSourceChapters
+      || translationState !== 'complete'
+      || !activeJobId
+      || activeJobId !== autoExportJobId
+      || !resolvedAutoExportDirectory
+      || !autoExportSource.trim()
+      || exportingCombinedSourceJobsRef.current.has(activeJobId)
+    ) return;
+
+    const range = autoExportRange ?? sourceChapterRange(autoExportSource, splitForAutomaticExport);
+    if (!range) {
+      setAppNotice('Không xác định được dải chương gốc liên tục để tạo file tổng bản gốc.');
+      return;
+    }
+    const sourceChapters = splitSealedOriginalChapters(autoExportSource, splitForAutomaticExport, true);
+    const chapters = renumberFinalExportChapters(
+      sourceChapters,
+      autoExportOutputChapterStart,
+      autoExportOmitOutputChapterTitles,
+    );
+    if (!chapters.length || chapters.length !== range.sourceChapterNumbers.length) {
+      setAppNotice('Số chương trong nguồn tải về không khớp dải chương đã chọn; chưa tạo file tổng bản gốc để tránh thiếu nội dung.');
+      return;
+    }
+    const outputStartChapter = chapters[0]?.index;
+    const outputEndChapter = chapters.at(-1)?.index;
+    if (outputStartChapter === undefined || outputEndChapter === undefined) return;
+    const combinedHash = combinedChapterContentFingerprint(outputStartChapter, outputEndChapter, chapters);
+    const reconciliationKey = `combined-source\u0000${activeJobId}\u0000${resolvedAutoExportDirectory}\u0000${range.startChapter}-${range.endChapter}\u0000${combinedHash}`;
+    if (
+      combinedSourceExport
+      && combinedSourceExport.exportJobId === activeJobId
+      && combinedSourceExport.exportDirectory === resolvedAutoExportDirectory
+      && combinedSourceExport.contentHash === combinedHash
+      && combinedSourceExport.startChapter === outputStartChapter
+      && combinedSourceExport.endChapter === outputEndChapter
+      && combinedSourceExport.chapterCount === chapters.length
+      && reconciledAutoExportsRef.current.has(reconciliationKey)
+    ) return;
+
+    const jobId = activeJobId;
+    exportingCombinedSourceJobsRef.current.add(jobId);
+    void (async () => {
+      try {
+        const result = await getStoryTool().exportCombinedSourceChapters({
+          directory: resolvedAutoExportDirectory,
+          exportJobId: activeJobId,
+          sourceStartChapter: range.startChapter,
+          sourceEndChapter: range.endChapter,
+          outputStartChapter,
+          outputEndChapter,
+          chapters: chapters.map(exportInput),
+          recoveryOnConflict: true,
+        });
+        setCombinedSourceExport(result);
+        reconciledAutoExportsRef.current.add(reconciliationKey);
+        if (result.directory !== resolvedAutoExportDirectory) setAutoExportResolvedDirectory(result.directory);
+        autoExportRetryAttemptsRef.current.delete(`${jobId}:combined-source`);
+        setAppNotice(
+          result.status === 'saved'
+            ? `Đã tạo file tổng bản gốc ${result.fileName}.`
+            : `File tổng bản gốc ${result.fileName} đã tồn tại và có nội dung trùng khớp.`,
+        );
+      } catch (error) {
+        setAppNotice(error instanceof Error ? error.message : 'Không thể tạo file tổng các chương gốc.');
+        scheduleAutoExportRetry(jobId, 'combined-source');
+      } finally {
+        exportingCombinedSourceJobsRef.current.delete(jobId);
+      }
+    })();
+  }, [
+    activeJobId,
+    appAvailable,
+    autoExportJobId,
+    autoExportOmitOutputChapterTitles,
+    autoExportOutputChapterStart,
+    autoExportRange,
+    autoExportRetryTick,
+    autoExportSource,
+    combinedSourceExport,
+    exportCombinedSourceChapters,
+    resolvedAutoExportDirectory,
+    scheduleAutoExportRetry,
     splitForAutomaticExport,
     translationState,
   ]);
@@ -1417,7 +1775,7 @@ export default function App() {
       || translationState !== 'complete'
       || !activeJobId
       || activeJobId !== autoExportJobId
-      || !exportDirectory
+      || !resolvedAutoExportDirectory
       || !autoExportOutput.trim()
       || exportingCombinedJobsRef.current.has(activeJobId)
     ) return;
@@ -1428,9 +1786,6 @@ export default function App() {
       autoExportOmitOutputChapterTitles,
     );
     if (!chapters.length) return;
-    const splitKnown = new Set(exportedRecords.map(exportRecordKey));
-    if (chapters.some((chapter) => !splitKnown.has(exportInputKey(activeJobId, exportDirectory, chapter)))) return;
-
     const range = autoExportRange ?? sourceChapterRange(source, splitForAutomaticExport);
     if (!range) {
       setAppNotice('Không xác định được phạm vi chương gốc để tạo file tổng hợp. Các file chương lẻ vẫn đã được lưu an toàn.');
@@ -1447,14 +1802,16 @@ export default function App() {
       : chapters.at(-1)?.index;
     if (summaryStartChapter === undefined || summaryEndChapter === undefined) return;
     const combinedHash = combinedChapterContentFingerprint(summaryStartChapter, summaryEndChapter, chapters);
+    const reconciliationKey = `combined\u0000${activeJobId}\u0000${resolvedAutoExportDirectory}\u0000${combinedHash}`;
     if (
       combinedExport
       && combinedExport.exportJobId === activeJobId
-      && combinedExport.exportDirectory === exportDirectory
+      && combinedExport.exportDirectory === resolvedAutoExportDirectory
       && combinedExport.contentHash === combinedHash
       && combinedExport.startChapter === summaryStartChapter
       && combinedExport.endChapter === summaryEndChapter
       && combinedExport.chapterCount === chapters.length
+      && reconciledAutoExportsRef.current.has(reconciliationKey)
     ) return;
 
     const jobId = activeJobId;
@@ -1462,14 +1819,18 @@ export default function App() {
     void (async () => {
       try {
         const result = await getStoryTool().exportCombinedChapters({
-          directory: exportDirectory,
+          directory: resolvedAutoExportDirectory,
           exportJobId: activeJobId,
           startChapter: summaryStartChapter,
           endChapter: summaryEndChapter,
           sourceChapterNumbers: range.sourceChapterNumbers,
           chapters: chapters.map(exportInput),
+          recoveryOnConflict: true,
         });
         setCombinedExport(result);
+        reconciledAutoExportsRef.current.add(reconciliationKey);
+        if (result.directory !== resolvedAutoExportDirectory) setAutoExportResolvedDirectory(result.directory);
+        autoExportRetryAttemptsRef.current.delete(`${jobId}:combined`);
         setAppNotice(
           result.status === 'saved'
             ? `Đã tạo file tổng hợp ${result.fileName}.`
@@ -1477,6 +1838,7 @@ export default function App() {
         );
       } catch (error) {
         setAppNotice(error instanceof Error ? error.message : 'Không thể tạo file tổng hợp các chương đã chia.');
+        scheduleAutoExportRetry(jobId, 'combined');
       } finally {
         exportingCombinedJobsRef.current.delete(jobId);
       }
@@ -1487,12 +1849,14 @@ export default function App() {
     autoExportJobId,
     autoExportOutputChapterStart,
     autoExportOmitOutputChapterTitles,
+    autoExportRetryTick,
     autoExportRange,
     combinedExport,
     exportCombinedChapters,
-    exportDirectory,
+    resolvedAutoExportDirectory,
     exportedRecords,
     autoExportOutput,
+    scheduleAutoExportRetry,
     source,
     splitForAutomaticExport,
     translationState,
@@ -1515,7 +1879,7 @@ export default function App() {
       autoExportOmitOutputChapterTitles,
     );
     const splitKnown = new Set(exportedRecords.map(exportRecordKey));
-    if (splitChapters.some((chapter) => !splitKnown.has(exportInputKey(activeJobId, exportDirectory, chapter)))) return;
+    if (splitChapters.some((chapter) => !splitKnown.has(exportInputKey(activeJobId, resolvedAutoExportDirectory, chapter)))) return;
 
     if (exportOriginalChapters) {
       const originals = renumberOriginalExportChapters(
@@ -1525,7 +1889,7 @@ export default function App() {
         autoExportOmitOutputChapterTitles,
       );
       const originalKnown = new Set(originalExportedRecords.map(exportRecordKey));
-      if (originals.some((chapter) => !originalKnown.has(exportInputKey(activeJobId, exportDirectory, chapter)))) return;
+      if (originals.some((chapter) => !originalKnown.has(exportInputKey(activeJobId, resolvedAutoExportDirectory, chapter)))) return;
     }
 
     if (exportCombinedChapters) {
@@ -1552,11 +1916,33 @@ export default function App() {
       const combinedHash = combinedChapterContentFingerprint(summaryStartChapter, summaryEndChapter, splitChapters);
       if (!combinedExport
         || combinedExport.exportJobId !== activeJobId
-        || combinedExport.exportDirectory !== exportDirectory
+        || combinedExport.exportDirectory !== resolvedAutoExportDirectory
         || combinedExport.contentHash !== combinedHash
         || combinedExport.startChapter !== summaryStartChapter
         || combinedExport.endChapter !== summaryEndChapter
         || combinedExport.chapterCount !== splitChapters.length) return;
+    }
+
+    if (exportCombinedSourceChapters) {
+      const range = autoExportRange ?? sourceChapterRange(autoExportSource, splitForAutomaticExport);
+      if (!range) return;
+      const sourceChapters = renumberFinalExportChapters(
+        splitSealedOriginalChapters(autoExportSource, splitForAutomaticExport, true),
+        autoExportOutputChapterStart,
+        autoExportOmitOutputChapterTitles,
+      );
+      if (!sourceChapters.length || sourceChapters.length !== range.sourceChapterNumbers.length) return;
+      const sourceOutputStart = sourceChapters[0]?.index;
+      const sourceOutputEnd = sourceChapters.at(-1)?.index;
+      if (sourceOutputStart === undefined || sourceOutputEnd === undefined) return;
+      const sourceCombinedHash = combinedChapterContentFingerprint(sourceOutputStart, sourceOutputEnd, sourceChapters);
+      if (!combinedSourceExport
+        || combinedSourceExport.exportJobId !== activeJobId
+        || combinedSourceExport.exportDirectory !== resolvedAutoExportDirectory
+        || combinedSourceExport.contentHash !== sourceCombinedHash
+        || combinedSourceExport.startChapter !== sourceOutputStart
+        || combinedSourceExport.endChapter !== sourceOutputEnd
+        || combinedSourceExport.chapterCount !== sourceChapters.length) return;
     }
 
     autoExportJobRef.current = '';
@@ -1565,6 +1951,8 @@ export default function App() {
     autoExportOutputChapterStartRef.current = undefined;
     setAutoExportOutputChapterStart(undefined);
     setAutoExportOmitOutputChapterTitles(false);
+    setAutoExportSource('');
+    setAutoExportResolvedDirectory(undefined);
     setAppNotice('Đã hoàn tất dịch, chia theo đoạn và lưu toàn bộ các định dạng đã chọn.');
   }, [
     activeJobId,
@@ -1573,24 +1961,36 @@ export default function App() {
     autoExportOutputChapterStart,
     autoExportOmitOutputChapterTitles,
     combinedExport,
+    combinedSourceExport,
     exportCombinedChapters,
+    exportCombinedSourceChapters,
     exportOriginalChapters,
     exportedRecords,
     originalExportedRecords,
     autoExportOutput,
+    autoExportSource,
+    resolvedAutoExportDirectory,
     source,
     splitForAutomaticExport,
     translationState,
   ]);
 
   const connectionInfo = connectionPresentation(connection);
-  const sourceHanCount = useMemo(() => (source.match(/\p{Script=Han}/gu) ?? []).length, [source]);
   const outputHanCount = useMemo(() => (output.match(/\p{Script=Han}/gu) ?? []).length, [output]);
   const outputWords = useMemo(() => analyzeTextLanguage(output, 'vi').totalWords, [output]);
   const canStart = Boolean(source.trim()) && (promptMode !== 'custom' || Boolean(customPrompt.trim()));
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-theme={colorTheme}>
+      <div className="window-titlebar">
+        <span className="window-titlebar__mark" aria-hidden="true"><Icon name="book" size={16} /></span>
+        <span className="window-titlebar__title">Dịch Truyện · Trung → Việt</span>
+        <div className="window-titlebar__controls" aria-label="Điều khiển cửa sổ">
+          <button aria-label="Thu nhỏ" className="window-titlebar__control" onClick={() => void getStoryTool().minimizeWindow?.()} type="button"><span aria-hidden="true" className="window-control-icon window-control-icon--minimize" /></button>
+          <button aria-label="Phóng to hoặc khôi phục" className="window-titlebar__control" onClick={() => void getStoryTool().toggleMaximizeWindow?.()} type="button"><span aria-hidden="true" className="window-control-icon window-control-icon--maximize" /></button>
+          <button aria-label="Đóng ứng dụng" className="window-titlebar__control window-titlebar__control--close" onClick={() => void getStoryTool().closeWindow?.()} type="button"><span aria-hidden="true" className="window-control-icon window-control-icon--close" /></button>
+        </div>
+      </div>
       <header className="app-header">
         <div className="brand">
           <span className="brand__mark"><Icon name="book" size={24} /></span>
@@ -1604,6 +2004,24 @@ export default function App() {
             <StatusPill tone={connectionInfo.tone} pulse={connection === 'connecting'}>{connectionInfo.label}</StatusPill>
             <small>Phiên đăng nhập được lưu cục bộ trên máy này.</small>
           </div>
+          <button
+            className="button button--secondary"
+            onClick={() => setIsActivityLogOpen((open) => !open)}
+            type="button"
+          >
+            <Icon name="save" />
+            {isActivityLogOpen ? 'Ẩn nhật ký' : `Nhật ký${activityLog.length ? ` (${activityLog.length})` : ''}`}
+          </button>
+          <button
+            aria-label={colorTheme === 'dark' ? 'Chuyển sang giao diện sáng' : 'Chuyển sang giao diện tối'}
+            aria-pressed={colorTheme === 'dark'}
+            className="button button--secondary theme-toggle"
+            onClick={() => setColorTheme((current) => current === 'dark' ? 'light' : 'dark')}
+            type="button"
+          >
+            <span aria-hidden="true">{colorTheme === 'dark' ? '☀' : '☾'}</span>
+            {colorTheme === 'dark' ? 'Sáng' : 'Tối'}
+          </button>
           <button className="button button--secondary" disabled={!appAvailable || connection === 'connecting'} onClick={connectChatGPT} type="button">
             <Icon name="link" />
             {connection === 'connected' || connection === 'login-required'
@@ -1616,15 +2034,10 @@ export default function App() {
       </header>
 
       <main>
-        <section className="hero-copy">
-          <span className="eyebrow">Không gian dịch & biên tập</span>
-          <h2>Giữ đúng mạch truyện, kiểm soát từng đoạn dịch.</h2>
-          <p>Dán bản gốc, chọn phong cách và để công cụ theo dõi lỗi sót chữ Trung trước khi ghép kết quả.</p>
-        </section>
-
         {appNotice && (
           <div className="app-notice" role="status">
             <Icon name={connection === 'error' || translationState === 'error' ? 'alert' : 'check'} />
+            <strong className="app-notice__label">Thông báo:</strong>
             <span>{appNotice}</span>
             <button aria-label="Đóng thông báo" onClick={() => setAppNotice('')} type="button">×</button>
           </div>
@@ -1724,8 +2137,6 @@ export default function App() {
               />
             )}
             <div className="editor-footer">
-              <span>{source.length.toLocaleString('vi-VN')} ký tự</span>
-              <span>{sourceHanCount.toLocaleString('vi-VN')} chữ Hán</span>
               {translationState === 'running' && <span className="editor-footer__note">Tác vụ đang dùng bản nguồn tại lúc bấm Dịch.</span>}
             </div>
           </section>
@@ -1735,6 +2146,7 @@ export default function App() {
             loading={promptsLoading}
             mode={promptMode}
             omitOutputChapterTitles={omitOutputChapterTitles}
+            exportCombinedSourceChapters={exportCombinedSourceChapters}
             outputChapterStart={outputChapterStart}
             prompts={prompts}
             suggestedChapterStart={sourceMode === 'link' ? suggestedOutputChapterStart : undefined}
@@ -1744,6 +2156,7 @@ export default function App() {
             }}
             onModeChange={setPromptMode}
             onOmitOutputChapterTitlesChange={setOmitOutputChapterTitles}
+            onExportCombinedSourceChaptersChange={setExportCombinedSourceChapters}
             onOutputChapterStartChange={setOutputChapterStart}
           />
 
@@ -1754,7 +2167,7 @@ export default function App() {
                 <h2 id="output-heading">Nội dung đã dịch</h2>
                 <p>Chỉnh sửa trực tiếp, tự động lưu cục bộ.</p>
               </div>
-              <div className="save-indicator" aria-live="polite">
+              <div className={`save-indicator save-indicator--${saveState}`} aria-live="polite">
                 {saveState === 'saving' && <><span className="spinner spinner--small" /> Đang lưu…</>}
                 {saveState === 'saved' && <><Icon name="check" size={14} /> Đã lưu {lastSavedAt ? new Date(lastSavedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : ''}</>}
                 {saveState === 'error' && <><Icon name="alert" size={14} /> Lưu thất bại</>}
@@ -1800,6 +2213,30 @@ export default function App() {
           onRetry={retrySegment}
           onStart={startTranslation}
         />
+
+        {isActivityLogOpen && (
+          <section className="translation-activity-log" aria-label="Nhật ký tiến trình dịch">
+            <header>
+              <div>
+                <strong>Nhật ký tiến trình</strong>
+                <small>Lưu cùng checkpoint · giờ hiển thị theo máy này</small>
+              </div>
+              <button className="button button--tiny" onClick={() => setIsActivityLogOpen(false)} type="button">Đóng</button>
+            </header>
+            {activityLog.length ? (
+              <ol>
+                {[...activityLog].reverse().map((entry, index) => (
+                  <li className={`translation-activity-log__entry translation-activity-log__entry--${entry.tone}`} key={`${entry.at}-${index}`}>
+                    <time dateTime={entry.at}>{new Date(entry.at).toLocaleString('vi-VN')}</time>
+                    <span>{entry.message}</span>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p>Chưa có nhật ký cho checkpoint này. Các bước mới sẽ xuất hiện khi tool tiếp tục chạy.</p>
+            )}
+          </section>
+        )}
 
         {translationHistory.length > 0 && (
           <details className="translation-history">

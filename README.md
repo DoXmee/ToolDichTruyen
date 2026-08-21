@@ -1,17 +1,38 @@
-# Tool dịch truyện Trung → Việt
+<div align="center">
+  <img src="docs/assets/tool-dich-truyen.png" width="112" alt="Logo Tool Dịch Truyện">
+  <h1>Tool Dịch Truyện · Trung → Việt</h1>
+  <p><strong>Ứng dụng Windows hỗ trợ tải truyện, dịch bằng ChatGPT Web, kiểm tra kết quả, khôi phục checkpoint và xuất bản dịch theo chương.</strong></p>
+  <p>
+    <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-2563eb?logo=windows11&logoColor=white">
+    <img alt="Electron" src="https://img.shields.io/badge/Electron-43-47848f?logo=electron&logoColor=white">
+    <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-7-3178c6?logo=typescript&logoColor=white">
+    <img alt="Tests" src="https://img.shields.io/badge/tests-469%20passed-1f883d">
+    <img alt="License" src="https://img.shields.io/badge/license-UNLICENSED-6e7781">
+  </p>
+</div>
 
-Ứng dụng Windows dùng ChatGPT Web để dịch truyện Trung sang Việt, tự kiểm tra phản hồi lỗi và chia bản dịch thành chương. Hai prompt mặc định được đóng gói từ `resources/prompts/nien-dai.txt` và `resources/prompts/hien-dai.txt`; người dùng cũng có thể nhập prompt riêng.
+![Giao diện Tool Dịch Truyện](docs/assets/app-overview.png)
+
+> [!IMPORTANT]
+> Tool điều khiển giao diện ChatGPT Web trong trình duyệt do ứng dụng mở; không gọi OpenAI API và không vượt CAPTCHA, đăng nhập hay giới hạn tài khoản. Người dùng cần tự đăng nhập và chịu trách nhiệm kiểm tra bản dịch trước khi sử dụng.
+
+## Tổng quan
+
+Tool Dịch Truyện gom toàn bộ quy trình dịch truyện dài vào một ứng dụng desktop: nhập văn bản hoặc link truyện, chọn phong cách, dịch có checkpoint, kiểm tra phản hồi, tiếp tục sau sự cố, chia chương và xuất TXT. Bốn prompt mặc định gồm **niên đại**, **hiện đại**, **cổ trang** và **tu tiên**; người dùng vẫn có thể nhập prompt riêng.
+
+**Điều hướng:** [Tính năng](#tính-năng-chính) · [Cài đặt phát triển](#cài-đặt-và-chạy-phát-triển) · [Cách sử dụng](#cách-sử-dụng) · [Kiểm thử](#kiểm-thử) · [Đóng gói](#build-và-đóng-gói-windows) · [Bảo mật](SECURITY.md) · [Đóng góp](CONTRIBUTING.md)
 
 ## Tính năng chính
 
-- Nhập hoặc dán nội dung truyện tiếng Trung.
-- Chọn prompt có sẵn cho `Truyện niên đại`, `Truyện hiện đại`, hoặc nhập prompt `Khác`.
-- Điều khiển tác vụ dịch: bắt đầu, tạm dừng, tiếp tục, hủy và thử lại đoạn lỗi.
-- Ghép kết quả đúng thứ tự vào ô bản dịch có thể chỉnh sửa.
-- Tự động lưu bản nháp cục bộ.
-- Phát hiện chữ Hán còn sót và kiểm tra phản hồi rỗng, quá ngắn, lặp hoặc có dấu hiệu bị ngắt.
-- Chia chương với mục tiêu 800 chữ (ưu tiên khoảng 750–800 khi các đoạn cho phép), chỉ cắt tại ranh giới đoạn xuống dòng; không cắt giữa từ, câu hoặc lời thoại.
-- Nhận diện tiêu đề chương có sẵn, sửa preview, tô đỏ chữ Hán, sao chép và xuất TXT.
+- Nhập trực tiếp văn bản tiếng Trung hoặc phân tích link truyện theo danh sách chương.
+- Hỗ trợ các nguồn đã kiểm thử trong adapter: Huliwang, XSZJ/爱下电子书, TimoTXT, Qingrenyouxi và Xbanxia.
+- Ghép đủ các trang con của cùng một chương và loại bỏ footer/navigation đã nhận diện theo từng website.
+- Chọn bốn prompt đóng gói sẵn: `Truyện niên đại`, `Truyện hiện đại`, `Truyện cổ trang`, `Truyện tu tiên`; hoặc dùng prompt `Khác`.
+- Lưu checkpoint, nhật ký hoạt động và tiếp tục đúng đoạn lỗi sau khi app/trình duyệt bị gián đoạn.
+- Retry có kiểm tra chữ Hán còn sót, lặp nội dung, tiêu đề và phản hồi an toàn; thay chat hoặc khởi động lại trình duyệt khi lỗi giao diện ChatGPT yêu cầu.
+- Chia chương, tự nhận diện số chương, đánh lại số, tùy chọn bỏ tên chương và chỉnh riêng nội dung preview.
+- Xuất đầy đủ TXT chương lẻ, bản dịch gốc chưa chia, file tổng bản dịch và file tổng chương nguồn với cả dải số cũ/mới.
+- Giao diện sáng/tối, zoom thích nghi theo vùng làm việc Windows và nhật ký tiến trình dễ đọc.
 - Tùy chọn dùng Gemini để gợi ý tên chương.
 
 ### Nhập Huliwang bằng trình duyệt mặc định
@@ -94,13 +115,15 @@ Không mở đồng thời nhiều phiên Tool dịch truyện dùng chung profi
 ### 2. Nhập nội dung và chọn prompt
 
 1. Dán nội dung nguồn vào ô `Nội dung tiếng Trung`.
-2. Chọn một trong ba chế độ:
+2. Chọn một trong năm chế độ:
    - `Truyện niên đại`: dùng prompt tại `resources/prompts/nien-dai.txt`.
    - `Truyện hiện đại`: dùng prompt tại `resources/prompts/hien-dai.txt`.
+   - `Truyện cổ trang`: dùng prompt tại `resources/prompts/co-trang.txt`.
+   - `Truyện tu tiên`: dùng prompt tại `resources/prompts/tu-tien.txt`.
    - `Khác`: dùng prompt người dùng nhập.
 3. Khi bắt đầu gõ vào ô prompt tùy chỉnh, giao diện tự chọn chế độ `Khác`.
 
-Hai prompt mặc định được đọc dưới dạng UTF-8 khi ứng dụng chạy và được đóng kèm vào `resources` khi package.
+Bốn prompt mặc định được đọc dưới dạng UTF-8 khi ứng dụng chạy và được đóng kèm vào `resources` khi package.
 
 ### 3. Dịch và xử lý lỗi
 
@@ -235,7 +258,8 @@ src/
 ├── renderer/    # React UI
 └── shared/      # Type dùng chung
 resources/
-└── prompts/     # Prompt niên đại và hiện đại đóng kèm ứng dụng
+├── prompts/     # Bốn prompt phong cách đóng kèm ứng dụng
+└── huli-browser-helper/ # Tiện ích trình duyệt cho các nguồn cần profile thường
 tests/
 ├── unit/
 ├── integration/

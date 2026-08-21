@@ -14,10 +14,11 @@ describe('main renderer navigation boundary', () => {
 });
 
 describe('compact desktop workspace zoom', () => {
-  it('only scales short content areas and keeps a readable lower bound', () => {
-    expect(compactWorkspaceZoomFactor(940)).toBe(1);
-    expect(compactWorkspaceZoomFactor(792)).toBe(1);
-    expect(compactWorkspaceZoomFactor(684)).toBeCloseTo(0.863636, 5);
+  it('scales by both the available height and width, while keeping a readable lower bound', () => {
+    expect(compactWorkspaceZoomFactor(940, 1440)).toBe(1);
+    expect(compactWorkspaceZoomFactor(820, 1200)).toBeCloseTo(0.942529, 5);
+    expect(compactWorkspaceZoomFactor(684, 1338)).toBeCloseTo(0.786207, 5);
+    expect(compactWorkspaceZoomFactor(900, 1024)).toBeCloseTo(0.853333, 5);
     expect(compactWorkspaceZoomFactor(320)).toBe(0.76);
     expect(compactWorkspaceZoomFactor(Number.NaN)).toBe(1);
   });

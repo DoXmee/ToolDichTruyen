@@ -250,6 +250,62 @@ describe("HuliwangBrowserBridge", () => {
     }
   });
 
+  it("pairs an XSZJ session for fixed visits only and rejects a cross-site snapshot", async () => {
+    const bridge = await new HuliwangBrowserBridge({ site: "xszj", visitTimeoutMs: 500 }).start();
+    try {
+      const data = await pair(bridge);
+      const url = "https://xszj.org/b/485734/c/856451?page=2";
+      const visit = bridge.client.visit(url);
+      const rejectedVisit = visit.catch((error: unknown) => error);
+      const next = await command(bridge, data);
+      expect(next).toEqual({
+        id: expect.any(String),
+        type: "visit",
+        url,
+      });
+      expect(bridge.client.advanceCatalogPage).toBeUndefined();
+      expect(bridge.client.advanceChapterPage).toBeUndefined();
+
+      const invalid = snapshot("https://m.huliwang.net/485734/856451.html", {
+        requestedUrl: url,
+        url: "https://m.huliwang.net/485734/856451.html",
+      });
+      expect((await result(bridge, data, next.id, invalid)).status).toBe(400);
+      await expect(rejectedVisit).resolves.toMatchObject({ code: "INVALID_CONTENT" });
+
+      const retry = bridge.client.visit(url);
+      const retryCommand = await command(bridge, data);
+      const xszjSnapshot: StoryPageSnapshot = {
+        requestedUrl: url,
+        url,
+        status: 200,
+        title: "第1章 测试（2/2）",
+        canonicalUrl: url,
+        charset: "UTF-8",
+        htmlLanguage: "zh-CN",
+        bodyText: "这是 XSZJ 的正常正文内容，人物继续前行，故事没有跳转到其他网站。",
+        elements: { h1: ["第1章 测试（2/2）"], "#content": ["这是 XSZJ 的正常正文内容，人物继续前行，故事没有跳转到其他网站。"] },
+        links: [],
+        fontFamilies: [],
+        fontUrls: [],
+        fontHashes: [],
+        challenge: "none",
+      };
+      expect((await result(bridge, data, retryCommand.id, xszjSnapshot)).status).toBe(204);
+      await expect(retry).resolves.toMatchObject({ url, challenge: "none" });
+
+      const inspect = bridge.client.inspectCurrent!();
+      const inspectCommand = await command(bridge, data);
+      // Passive Cloudflare checks are sampled in place: the bridge must queue
+      // the same fixed URL rather than navigate/reload the ordinary browser.
+      expect(inspectCommand).toMatchObject({ type: "visit", url });
+      expect((await result(bridge, data, inspectCommand.id, xszjSnapshot)).status).toBe(204);
+      await expect(inspect).resolves.toMatchObject({ challenge: "none", url });
+    } finally {
+      await bridge.close();
+    }
+  });
+
   it("redelivers the same pending command until one authenticated result is consumed", async () => {
     const bridge = await new HuliwangBrowserBridge({ visitTimeoutMs: 500 }).start();
     try {

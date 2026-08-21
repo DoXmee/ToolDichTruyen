@@ -28,14 +28,16 @@ interface StoryToolHarness {
   revealHuliBrowserHelper: ReturnType<typeof vi.fn>;
   fetchStoryChapters: ReturnType<typeof vi.fn>;
   chooseChapterDirectory: ReturnType<typeof vi.fn>;
+  validateChapterDirectory: ReturnType<typeof vi.fn>;
   exportChapters: ReturnType<typeof vi.fn>;
   exportOriginalChapters: ReturnType<typeof vi.fn>;
   exportCombinedChapters: ReturnType<typeof vi.fn>;
+  exportCombinedSourceChapters: ReturnType<typeof vi.fn>;
 }
 
 function installStoryTool(options: {
   draft?: unknown;
-  historical?: string;
+  period?: string;
   modern?: string;
   connectionStatus?: string;
   translationJob?: TranslationJobSnapshot;
@@ -45,8 +47,10 @@ function installStoryTool(options: {
 } = {}): StoryToolHarness {
   let eventListener: ((event: TranslationEvent) => void) | undefined;
   const loadPrompts = vi.fn(async () => ({
-    historical: options.historical ?? 'Prompt niên đại mặc định',
+    period: options.period ?? 'Prompt niên đại mặc định',
     modern: options.modern ?? 'Prompt hiện đại mặc định',
+    ancient: 'Prompt cổ trang mặc định',
+    cultivation: 'Prompt tu tiên mặc định',
   }));
   const connectChatGPT = vi.fn(async () => ({ status: options.connectionStatus ?? 'ready' }));
   const startTranslation = vi.fn(async (_request: TranslationRequest) => ({ jobId: 'job-1' }));
@@ -66,6 +70,7 @@ function installStoryTool(options: {
   const revealHuliBrowserHelper = vi.fn(async () => ({ directory: 'D:\\Tool dịch truyện\\Huli Browser Helper' }));
   const fetchStoryChapters = vi.fn(async () => options.storyFetch ?? Promise.reject(new Error('Chưa cấu hình fixture nguồn web.')));
   const chooseChapterDirectory = vi.fn(async () => ({ canceled: false, directory: 'D:\\Truyện đã dịch' }));
+  const validateChapterDirectory = vi.fn(async (directory: string) => ({ directory }));
   const exportChapters = vi.fn(async ({ directory, exportJobId, chapters }) => ({
     directory,
     records: chapters.map((chapter: { index: number; title: string; content: string; wordCount: number }) => ({
@@ -106,6 +111,26 @@ function installStoryTool(options: {
     chapterCount: chapters.length,
     status: 'saved' as const,
   }));
+  const exportCombinedSourceChapters = vi.fn(async ({
+    directory,
+    exportJobId,
+    sourceStartChapter,
+    sourceEndChapter,
+    outputStartChapter,
+    outputEndChapter,
+    chapters,
+  }) => ({
+    directory,
+    exportDirectory: directory,
+    exportJobId,
+    contentHash: combinedChapterContentFingerprint(outputStartChapter, outputEndChapter, chapters),
+    fileName: `File tổng c.gốc (${sourceStartChapter}-${sourceEndChapter})_c.mới (${outputStartChapter}-${outputEndChapter}).txt`,
+    filePath: `${directory}\\File tổng c.gốc (${sourceStartChapter}-${sourceEndChapter})_c.mới (${outputStartChapter}-${outputEndChapter}).txt`,
+    startChapter: outputStartChapter,
+    endChapter: outputEndChapter,
+    chapterCount: chapters.length,
+    status: 'saved' as const,
+  }));
 
   const api: StoryToolApi = {
     loadPrompts,
@@ -134,9 +159,11 @@ function installStoryTool(options: {
     onStorySourceProgress: vi.fn(() => () => undefined),
     exportText: vi.fn(async () => ({ canceled: false, filePath: 'D:\\ban-dich.txt' })),
     chooseChapterDirectory,
+    validateChapterDirectory,
     exportChapters,
     exportOriginalChapters,
     exportCombinedChapters,
+    exportCombinedSourceChapters,
     generateTitles: vi.fn(async ({ chapters }) => ({
       titles: chapters.map((_, index) => `Tên gợi ý ${index + 1}`),
       model: 'gemini-test',
@@ -162,9 +189,11 @@ function installStoryTool(options: {
     revealHuliBrowserHelper,
     fetchStoryChapters,
     chooseChapterDirectory,
+    validateChapterDirectory,
     exportChapters,
     exportOriginalChapters,
     exportCombinedChapters,
+    exportCombinedSourceChapters,
     emit: (event) => {
       if (!eventListener) throw new Error('Renderer chưa đăng ký translation listener.');
       eventListener(event);
@@ -174,6 +203,7 @@ function installStoryTool(options: {
 
 afterEach(() => {
   cleanup();
+  window.localStorage.removeItem('tool-dich-truyen:color-theme');
   Reflect.deleteProperty(window, 'storyTool');
   vi.restoreAllMocks();
 });
@@ -202,7 +232,7 @@ describe('App renderer', () => {
     const source = '第一章，重逢；繁體小說「測試」……';
     const output = 'Chương 12: Ắ ằ ễ ộ ỳ · A\u0306\u0301 a\u0306\u0300 e\u0302\u0303 o\u0323\u0302 y\u0300 😀';
     const harness = installStoryTool({
-      historical,
+      period: historical,
       modern,
       draft: {
         source,
@@ -225,9 +255,22 @@ describe('App renderer', () => {
     expect(await screen.findByDisplayValue(source)).toBeInTheDocument();
     expect(screen.getByDisplayValue(output)).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /Truyện hiện đại/i })).toBeChecked();
-    expect(screen.getByText(`${historical.length.toLocaleString('vi-VN')} ký tự`)).toBeInTheDocument();
-    expect(screen.getByText(`${modern.length.toLocaleString('vi-VN')} ký tự`)).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Truyện niên đại/i }).closest('label')).not.toHaveTextContent('ký tự');
+    expect(screen.getByRole('radio', { name: /Truyện hiện đại/i }).closest('label')).not.toHaveTextContent('ký tự');
     expect(harness.loadPrompts).toHaveBeenCalledOnce();
+  });
+
+  it('chuyển giao diện tối rõ ràng và ghi nhớ lựa chọn trên máy', async () => {
+    installStoryTool();
+    render(<App />);
+
+    const toggle = await screen.findByRole('button', { name: 'Chuyển sang giao diện tối' });
+    fireEvent.click(toggle);
+
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(window.localStorage.getItem('tool-dich-truyen:color-theme')).toBe('dark');
+    expect(screen.getByRole('button', { name: 'Chuyển sang giao diện sáng' })).toBeInTheDocument();
   });
 
   it('tự chọn chế độ Khác khi người dùng gõ prompt tùy chỉnh', async () => {
@@ -266,7 +309,7 @@ describe('App renderer', () => {
         customPrompt: undefined,
         settings: {
           maxRetries: 3,
-          maxCharsPerSegment: 3_000,
+          maxCharsPerSegment: 12_000,
           responseTimeoutMs: 480_000,
         },
       });
@@ -442,7 +485,12 @@ describe('App renderer', () => {
 
     await waitFor(() => expect(harness.exportChapters).toHaveBeenCalledTimes(2));
     expect(harness.exportChapters.mock.calls[1]?.[0]).toMatchObject({
-      chapters: [expect.objectContaining({ index: 2, title: 'Chương 2: Đang dịch', wordCount: 800 })],
+      // Terminal publication reconciles the full sequence, not merely the
+      // new tail. This also recreates any TXT lost before a Retry/restart.
+      chapters: [
+        expect.objectContaining({ index: 1, title: 'Chương 1: Đã khóa', wordCount: 800 }),
+        expect.objectContaining({ index: 2, title: 'Chương 2: Đang dịch', wordCount: 800 }),
+      ],
     });
   });
 
@@ -501,6 +549,48 @@ describe('App renderer', () => {
     const resume = await screen.findByRole('button', { name: 'Bắt đầu từ CP lỗi' });
     fireEvent.click(resume);
     await waitFor(() => expect(resumeTranslation).toHaveBeenCalledWith('job-cancelled-checkpoint'));
+  });
+
+  it('khôi phục đích xuất của checkpoint đã hủy rồi tiếp tục lưu vào đúng thư mục', async () => {
+    const words = Array.from({ length: 820 }, (_, index) => `tu${index + 1}`).join(' ');
+    const output = `Chương 3: Mở đầu\n${words}\n\nChương 4: Tiếp theo\n${words}`;
+    const binding = {
+      directory: 'D:\\Bo-giu-nguyen',
+      startChapter: 3,
+      endChapter: 4,
+      sourceChapterNumbers: [3, 4],
+      exportOriginalChapters: true,
+      exportCombinedChapters: true,
+      omitOutputChapterTitles: true,
+    };
+    const checkpoint: TranslationJobSnapshot = {
+      id: 'job-export-resume', updatedAt: '2026-08-17T10:55:49.000Z', status: 'cancelled',
+      totalSegments: 4, completedSegments: 2, translatedText: output, autoExport: binding,
+      segments: [
+        { id: 's1', index: 0, status: 'completed' },
+        { id: 's2', index: 1, status: 'completed' },
+        { id: 's3', index: 2, status: 'cancelled' },
+        { id: 's4', index: 3, status: 'queued' },
+      ],
+    };
+    const harness = installStoryTool({ activeTranslations: [checkpoint], translationJob: checkpoint });
+    const resumeTranslation = vi.fn(async () => undefined);
+    harness.api.resumeTranslation = resumeTranslation;
+    render(<App />);
+
+    fireEvent.click(await screen.findByText(/Lịch sử checkpoint cần xử lý/u));
+    fireEvent.click(await screen.findByRole('button', { name: 'Bắt đầu từ CP lỗi' }));
+
+    await waitFor(() => expect(resumeTranslation).toHaveBeenCalledWith('job-export-resume'));
+    await waitFor(() => expect(harness.exportChapters).toHaveBeenCalled());
+    expect(harness.exportChapters.mock.calls[0]?.[0]).toMatchObject({
+      directory: 'D:\\Bo-giu-nguyen',
+      exportJobId: 'job-export-resume',
+    });
+    expect(harness.exportOriginalChapters.mock.calls[0]?.[0]).toMatchObject({
+      directory: 'D:\\Bo-giu-nguyen',
+      exportJobId: 'job-export-resume',
+    });
   });
 
   it('tiếp tục đúng đoạn lỗi trực tiếp từ lịch sử checkpoint', async () => {
@@ -732,6 +822,38 @@ describe('App renderer', () => {
     })));
   });
 
+  it('chặn tải và tạo job khi thư mục export từ draft không còn tồn tại', async () => {
+    const storyAnalysis = {
+      analysisId: 'analysis-missing-directory', site: 'xbanxia' as const, inputKind: 'chapter' as const,
+      inputUrl: 'https://www.xbanxia.cc/books/420871/73048292.html', bookId: '420871', bookTitle: 'Kiểm tra thư mục',
+      bookUrl: 'https://www.xbanxia.cc/books/420871.html', catalogUrl: 'https://www.xbanxia.cc/books/420871.html',
+      chapters: [{ id: 'c1', order: 0, number: 1, numberLabel: '第1章', title: 'Mở đầu', url: 'https://www.xbanxia.cc/books/420871/73048292.html', partUrls: ['https://www.xbanxia.cc/books/420871/73048292.html'], isIntroduction: false, selectedByDefault: true }],
+      defaultSelectedChapterIds: ['c1'], verification: 'not-needed' as const, notices: [],
+    };
+    const harness = installStoryTool({
+      connectionStatus: 'ready',
+      storyAnalysis,
+      storyFetch: { analysisId: storyAnalysis.analysisId, site: 'xbanxia', bookId: '420871', bookTitle: storyAnalysis.bookTitle, chapters: [], combinedSource: 'Không được tải.', warnings: [] },
+      draft: {
+        source: '', output: '', promptMode: 'period', customPrompt: '', sourceMode: 'link', storyUrl: storyAnalysis.inputUrl,
+        exportDirectory: 'D:\\Đã mất', autoExportJobId: '', exportedRecords: [], originalExportedRecords: [],
+      },
+    });
+    harness.validateChapterDirectory.mockRejectedValueOnce(new Error('Không tìm thấy thư mục xuất; không thể bắt đầu dịch. Thư mục xuất không tồn tại.'));
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
+    await screen.findByText(storyAnalysis.bookTitle);
+    fireEvent.click(screen.getByRole('button', { name: /^Kết nối$/u }));
+    await screen.findByText('ChatGPT đã kết nối');
+    fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/u }));
+
+    expect(await screen.findByText(/Không tìm thấy thư mục xuất; không thể bắt đầu dịch/u)).toBeInTheDocument();
+    expect(harness.fetchStoryChapters).not.toHaveBeenCalled();
+    expect(harness.startTranslation).not.toHaveBeenCalled();
+  });
+
   it('kết nối trình duyệt mặc định cho Huliwang rồi tự phân tích lại link', async () => {
     const huliwangUrl = 'https://m.huliwang.net/1703891/1.html';
     const harness = installStoryTool();
@@ -779,6 +901,43 @@ describe('App renderer', () => {
     await waitFor(() => expect(harness.analyzeStoryUrl).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('Truyện Huliwang đã kết nối')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Kết nối trình duyệt mặc định' })).not.toBeInTheDocument();
+  });
+
+  it('kết nối trình duyệt mặc định cho XSZJ rồi tự phân tích lại link', async () => {
+    const xszjUrl = 'https://xszj.org/b/485734';
+    const harness = installStoryTool();
+    harness.analyzeStoryUrl.mockRejectedValueOnce(new Error(
+      'XSZJ/爱下电子书 yêu cầu xác minh thủ công trong trình duyệt mặc định.',
+    )).mockResolvedValueOnce({
+      analysisId: 'xszj-paired',
+      site: 'xszj',
+      inputKind: 'book',
+      inputUrl: xszjUrl,
+      bookId: '485734',
+      bookTitle: 'Truyện XSZJ đã kết nối',
+      bookUrl: xszjUrl,
+      catalogUrl: 'https://xszj.org/b/485734/cs/1',
+      chapters: [{
+        id: 'xszj:485734:856451', order: 0, number: 1, numberLabel: 'Chương 1', title: 'Mở đầu',
+        url: 'https://xszj.org/b/485734/c/856451', partUrls: ['https://xszj.org/b/485734/c/856451'], isIntroduction: false, selectedByDefault: true,
+      }],
+      defaultSelectedChapterIds: ['xszj:485734:856451'],
+      verification: 'not-needed',
+      notices: [],
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
+    fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), {
+      target: { value: xszjUrl },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
+
+    expect(await screen.findByText('XSZJ/爱下电子书 cần Microsoft Edge hoặc Google Chrome và profile bạn dùng hằng ngày.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Kết nối trình duyệt mặc định' }));
+    await waitFor(() => expect(harness.openManualStoryVerification).toHaveBeenCalledWith(xszjUrl));
+    await waitFor(() => expect(harness.analyzeStoryUrl).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Truyện XSZJ đã kết nối')).toBeInTheDocument();
   });
 
   it('offers default browser pairing when the Huli helper version is stale', async () => {
@@ -1309,15 +1468,14 @@ describe('App renderer', () => {
 
     await waitFor(() => expect(harness.exportOriginalChapters).toHaveBeenCalledTimes(2));
     expect(harness.exportOriginalChapters.mock.calls[1]?.[0]).toMatchObject({
-      chapters: [expect.objectContaining({
-        index: 153,
-        title: 'Chương 153: Đang dịch',
-        content: completedTrailing,
-      })],
+      chapters: [
+        expect.objectContaining({ index: 152, title: 'Chương 152: Đã khóa', content: first }),
+        expect.objectContaining({ index: 153, title: 'Chương 153: Đang dịch', content: completedTrailing }),
+      ],
     });
   });
 
-  it('waits for every split TXT before making the final combined file and retains the source chapter range', async () => {
+  it('creates the terminal combined file from the sealed checkpoint without waiting for a slow split TXT', async () => {
     const first = Array.from({ length: 800 }, (_, index) => `mot${index + 1}`).join(' ');
     const partialSecond = Array.from({ length: 40 }, (_, index) => `hai${index + 1}`).join(' ');
     const second = Array.from({ length: 800 }, (_, index) => `hai${index + 1}`).join(' ');
@@ -1383,7 +1541,10 @@ describe('App renderer', () => {
       },
     }));
     await waitFor(() => expect(exportSplit).toHaveBeenCalledTimes(2));
-    expect(harness.exportCombinedChapters).not.toHaveBeenCalled();
+    // The aggregate is independently safe at terminal completion.  It must
+    // not disappear merely because one individual TXT is slow or conflicts
+    // with an older user file.
+    await waitFor(() => expect(harness.exportCombinedChapters).toHaveBeenCalledTimes(1));
 
     const terminalRequest = exportSplit.mock.calls[1]?.[0];
     const terminalChapter = terminalRequest?.chapters[0];
@@ -1403,7 +1564,6 @@ describe('App renderer', () => {
       }],
     });
 
-    await waitFor(() => expect(harness.exportCombinedChapters).toHaveBeenCalledTimes(1));
     expect(harness.exportCombinedChapters).toHaveBeenCalledWith(expect.objectContaining({
       directory: 'D:\\Truyện đã dịch',
       startChapter: 152,
@@ -1412,6 +1572,91 @@ describe('App renderer', () => {
         expect.objectContaining({ index: 152, title: 'Chương 152: Phần một', wordCount: 800 }),
         expect.objectContaining({ index: 153, title: 'Chương 153: Phần hai', wordCount: 800 }),
       ],
+    }));
+  });
+
+  it('retries a transient final combined-file failure after a completed checkpoint', async () => {
+    const words = Array.from({ length: 800 }, (_, index) => `tu${index + 1}`).join(' ');
+    const harness = installStoryTool({
+      draft: {
+        source: 'Chương 50: Bản gốc\n\n原文 chương 50.',
+        output: '', promptMode: 'period', customPrompt: '', sourceMode: 'link',
+        storyUrl: 'https://www.timotxt.com/1509589610/50.html', exportDirectory: 'D:\\Truyện đã dịch',
+        exportOriginalChapters: false, exportCombinedChapters: true,
+        autoExportJobId: 'job-combined-retry', exportedRecords: [],
+      },
+    });
+    let combinedAttempt = 0;
+    harness.api.exportCombinedChapters = harness.exportCombinedChapters = vi.fn(async ({
+      directory, exportJobId, startChapter, endChapter, chapters,
+    }) => {
+      combinedAttempt += 1;
+      if (combinedAttempt === 1) throw new Error('Lỗi ghi đĩa tạm thời');
+      return {
+        directory,
+        exportDirectory: directory,
+        exportJobId,
+        contentHash: combinedChapterContentFingerprint(startChapter, endChapter, chapters),
+        fileName: `combined-${startChapter}-${endChapter}.txt`,
+        filePath: `${directory}\\combined-${startChapter}-${endChapter}.txt`,
+        startChapter,
+        endChapter,
+        chapterCount: chapters.length,
+        status: 'saved' as const,
+      };
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Nội dung tiếng Trung' });
+
+    act(() => harness.emit({
+      jobId: 'job-combined-retry', type: 'job-completed', timestamp: 1,
+      payload: {
+        translatedText: `Chương 50: Bản dịch\n${words}`,
+        job: { status: 'completed', segments: [{ id: 's1', index: 0, status: 'completed' }] },
+      },
+    }));
+
+    await waitFor(() => expect(harness.exportCombinedChapters).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+    expect(harness.exportCombinedChapters).toHaveBeenLastCalledWith(expect.objectContaining({
+      exportJobId: 'job-combined-retry', startChapter: 50, endChapter: 50,
+    }));
+  });
+
+  it('restores an orphaned completed export set and creates its missing final file', async () => {
+    const words = Array.from({ length: 800 }, (_, index) => `tu${index + 1}`).join(' ');
+    const chapter = { index: 50, title: 'Chương 50: Bản dịch', content: words, wordCount: 800 };
+    const harness = installStoryTool({
+      draft: {
+        source: 'Chương 50: Bản gốc\n\n原文 chương 50.', output: '', promptMode: 'period', customPrompt: '', sourceMode: 'link',
+        storyUrl: 'https://www.timotxt.com/1509589610/50.html', exportDirectory: 'D:\\Truyện đã dịch',
+        exportOriginalChapters: false, exportCombinedChapters: true,
+        autoExportJobId: '', autoExportOutput: `Chương 50: Bản dịch\n${words}`,
+        exportedRecords: [{
+          exportJobId: 'job-orphaned-combined', exportDirectory: 'D:\\Truyện đã dịch',
+          contentHash: chapterContentFingerprint(chapter), index: 50, title: chapter.title, wordCount: 800,
+          fileName: 'chapter-50.txt', filePath: 'D:\\Truyện đã dịch\\chapter-50.txt', status: 'saved',
+        }], originalExportedRecords: [],
+        autoExportRange: { startChapter: 50, endChapter: 50, sourceChapterNumbers: [50] },
+      },
+      translationJob: {
+        id: 'job-orphaned-combined', updatedAt: '2026-08-16T00:00:00.000Z', status: 'completed',
+        totalSegments: 1, completedSegments: 1, translatedText: `Chương 50: Bản dịch\n${words}`,
+        segments: [{ id: 's1', index: 0, status: 'completed' }],
+      },
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Nội dung tiếng Trung' });
+    // The persisted record may outlive a missing TXT after an interruption.
+    // A restored completed job must re-submit the whole split set once.
+    await waitFor(() => expect(harness.exportChapters).toHaveBeenCalledOnce());
+    expect(harness.exportChapters).toHaveBeenCalledWith(expect.objectContaining({
+      exportJobId: 'job-orphaned-combined',
+      recoveryOnConflict: true,
+      chapters: [expect.objectContaining({ index: 50, title: 'Chương 50: Bản dịch' })],
+    }));
+    await waitFor(() => expect(harness.exportCombinedChapters).toHaveBeenCalledOnce());
+    expect(harness.exportCombinedChapters).toHaveBeenCalledWith(expect.objectContaining({
+      exportJobId: 'job-orphaned-combined', startChapter: 50, endChapter: 50,
     }));
   });
 
@@ -1443,7 +1688,7 @@ describe('App renderer', () => {
     expect(harness.exportCombinedChapters).not.toHaveBeenCalled();
   });
 
-  it('keeps a frozen renamed sequence through split, original and combined exports', async () => {
+  it('keeps frozen numbering and the no-title choice through split, original and combined exports', async () => {
     const firstPart = Array.from({ length: 750 }, (_, index) => `mot${index + 1}`).join(' ');
     const secondPart = Array.from({ length: 750 }, (_, index) => `hai${index + 1}`).join(' ');
     const nextChapter = Array.from({ length: 750 }, (_, index) => `ba${index + 1}`).join(' ');
@@ -1460,17 +1705,21 @@ describe('App renderer', () => {
         output: '', promptMode: 'period', customPrompt: '', sourceMode: 'link',
         storyUrl: 'https://www.timotxt.com/1/', exportDirectory: 'D:\\Truyện đã dịch',
         exportOriginalChapters: true, exportCombinedChapters: true,
+        exportCombinedSourceChapters: true,
         // The editable field may already point at a future run; this job must
         // use the immutable value recorded when its translation began.
         outputChapterStart: 777,
         autoExportOutputChapterStart: 101,
+        autoExportOmitOutputChapterTitles: true,
         autoExportRange: { startChapter: 40, endChapter: 41, sourceChapterNumbers: [40, 41] },
         autoExportJobId: 'job-renumbered', exportedRecords: [], originalExportedRecords: [],
       },
       translationJob: {
         id: 'job-renumbered', updatedAt: '2026-08-13T00:00:00.000Z', status: 'completed',
         totalSegments: 1, completedSegments: 1,
-        segments: [{ id: 'segment-1', index: 0, status: 'completed' }], translatedText,
+        segments: [{ id: 'segment-1', index: 0, status: 'completed' }],
+        translatedText,
+        sourceText: 'Chương 40: 原题甲\n\n第一段原文。\n\nChương 41: 原题乙\n\n第二段原文。',
       },
     });
 
@@ -1479,16 +1728,16 @@ describe('App renderer', () => {
     await waitFor(() => expect(harness.exportChapters).toHaveBeenCalledOnce());
     expect(harness.exportChapters.mock.calls[0]?.[0]).toMatchObject({
       chapters: [
-        expect.objectContaining({ index: 101, sourceChapterNumber: 40, title: 'Chương 101: Mở đầu' }),
-        expect.objectContaining({ index: 102, sourceChapterNumber: 40, title: 'Chương 102: Mở đầu' }),
-        expect.objectContaining({ index: 103, sourceChapterNumber: 41, title: 'Chương 103: Tiếp theo' }),
+        expect.objectContaining({ index: 101, sourceChapterNumber: 40, title: 'Chương 101' }),
+        expect.objectContaining({ index: 102, sourceChapterNumber: 40, title: 'Chương 102' }),
+        expect.objectContaining({ index: 103, sourceChapterNumber: 41, title: 'Chương 103' }),
       ],
     });
     await waitFor(() => expect(harness.exportOriginalChapters).toHaveBeenCalledOnce());
     expect(harness.exportOriginalChapters.mock.calls[0]?.[0]).toMatchObject({
       chapters: [
-        expect.objectContaining({ index: 101, sourceChapterNumber: 40, title: 'Chương 101: Mở đầu' }),
-        expect.objectContaining({ index: 103, sourceChapterNumber: 41, title: 'Chương 103: Tiếp theo' }),
+        expect.objectContaining({ index: 101, sourceChapterNumber: 40, title: 'Chương 101' }),
+        expect.objectContaining({ index: 103, sourceChapterNumber: 41, title: 'Chương 103' }),
       ],
     });
     await waitFor(() => expect(harness.exportCombinedChapters).toHaveBeenCalledOnce());
@@ -1497,10 +1746,35 @@ describe('App renderer', () => {
       endChapter: 103,
       sourceChapterNumbers: [40, 41],
       chapters: [
-        expect.objectContaining({ index: 101, sourceChapterNumber: 40 }),
-        expect.objectContaining({ index: 102, sourceChapterNumber: 40 }),
-        expect.objectContaining({ index: 103, sourceChapterNumber: 41 }),
+        expect.objectContaining({ index: 101, sourceChapterNumber: 40, title: 'Chương 101' }),
+        expect.objectContaining({ index: 102, sourceChapterNumber: 40, title: 'Chương 102' }),
+        expect.objectContaining({ index: 103, sourceChapterNumber: 41, title: 'Chương 103' }),
       ],
     }));
+    await waitFor(() => expect(harness.exportCombinedSourceChapters).toHaveBeenCalledOnce());
+    expect(harness.exportCombinedSourceChapters).toHaveBeenCalledWith(expect.objectContaining({
+      sourceStartChapter: 40,
+      sourceEndChapter: 41,
+      outputStartChapter: 101,
+      outputEndChapter: 102,
+      chapters: [
+        expect.objectContaining({
+          index: 101,
+          sourceChapterNumber: 40,
+          title: 'Chương 101',
+          content: expect.stringContaining('第一段原文。'),
+        }),
+        expect.objectContaining({
+          index: 102,
+          sourceChapterNumber: 41,
+          title: 'Chương 102',
+          content: expect.stringContaining('第二段原文。'),
+        }),
+      ],
+    }));
+    const sourceAggregateRequest = harness.exportCombinedSourceChapters.mock.calls[0]?.[0] as {
+      chapters: Array<{ content: string }>;
+    };
+    expect(sourceAggregateRequest.chapters.map((item) => item.content).join('\n')).not.toContain('mot1');
   });
 });

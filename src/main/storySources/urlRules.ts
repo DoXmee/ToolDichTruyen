@@ -18,6 +18,7 @@ const HOSTS: Readonly<Record<StorySite, ReadonlySet<string>>> = {
   timotxt: new Set(["timotxt.com", "www.timotxt.com"]),
   qingrenyouxi: new Set(["qingrenyouxi.com", "www.qingrenyouxi.com"]),
   xbanxia: new Set(["xbanxia.cc", "www.xbanxia.cc"]),
+  xszj: new Set(["xszj.org", "www.xszj.org", "ixdzs8.com", "www.ixdzs8.com"]),
 };
 
 function safeUrl(raw: string): URL {
@@ -39,7 +40,6 @@ function safeUrl(raw: string): URL {
     throw new StorySourceError("UNSUPPORTED_URL", "URL chứa giao thức, thông tin đăng nhập hoặc cổng không được phép.");
   }
   parsed.hash = "";
-  parsed.search = "";
   return parsed;
 }
 
@@ -47,7 +47,8 @@ function canonicalOrigin(site: StorySite): string {
   if (site === "huliwang") return "https://m.huliwang.net";
   if (site === "timotxt") return "https://www.timotxt.com";
   if (site === "qingrenyouxi") return "https://www.qingrenyouxi.com";
-  return "https://www.xbanxia.cc";
+  if (site === "xbanxia") return "https://www.xbanxia.cc";
+  return "https://xszj.org";
 }
 
 export function siteForHostname(hostname: string): StorySite | undefined {
@@ -61,10 +62,12 @@ export function parseStoryUrl(raw: string): ParsedStoryUrl {
   if (!site) {
     throw new StorySourceError(
       "UNSUPPORTED_URL",
-      "Chỉ hỗ trợ đúng bốn nguồn: huliwang.net, timotxt.com, qingrenyouxi.com và xbanxia.cc.",
+      "Chỉ hỗ trợ các nguồn: huliwang.net, timotxt.com, qingrenyouxi.com, xbanxia.cc và xszj.org/ixdzs8.com.",
     );
   }
   const path = input.pathname.replace(/\/{2,}/gu, "/");
+  const sourcePage = input.searchParams.get("page");
+  input.search = "";
   const origin = canonicalOrigin(site);
 
   if (site === "huliwang") {
@@ -129,6 +132,42 @@ export function parseStoryUrl(raw: string): ParsedStoryUrl {
       normalizedUrl: `${origin}/book/${bookId}${chapterKey ? `/${chapterKey}` : ""}.html`,
       bookUrl: `${origin}/book/${bookId}.html`,
       catalogUrl: `${origin}/book/${bookId}.html`,
+    };
+  }
+
+  if (site === "xszj") {
+    const xszjBook = /^\/b\/(\d+)\/?$/u.exec(path);
+    const xszjCatalog = /^\/b\/(\d+)\/cs\/(\d+)\/?$/u.exec(path);
+    const xszjChapter = /^\/b\/(\d+)\/c\/(\d+)\/?$/u.exec(path);
+    const ixdzsBook = /^\/read\/(\d+)\/?$/u.exec(path);
+    const ixdzsChapter = /^\/read\/(\d+)\/p(\d+)\.html\/?$/u.exec(path);
+    const bookId = xszjBook?.[1] ?? xszjCatalog?.[1] ?? xszjChapter?.[1] ?? ixdzsBook?.[1] ?? ixdzsChapter?.[1];
+    if (!bookId) throwUnsupportedPath(site);
+    const isNative = Boolean(xszjBook ?? xszjCatalog ?? xszjChapter);
+    const origin = isNative ? "https://xszj.org" : "https://ixdzs8.com";
+    const chapterKey = xszjChapter?.[2] ?? ixdzsChapter?.[2];
+    const catalogPage = xszjCatalog?.[2];
+    const page = chapterKey && isNative && sourcePage && /^\d+$/u.test(sourcePage)
+      ? Number.parseInt(sourcePage, 10)
+      : undefined;
+    const kind: StoryUrlKind = xszjCatalog ? "catalog" : chapterKey ? "chapter" : "book";
+    const normalizedUrl = xszjCatalog
+      ? `${origin}/b/${bookId}/cs/${catalogPage}`
+      : chapterKey
+        ? isNative
+          ? `${origin}/b/${bookId}/c/${chapterKey}${page && page > 1 ? `?page=${page}` : ""}`
+          : `${origin}/read/${bookId}/p${chapterKey}.html`
+        : isNative ? `${origin}/b/${bookId}` : `${origin}/read/${bookId}/`;
+    return {
+      site,
+      kind,
+      bookId,
+      ...(chapterKey ? { chapterKey } : {}),
+      ...(page ? { page } : {}),
+      inputUrl: input.toString(),
+      normalizedUrl,
+      bookUrl: isNative ? `${origin}/b/${bookId}` : `${origin}/read/${bookId}/`,
+      catalogUrl: isNative ? `${origin}/b/${bookId}/cs/1` : `${origin}/read/${bookId}/`,
     };
   }
 

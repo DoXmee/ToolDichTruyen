@@ -7,6 +7,7 @@ import type {
   StorySourceAnalysis,
   StorySourceProgress,
   TranslationJobSnapshot,
+  TranslationAutoExportBinding,
 } from "../shared/types.js";
 import { IPC_CHANNELS } from "./channels.js";
 
@@ -21,6 +22,7 @@ export interface TranslationRequest {
   source: string;
   promptMode: string;
   customPrompt?: string;
+  autoExport?: TranslationAutoExportBinding;
   settings?: {
     maxChunkChars?: number;
     maxCharsPerSegment?: number;
@@ -32,7 +34,11 @@ export interface TranslationRequest {
 
 export interface StoryToolApi {
   getVersion(): Promise<string>;
-  loadPrompts(): Promise<{ historical: string; modern: string }>;
+  setWindowTheme?(theme: 'light' | 'dark'): Promise<void>;
+  minimizeWindow?(): Promise<void>;
+  toggleMaximizeWindow?(): Promise<void>;
+  closeWindow?(): Promise<void>;
+  loadPrompts(): Promise<{ period: string; modern: string; ancient: string; cultivation: string }>;
   getDraft(): Promise<unknown | null>;
   saveDraft(draft: unknown): Promise<void>;
   clearDraft(): Promise<void>;
@@ -63,15 +69,18 @@ export interface StoryToolApi {
     defaultName?: string;
   }): Promise<{ canceled: boolean; filePath?: string }>;
   chooseChapterDirectory(): Promise<{ canceled: boolean; directory?: string }>;
+  validateChapterDirectory(directory: string): Promise<{ directory: string }>;
   exportChapters(request: {
     directory: string;
     exportJobId: string;
     chapters: FinalChapterExportInput[];
+    recoveryOnConflict?: boolean;
   }): Promise<ChapterExportResult>;
   exportOriginalChapters(request: {
     directory: string;
     exportJobId: string;
     chapters: FinalChapterExportInput[];
+    recoveryOnConflict?: boolean;
   }): Promise<ChapterExportResult>;
   exportCombinedChapters(request: {
     directory: string;
@@ -80,6 +89,17 @@ export interface StoryToolApi {
     endChapter: number;
     sourceChapterNumbers: number[];
     chapters: FinalChapterExportInput[];
+    recoveryOnConflict?: boolean;
+  }): Promise<CombinedChapterExportResult>;
+  exportCombinedSourceChapters(request: {
+    directory: string;
+    exportJobId: string;
+    sourceStartChapter: number;
+    sourceEndChapter: number;
+    outputStartChapter: number;
+    outputEndChapter: number;
+    chapters: FinalChapterExportInput[];
+    recoveryOnConflict?: boolean;
   }): Promise<CombinedChapterExportResult>;
   getGeminiConfig(): Promise<{ hasApiKey: boolean; model: string }>;
   configureGemini(request: {
@@ -101,8 +121,13 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): () => vo
 
 const storyTool: StoryToolApi = Object.freeze({
   getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.appVersion) as Promise<string>,
+  setWindowTheme: (theme: 'light' | 'dark') =>
+    ipcRenderer.invoke(IPC_CHANNELS.windowSetTheme, theme) as Promise<void>,
+  minimizeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.windowMinimize) as Promise<void>,
+  toggleMaximizeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.windowToggleMaximize) as Promise<void>,
+  closeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.windowClose) as Promise<void>,
   loadPrompts: () =>
-    ipcRenderer.invoke(IPC_CHANNELS.promptsLoadAll) as Promise<{ historical: string; modern: string }>,
+    ipcRenderer.invoke(IPC_CHANNELS.promptsLoadAll) as Promise<{ period: string; modern: string; ancient: string; cultivation: string }>,
   getDraft: () => ipcRenderer.invoke(IPC_CHANNELS.draftLoad) as Promise<unknown | null>,
   saveDraft: (draft: unknown) => ipcRenderer.invoke(IPC_CHANNELS.draftSave, draft) as Promise<void>,
   clearDraft: () => ipcRenderer.invoke(IPC_CHANNELS.draftClear) as Promise<void>,
@@ -159,9 +184,11 @@ const storyTool: StoryToolApi = Object.freeze({
       canceled: boolean;
       directory?: string;
     }>,
-  exportChapters: (request: { directory: string; exportJobId: string; chapters: FinalChapterExportInput[] }) =>
+  validateChapterDirectory: (directory: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.exportValidateDirectory, { directory }) as Promise<{ directory: string }>,
+  exportChapters: (request: { directory: string; exportJobId: string; chapters: FinalChapterExportInput[]; recoveryOnConflict?: boolean }) =>
     ipcRenderer.invoke(IPC_CHANNELS.exportChapters, request) as Promise<ChapterExportResult>,
-  exportOriginalChapters: (request: { directory: string; exportJobId: string; chapters: FinalChapterExportInput[] }) =>
+  exportOriginalChapters: (request: { directory: string; exportJobId: string; chapters: FinalChapterExportInput[]; recoveryOnConflict?: boolean }) =>
     ipcRenderer.invoke(IPC_CHANNELS.exportOriginalChapters, request) as Promise<ChapterExportResult>,
   exportCombinedChapters: (request: {
     directory: string;
@@ -170,7 +197,18 @@ const storyTool: StoryToolApi = Object.freeze({
     endChapter: number;
     sourceChapterNumbers: number[];
     chapters: FinalChapterExportInput[];
+    recoveryOnConflict?: boolean;
   }) => ipcRenderer.invoke(IPC_CHANNELS.exportCombinedChapters, request) as Promise<CombinedChapterExportResult>,
+  exportCombinedSourceChapters: (request: {
+    directory: string;
+    exportJobId: string;
+    sourceStartChapter: number;
+    sourceEndChapter: number;
+    outputStartChapter: number;
+    outputEndChapter: number;
+    chapters: FinalChapterExportInput[];
+    recoveryOnConflict?: boolean;
+  }) => ipcRenderer.invoke(IPC_CHANNELS.exportCombinedSourceChapters, request) as Promise<CombinedChapterExportResult>,
   getGeminiConfig: () =>
     ipcRenderer.invoke(IPC_CHANNELS.geminiGetConfig) as Promise<{ hasApiKey: boolean; model: string }>,
   configureGemini: (request: { apiKey?: string | null; model?: string }) =>

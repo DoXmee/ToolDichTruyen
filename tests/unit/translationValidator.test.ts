@@ -56,11 +56,11 @@ describe('translation validator', () => {
     }));
   });
 
-  it('detects likely truncation and repeated output', () => {
-    expect(issueCodes('她说了很多话', 'Cô ấy nói rằng mọi chuyện sẽ ổn…')).toContain(
+  it('does not reject valid output merely because a chunk ends at punctuation or an open quote', () => {
+    expect(issueCodes('她说了很多话', 'Cô ấy nói rằng mọi chuyện sẽ ổn…')).not.toContain(
       'likely_truncated',
     );
-    expect(issueCodes('她打开门', 'Cô mở (cánh cửa.')).toContain('likely_truncated');
+    expect(issueCodes('她打开门', 'Cô mở (cánh cửa.')).not.toContain('likely_truncated');
     expect(issueCodes('他转身对主任说道：', 'Anh quay người, nói với chủ nhiệm…'))
       .not.toContain('likely_truncated');
     expect(issueCodes('她若真的只是一個二十來歲的小姑娘，', 'Nếu cô thật sự chỉ là một cô gái hơn hai mươi tuổi,'))
@@ -70,8 +70,20 @@ describe('translation validator', () => {
     expect(issueCodes('他说：“', 'Anh nói: “'))
       .not.toContain('likely_truncated');
 
-    const repeated = Array(3).fill('Cô quay người bước ra khỏi căn phòng.').join('\n');
+    const repeated = Array(3).fill(
+      'Cô quay người bước ra khỏi căn phòng, khép cánh cửa thật nhẹ rồi đi dọc hành lang vắng lặng. Ngoài cửa sổ, mưa phùn vẫn rơi đều trên mái hiên tối màu.',
+    ).join('\n\n');
     expect(issueCodes('她离开了房间。', repeated)).toContain('repetition');
+  });
+
+  it('allows a short natural sentence repeated in different story contexts', () => {
+    const translation = [
+      'Lâm Mỹ Ngôn khẽ thở dài. Cô nhìn ra bến xe và chờ Từ Mẫn đến.',
+      'Sau khi nghe về cô em gái, Lâm Mỹ Ngôn khẽ thở dài. Cô biết đứa trẻ ấy rất vất vả.',
+      'Lâm Mỹ Ngôn khẽ thở dài. Sau đó cô nhắc Từ Mẫn phải nắm lấy cơ hội cuối cùng.',
+    ].join('\n\n');
+
+    expect(issueCodes('原文 đủ dài để kiểm tra', translation)).not.toContain('repetition');
   });
 
   it('bảo toàn số lượng và thứ tự tiêu đề chương trong nguồn web', () => {

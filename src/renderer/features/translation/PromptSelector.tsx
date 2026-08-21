@@ -3,30 +3,30 @@ import { Icon } from '../../components/Icon';
 
 interface PromptSelectorProps {
   mode: PromptMode;
-  prompts: { historical: string; modern: string };
+  prompts: { period: string; modern: string; ancient: string; cultivation: string };
   customPrompt: string;
   /** Optional replacement number for the first exported link chapter. */
   outputChapterStart?: number;
   /** First source chapter selected in the catalog, shown as the safe default. */
   suggestedChapterStart?: number;
   omitOutputChapterTitles: boolean;
+  exportCombinedSourceChapters: boolean;
   loading?: boolean;
   onModeChange: (mode: PromptMode) => void;
   onCustomPromptChange: (value: string) => void;
   onOutputChapterStartChange: (value: number | undefined) => void;
   onOmitOutputChapterTitlesChange: (value: boolean) => void;
+  onExportCombinedSourceChaptersChange: (value: boolean) => void;
 }
 
 interface PromptCardProps {
   checked: boolean;
-  description: string;
   label: string;
-  meta: string;
   value: PromptMode;
   onChange: (mode: PromptMode) => void;
 }
 
-function PromptCard({ checked, description, label, meta, value, onChange }: PromptCardProps) {
+function PromptCard({ checked, label, value, onChange }: PromptCardProps) {
   return (
     <label className={`prompt-card${checked ? ' prompt-card--selected' : ''}`}>
       <input
@@ -38,11 +38,7 @@ function PromptCard({ checked, description, label, meta, value, onChange }: Prom
       />
       <span className="prompt-card__radio" aria-hidden="true" />
       <span className="prompt-card__body">
-        <span className="prompt-card__topline">
-          <strong>{label}</strong>
-          <span>{meta}</span>
-        </span>
-        <small>{description}</small>
+        <strong>{label}</strong>
       </span>
     </label>
   );
@@ -55,13 +51,14 @@ export function PromptSelector({
   outputChapterStart,
   suggestedChapterStart,
   omitOutputChapterTitles,
+  exportCombinedSourceChapters,
   loading = false,
   onModeChange,
   onCustomPromptChange,
   onOutputChapterStartChange,
   onOmitOutputChapterTitlesChange,
+  onExportCombinedSourceChaptersChange,
 }: PromptSelectorProps) {
-  const promptMeta = (value: string) => loading ? 'Đang nạp…' : value ? `${value.length.toLocaleString('vi-VN')} ký tự` : 'Chưa có prompt';
   const canRenumberLinkChapters = typeof suggestedChapterStart === 'number';
   const numberingHint = outputChapterStart === undefined
     ? (canRenumberLinkChapters
@@ -79,28 +76,36 @@ export function PromptSelector({
         <Icon name="wand" />
       </div>
 
-      <div className="prompt-list">
+      <div className="prompt-list prompt-list--genres">
         <PromptCard
           checked={mode === 'period'}
-          description="Giữ không khí thời đại, tên Hán–Việt và xưng hô phù hợp bối cảnh."
           label="Truyện niên đại"
-          meta={promptMeta(prompts.historical)}
           value="period"
           onChange={onModeChange}
         />
         <PromptCard
           checked={mode === 'modern'}
-          description="Lời văn tự nhiên, thuật ngữ đời sống và nhịp thoại hiện đại."
           label="Truyện hiện đại"
-          meta={promptMeta(prompts.modern)}
           value="modern"
           onChange={onModeChange}
         />
         <PromptCard
+          checked={mode === 'ancient'}
+          label="Truyện cổ trang"
+          value="ancient"
+          onChange={onModeChange}
+        />
+        <PromptCard
+          checked={mode === 'cultivation'}
+          label="Truyện tu tiên"
+          value="cultivation"
+          onChange={onModeChange}
+        />
+      </div>
+      <div className="prompt-list prompt-list--custom">
+        <PromptCard
           checked={mode === 'custom'}
-          description="Dùng chỉ dẫn riêng của bạn cho thể loại hoặc giọng văn đặc biệt."
           label="Khác"
-          meta={customPrompt.trim() ? `${customPrompt.length.toLocaleString('vi-VN')} ký tự` : 'Tự nhập prompt'}
           value="custom"
           onChange={onModeChange}
         />
@@ -138,16 +143,28 @@ export function PromptSelector({
             }}
           />
         </label>
-        <label className="chapter-numbering-control__toggle" htmlFor="omit-output-chapter-titles">
-          <input
-            checked={omitOutputChapterTitles}
-            disabled={!canRenumberLinkChapters}
-            id="omit-output-chapter-titles"
-            type="checkbox"
-            onChange={(event) => onOmitOutputChapterTitlesChange(event.target.checked)}
-          />
-          <span>Không lấy tên chương</span>
-        </label>
+        <div className="chapter-numbering-control__toggles">
+          <label className="chapter-numbering-control__toggle" htmlFor="omit-output-chapter-titles">
+            <input
+              checked={omitOutputChapterTitles}
+              disabled={!canRenumberLinkChapters}
+              id="omit-output-chapter-titles"
+              type="checkbox"
+              onChange={(event) => onOmitOutputChapterTitlesChange(event.target.checked)}
+            />
+            <span>Không lấy tên chương</span>
+          </label>
+          <label className="chapter-numbering-control__toggle" htmlFor="export-combined-source-chapters">
+            <input
+              checked={exportCombinedSourceChapters}
+              disabled={!canRenumberLinkChapters}
+              id="export-combined-source-chapters"
+              type="checkbox"
+              onChange={(event) => onExportCombinedSourceChaptersChange(event.target.checked)}
+            />
+            <span>Lưu file tổng các chương gốc</span>
+          </label>
+        </div>
         <p id="output-chapter-number-hint">{numberingHint}</p>
         <p className="chapter-numbering-control__scope">Chỉ dùng khi nhập link chương truyện hoặc bộ truyện.</p>
       </section>

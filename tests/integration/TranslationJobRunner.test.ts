@@ -62,6 +62,27 @@ function severeValidationResult(valid: boolean): TranslationValidationResult {
   }
 }
 
+function nonShortSevereValidationResult(valid: boolean): TranslationValidationResult {
+  return {
+    valid,
+    issues: valid
+      ? []
+      : [{
+          code: 'source_echo',
+          severity: 'error',
+          message: 'Bản dịch lặp lại nguyên văn nguồn.',
+        }],
+    hanCharacters: [],
+    metrics: {
+      sourceCharacters: 10,
+      translatedCharacters: valid ? 10 : 10,
+      sourceHanCharacters: 0,
+      remainingHanCharacters: 0,
+      lengthRatio: 1,
+    },
+  }
+}
+
 function chatGptPageFailureValidation(): TranslationValidationResult {
   return {
     valid: false,
@@ -184,12 +205,13 @@ describe('TranslationJobRunner', () => {
 
     const snapshot = await runner.get(jobId)
     expect(snapshot).toMatchObject({ id: jobId, status: 'running', totalSegments: 1 })
-    expect(snapshot).not.toHaveProperty('sourceText')
+    expect(snapshot).toHaveProperty('sourceText', '她站在窗前，安静地看着雨。')
     expect(snapshot).not.toHaveProperty('resolvedPrompt')
     expect(snapshot).toHaveProperty('translatedText', '')
     expect(snapshot.segments[0]).not.toHaveProperty('sourceText')
     expect(snapshot.segments[0]).not.toHaveProperty('translatedText')
     expect(runner.activeJobs()[0]).not.toHaveProperty('translatedText')
+    expect(runner.activeJobs()[0]).not.toHaveProperty('sourceText')
 
     await runner.cancel(jobId)
   })
@@ -310,7 +332,7 @@ describe('TranslationJobRunner', () => {
       cancelGeneration: vi.fn().mockResolvedValue(undefined),
     }
     const runner = new TranslationJobRunner({ chatGpt, persistence })
-    const completed = waitForEvent(runner, (event) => event.type === 'job-completed')
+    const completed = waitForEvent(runner, (event) => event.type === 'job-completed', 15_000)
 
     const { jobId } = await runner.start({
       source: '她走进房间，轻轻关上门，平静地看着众人。',
@@ -323,14 +345,20 @@ describe('TranslationJobRunner', () => {
     expect(event.jobId).toBe(jobId)
     expect(sendAndWait).toHaveBeenCalledTimes(1)
     expect(sendAndWait.mock.calls[0]?.[0]).toContain('<NGUYEN_BAN')
-    const saved = persistence.values.get(jobId) as { status: string; translatedText: string }
+    const saved = persistence.values.get(jobId) as { status: string; translatedText: string; activityLog?: unknown[] }
     expect(saved.status).toBe('completed')
     expect(saved.translatedText).toContain('Cô bước vào căn phòng')
+    expect(saved.activityLog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tone: 'info', message: expect.stringContaining('kiểm tra phiên ChatGPT') }),
+      expect.objectContaining({ tone: 'info', message: expect.stringContaining('Gửi đoạn 1/1') }),
+      expect.objectContaining({ tone: 'success', message: expect.stringContaining('đạt kiểm tra') }),
+    ]))
     await expect(runner.get(jobId)).resolves.toMatchObject({
       id: jobId,
       status: 'completed',
       translatedText: expect.stringContaining('Cô bước vào căn phòng'),
       segments: [expect.objectContaining({ status: 'completed' })],
+      activityLog: expect.arrayContaining([expect.objectContaining({ at: expect.any(String) })]),
     })
     expect(await runner.get(jobId)).not.toHaveProperty('settings')
   })
@@ -357,7 +385,7 @@ describe('TranslationJobRunner', () => {
 
     expect(persistence.values.get(jobId)).toMatchObject({
       settings: {
-        maxCharsPerSegment: 3_000,
+        maxCharsPerSegment: 12_000,
         responseTimeoutMs: 480_000,
         maxRetries: 3,
       },
@@ -617,7 +645,7 @@ describe('TranslationJobRunner', () => {
         freshChatEvents.push(event)
       }
     })
-    const failed = waitForEvent(runner, (event) => event.type === 'job-failed')
+    const failed = waitForEvent(runner, (event) => event.type === 'job-failed', 15_000)
 
     const { jobId } = await runner.start({
       source: '她看了他一眼，转身离开。',
@@ -683,6 +711,51 @@ describe('TranslationJobRunner', () => {
       expect((persistence.values.get(jobId) as { status: string }).status).toBe('completed')
     })
     expect(sendAndWait).toHaveBeenCalledTimes(2)
+  })
+
+  it('giữ bền đích xuất link qua pause rồi resume checkpoint', async () => {
+    const persistence = createPersistence()
+    let resolveTranslation!: (value: string) => void
+    const pendingTranslation = new Promise<string>((resolve) => { resolveTranslation = resolve })
+    const sendAndWait = vi.fn().mockReturnValue(pendingTranslation)
+    const runner = new TranslationJobRunner({
+      chatGpt: {
+        ensureReady: vi.fn().mockResolvedValue(undefined),
+        startNewConversation: vi.fn().mockResolvedValue(undefined),
+        sendAndWait,
+        cancelGeneration: vi.fn().mockResolvedValue(undefined),
+      },
+      persistence,
+    })
+    const binding = {
+      directory: 'D:\\Xuat\\Bo-truyen',
+      startChapter: 3,
+      endChapter: 10,
+      sourceChapterNumbers: [3, 4, 5, 6, 7, 8, 9, 10],
+      exportOriginalChapters: true,
+      exportCombinedChapters: true,
+      outputChapterStart: 101,
+      omitOutputChapterTitles: true,
+    }
+    const { jobId } = await runner.start({
+      source: 'Nguồn dùng để kiểm thử lưu tiếp checkpoint.',
+      promptMode: 'modern',
+      resolvedPrompt: 'BASE-PROMPT',
+      autoExport: binding,
+      settings: { maxRetries: 1 },
+    })
+    await vi.waitFor(() => expect(sendAndWait).toHaveBeenCalledOnce())
+    await runner.pause(jobId)
+
+    await expect(runner.get(jobId)).resolves.toMatchObject({
+      status: 'paused',
+      autoExport: binding,
+    })
+    expect(persistence.values.get(jobId)).toMatchObject({ autoExport: binding })
+
+    await runner.resume(jobId)
+    resolveTranslation('Bản dịch hoàn tất.')
+    await vi.waitFor(() => expect((persistence.values.get(jobId) as { status: string }).status).toBe('completed'))
   })
 
   it('shutdown giữa local repair rồi cold restart chỉ gửi lại đúng câu lỗi', async () => {
@@ -872,7 +945,7 @@ describe('TranslationJobRunner', () => {
     expect(sendAndWait).toHaveBeenCalledTimes(2)
     const retryPrompt = String(sendAndWait.mock.calls[1]?.[0])
     expect(retryPrompt).toContain('Dịch đầy đủ sang tiếng Việt.')
-    expect(retryPrompt).toContain('BAN_DICH_LOI')
+    expect(retryPrompt).not.toContain('BAN_DICH_LOI')
     expect(retryPrompt).toContain('她默默地向前走去。')
     expect(retryPrompt).not.toContain('CAU_CAN_SUA')
   })
@@ -930,7 +1003,7 @@ describe('TranslationJobRunner', () => {
         ensureReady: vi.fn().mockResolvedValue(undefined), startNewConversation,
         sendAndWait, cancelGeneration: vi.fn().mockResolvedValue(undefined),
       }, persistence,
-      validator: vi.fn((_source: string, translation: string) => severeValidationResult(translation === 'BAN-DICH-HOP-LE')),
+      validator: vi.fn((_source: string, translation: string) => nonShortSevereValidationResult(translation === 'BAN-DICH-HOP-LE')),
     })
     const completed = waitForEvent(runner, (event) => event.type === 'job-completed')
 
@@ -944,7 +1017,7 @@ describe('TranslationJobRunner', () => {
     const retry = String(sendAndWait.mock.calls[1]?.[0])
     expect(retry).toContain('BASE-LOI-LON')
     expect(retry).toContain('NGUON-DAY-DU-CHO-LOI-LON')
-    expect(retry).toContain('<BAN_DICH_LOI>')
+    expect(retry).not.toContain('<BAN_DICH_LOI>')
   })
 
   it('lỗi adapter an toàn đổi chat nhưng giữ toàn bộ ngân sách retry còn lại', async () => {
@@ -960,7 +1033,7 @@ describe('TranslationJobRunner', () => {
         ensureReady: vi.fn().mockResolvedValue(undefined), startNewConversation,
         sendAndWait, cancelGeneration: vi.fn().mockResolvedValue(undefined),
       }, persistence,
-      validator: vi.fn((_source: string, translation: string) => severeValidationResult(translation === 'BAN-DICH-HOP-LE')),
+      validator: vi.fn((_source: string, translation: string) => nonShortSevereValidationResult(translation === 'BAN-DICH-HOP-LE')),
     })
     const completed = waitForEvent(runner, (event) => event.type === 'job-completed')
 
@@ -1123,7 +1196,7 @@ describe('TranslationJobRunner', () => {
     expect(saved.error).toContain('Phản hồi cũ có thể vẫn đang chạy.')
   })
 
-  it('validation lỗi nặng retry trong chat hiện tại và không tạo fresh chat', async () => {
+  it('bản dịch ngắn bất thường xóa chat tool cũ rồi gửi lại trong chat mới', async () => {
     const persistence = createPersistence()
     const trace: string[] = []
     let conversation = 0
@@ -1164,22 +1237,86 @@ describe('TranslationJobRunner', () => {
     })
     await completed
 
-    expect(trace).toEqual(['chat-1', 'send-1', 'send-1', 'send-1'])
-    expect(startNewConversation).toHaveBeenCalledOnce()
+    expect(trace).toEqual(['chat-1', 'send-1', 'send-1', 'chat-2', 'send-2'])
+    expect(startNewConversation).toHaveBeenCalledTimes(2)
     expect(sendAndWait).toHaveBeenCalledTimes(3)
     const retryPrompt = String(sendAndWait.mock.calls[2]?.[0])
     expect(retryPrompt).toContain('BASE-PROMPT-FRESH-CHAT')
     expect(retryPrompt).toContain('SOURCE-TWO')
-    expect(retryPrompt).toContain('<BAN_DICH_LOI>')
-    expect(retryPrompt).not.toContain('NGỮ CẢNH KHÔI PHỤC CHO CHAT MỚI')
+    expect(retryPrompt).not.toContain('<BAN_DICH_LOI>')
+    expect(retryPrompt).toContain('NGỮ CẢNH KHÔI PHỤC CHO CHAT MỚI')
     expect(persistence.values.get(jobId)).toMatchObject({
       status: 'completed',
       freshChatRecoveryAttempts: {},
+      shortTranslationRecoveryAttempts: {},
       segments: [
         expect.objectContaining({ id: 'segment-1', status: 'completed', attempts: 1 }),
         expect.objectContaining({ id: 'segment-2', status: 'completed', attempts: 2 }),
       ],
     })
+  })
+
+  it('bản dịch ngắn lặp lại khởi động lại browser rồi tạo chat mới trước khi gửi lại', async () => {
+    const persistence = createPersistence()
+    let conversation = 0
+    const trace: string[] = []
+    const startNewConversation = vi.fn(async () => {
+      conversation += 1
+      trace.push(`chat-${conversation}`)
+    })
+    const restartForRecovery = vi.fn(async () => {
+      trace.push('browser-restart')
+    })
+    const sendAndWait = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        trace.push(`send-${conversation}`)
+        return 'LOI-NGAN-1'
+      })
+      .mockImplementationOnce(async () => {
+        trace.push(`send-${conversation}`)
+        return 'LOI-NGAN-2'
+      })
+      .mockImplementationOnce(async () => {
+        trace.push(`send-${conversation}`)
+        return 'BAN-DICH-HOAN-TAT'
+      })
+    const validator = vi.fn((_source: string, translation: string) => (
+      severeValidationResult(translation === 'BAN-DICH-HOAN-TAT')
+    ))
+    const runner = new TranslationJobRunner({
+      chatGpt: {
+        ensureReady: vi.fn().mockResolvedValue(undefined),
+        startNewConversation,
+        sendAndWait,
+        cancelGeneration: vi.fn().mockResolvedValue(undefined),
+        restartForRecovery,
+      },
+      persistence,
+      validator,
+    })
+    const completed = waitForEvent(runner, (event) => event.type === 'job-completed')
+
+    await runner.start({
+      source: 'SOURCE-CHO-LOI-NGAN',
+      promptMode: 'modern',
+      resolvedPrompt: 'BASE-PROMPT-LOI-NGAN',
+      settings: { maxRetries: 2 },
+    })
+    await completed
+
+    expect(trace).toEqual([
+      'chat-1', 'send-1',
+      'chat-2', 'send-2',
+      'browser-restart',
+      'chat-3', 'send-3',
+    ])
+    expect(restartForRecovery).toHaveBeenCalledOnce()
+    expect(startNewConversation).toHaveBeenCalledTimes(3)
+    for (const [prompt] of sendAndWait.mock.calls) {
+      expect(String(prompt)).toContain('BASE-PROMPT-LOI-NGAN')
+      expect(String(prompt)).toContain('NGUYEN_BAN')
+    }
   })
 
   it('validation hết lượt fail trong chat hiện tại, retry thủ công vẫn có ngân sách mới', async () => {
@@ -1470,6 +1607,49 @@ describe('TranslationJobRunner', () => {
     expect(sendAndWait).toHaveBeenCalledTimes(3)
     expect(String(sendAndWait.mock.calls[1]?.[0])).toContain('BASE-PROMPT-MARKER-RECOVERY')
     expect(String(sendAndWait.mock.calls[2]?.[0])).toContain('BASE-PROMPT-MARKER-RECOVERY')
+    expect(persistence.values.get(jobId)).toMatchObject({
+      status: 'completed',
+      segments: [expect.objectContaining({ status: 'completed', attempts: 3 })],
+    })
+  })
+
+  it('lỗi marker vẫn tiếp tục bằng chat mới khi browser không thể khởi động lại', async () => {
+    const persistence = createPersistence()
+    const reloadForRecovery = vi.fn().mockResolvedValue(undefined)
+    const restartForRecovery = vi.fn().mockRejectedValue(new Error('Không đóng được context tạm thời.'))
+    const startNewConversation = vi.fn().mockResolvedValue(undefined)
+    const sendAndWait = vi
+      .fn()
+      .mockRejectedValueOnce(new ChatGptConversationVerificationError('Thiếu marker lần 1.'))
+      .mockRejectedValueOnce(new ChatGptConversationVerificationError('Thiếu marker lần 2.'))
+      .mockResolvedValueOnce('BẢN DỊCH SAU KHI TẠO CHAT MỚI.')
+    const runner = new TranslationJobRunner({
+      chatGpt: {
+        ensureReady: vi.fn().mockResolvedValue(undefined),
+        startNewConversation,
+        sendAndWait,
+        cancelGeneration: vi.fn().mockResolvedValue(undefined),
+        reloadForRecovery,
+        restartForRecovery,
+      },
+      persistence,
+      validator: vi.fn(() => severeValidationResult(true)),
+    })
+    const completed = waitForEvent(runner, (event) => event.type === 'job-completed')
+
+    const { jobId } = await runner.start({
+      source: 'Nguồn cần tiếp tục khi browser khởi động lại lỗi.',
+      promptMode: 'modern',
+      resolvedPrompt: 'BASE-PROMPT-MARKER-FALLBACK',
+      settings: { maxRetries: 3 },
+    })
+    await completed
+
+    expect(reloadForRecovery).toHaveBeenCalledOnce()
+    expect(restartForRecovery).toHaveBeenCalledOnce()
+    expect(startNewConversation).toHaveBeenCalledTimes(3)
+    expect(sendAndWait).toHaveBeenCalledTimes(3)
+    expect(String(sendAndWait.mock.calls[2]?.[0])).toContain('BASE-PROMPT-MARKER-FALLBACK')
     expect(persistence.values.get(jobId)).toMatchObject({
       status: 'completed',
       segments: [expect.objectContaining({ status: 'completed', attempts: 3 })],
@@ -2187,4 +2367,76 @@ describe('TranslationJobRunner', () => {
     expect(startNewConversation).toHaveBeenCalledOnce()
     expect(sendAndWait).toHaveBeenCalledOnce()
   })
+
+  it('phản hồi an toàn nhận đủ ba ngữ cảnh trong chat cũ rồi một lần ở chat mới', async () => {
+    const persistence = createPersistence()
+    const refusal = 'Không thể hiển thị nội dung này vì lý do an toàn. Tìm hiểu thêm về cách tiếp cận của chúng tôi đối với các cuộc hội thoại nhạy cảm.'
+    const startNewConversation = vi.fn().mockResolvedValue(undefined)
+    const sendAndWait = vi.fn()
+      .mockResolvedValueOnce(refusal)
+      .mockResolvedValueOnce(refusal)
+      .mockResolvedValueOnce(refusal)
+      .mockResolvedValueOnce(refusal)
+      .mockResolvedValueOnce(refusal)
+      .mockResolvedValueOnce('BẢN DỊCH ĐẦY ĐỦ ĐÃ ĐƯỢC PHỤC HỒI.')
+    const runner = new TranslationJobRunner({
+      chatGpt: {
+        ensureReady: vi.fn().mockResolvedValue(undefined),
+        startNewConversation,
+        sendAndWait,
+        cancelGeneration: vi.fn().mockResolvedValue(undefined),
+      },
+      persistence,
+      validator: vi.fn((_source: string, translation: string) => severeValidationResult(
+        translation === 'BẢN DỊCH ĐẦY ĐỦ ĐÃ ĐƯỢC PHỤC HỒI.',
+      )),
+    })
+    const completed = waitForEvent(runner, (event) => event.type === 'job-completed', 15_000)
+
+    await runner.start({
+      source: 'NGUỒN CÓ TÌNH TIẾT HƯ CẤU.',
+      promptMode: 'modern',
+      resolvedPrompt: 'PROMPT GỐC DỊCH TRUYỆN',
+      settings: { maxRetries: 3 },
+    })
+    await completed
+
+    expect(startNewConversation).toHaveBeenCalledTimes(2)
+    expect(sendAndWait).toHaveBeenCalledTimes(6)
+    const prompts = sendAndWait.mock.calls.map(([prompt]) => String(prompt))
+    expect(prompts.filter((prompt) => prompt.includes('NGỮ CẢNH VÀ MỤC ĐÍCH XỬ LÝ VĂN BẢN'))).toHaveLength(4)
+    expect(prompts[4]).not.toContain('NGỮ CẢNH VÀ MỤC ĐÍCH XỬ LÝ VĂN BẢN')
+    expect(prompts[5]).toContain('NGỮ CẢNH VÀ MỤC ĐÍCH XỬ LÝ VĂN BẢN')
+  }, 15_000)
+
+  it('phản hồi an toàn lặp lại sau lần thử có ngữ cảnh ở chat mới thì báo lỗi', async () => {
+    const persistence = createPersistence()
+    const refusal = 'Không thể hiển thị nội dung này vì lý do an toàn.'
+    const startNewConversation = vi.fn().mockResolvedValue(undefined)
+    const sendAndWait = vi.fn().mockResolvedValue(refusal)
+    const runner = new TranslationJobRunner({
+      chatGpt: {
+        ensureReady: vi.fn().mockResolvedValue(undefined),
+        startNewConversation,
+        sendAndWait,
+        cancelGeneration: vi.fn().mockResolvedValue(undefined),
+      },
+      persistence,
+      validator: vi.fn(() => severeValidationResult(false)),
+    })
+    const failed = waitForEvent(runner, (event) => event.type === 'job-failed', 15_000)
+
+    const { jobId } = await runner.start({
+      source: 'NGUỒN CÓ TÌNH TIẾT HƯ CẤU.',
+      promptMode: 'modern',
+      resolvedPrompt: 'PROMPT GỐC DỊCH TRUYỆN',
+      settings: { maxRetries: 3 },
+    })
+    await failed
+
+    expect(startNewConversation).toHaveBeenCalledTimes(2)
+    expect(sendAndWait).toHaveBeenCalledTimes(6)
+    expect((persistence.values.get(jobId) as { error: string }).error)
+      .toContain('tiếp tục từ chối nội dung')
+  }, 15_000)
 })

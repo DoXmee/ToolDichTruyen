@@ -9,6 +9,12 @@ const live = process.env.RUN_STORY_SOURCE_LIVE === '1' ? describe : describe.ski
 
 const XBANXIA_BOOK_URL = 'https://www.xbanxia.cc/books/143300.html';
 const XBANXIA_CHAPTER_1_URL = 'https://www.xbanxia.cc/books/143300/28251886.html';
+const XBANXIA_REGRESSION_CHAPTER_URL = 'https://www.xbanxia.cc/books/420871/73048292.html';
+const XBANXIA_EXTRA_CHAPTER_URLS = [
+  'https://www.xbanxia.cc/books/420871/73048293.html',
+  'https://www.xbanxia.cc/books/420871/73048294.html',
+  'https://www.xbanxia.cc/books/143300/28251894.html',
+] as const;
 
 function expectCleanXbanxiaText(text: string): void {
   expect(text.length).toBeGreaterThan(500);
@@ -188,5 +194,34 @@ live('nguồn truyện thật (opt-in)', () => {
     expect(result.combinedSource.match(/^Chương\s+1\s*:/gmu)).toHaveLength(1);
     expectCleanXbanxiaText(result.chapters[0]?.sourceText ?? '');
     expectCleanXbanxiaText(result.combinedSource);
+  }, 120_000);
+
+  it('Xbanxia mẫu 420871 chỉ giữ trọn #nr1, không lấy đầu/cuối trang', async () => {
+    const analysis = await service.analyzeUrl(XBANXIA_REGRESSION_CHAPTER_URL);
+    expect(analysis).toMatchObject({ site: 'xbanxia', inputKind: 'chapter' });
+    expect(analysis.defaultSelectedChapterIds).toHaveLength(1);
+    const result = await service.fetchChapters({
+      analysisId: analysis.analysisId,
+      chapterIds: analysis.defaultSelectedChapterIds,
+    });
+    const text = result.chapters[0]?.sourceText ?? '';
+    expect(text).toContain('自從林美言從海島下鄉回到江城後');
+    expect(text).toContain('迫切地想要見到闊別一天的女兒');
+    expect(text).not.toMatch(/^\s*第\s*1\s*章/u);
+    expectCleanXbanxiaText(text);
+  }, 120_000);
+
+  it.each(XBANXIA_EXTRA_CHAPTER_URLS)('Xbanxia %s giữ sạch toàn bộ chương trực tiếp', async (url) => {
+    const analysis = await service.analyzeUrl(url);
+    expect(analysis).toMatchObject({ site: 'xbanxia', inputKind: 'chapter' });
+    expect(analysis.defaultSelectedChapterIds).toHaveLength(1);
+    const result = await service.fetchChapters({
+      analysisId: analysis.analysisId,
+      chapterIds: analysis.defaultSelectedChapterIds,
+    });
+    const text = result.chapters[0]?.sourceText ?? '';
+    expect(result.chapters[0]?.mergedPartCount).toBe(1);
+    expect(text).not.toMatch(/^\s*第\s*\d+\s*章/u);
+    expectCleanXbanxiaText(text);
   }, 120_000);
 });

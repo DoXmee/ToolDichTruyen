@@ -6,6 +6,8 @@ files:
   - out/**/*
   - package.json
 extraResources:
+  - from: build/tool-dich-truyen.ico
+    to: ToolDichTruyen.ico
   # Runtime prompts stay below Electron's resources directory.
   - from: resources/prompts
     to: resources/prompts
@@ -17,6 +19,7 @@ extraFiles:
 asarUnpack:
   - node_modules/playwright-core/**/*
 win:
+  icon: build/tool-dich-truyen.ico
   executableName: ToolDichTruyen
   target:
     - nsis

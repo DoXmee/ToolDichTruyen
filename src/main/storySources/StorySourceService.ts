@@ -32,6 +32,27 @@ interface ActiveOperation {
   controller: AbortController;
 }
 
+/**
+ * These sites are deliberately read through the paired, everyday browser
+ * profile rather than an app-owned Playwright context.  That keeps a
+ * Cloudflare verification in the browser the person actually uses and avoids
+ * treating the verification as content or attempting to automate it.
+ */
+type BrowserCompanionSite = "huliwang" | "xszj";
+
+function isBrowserCompanionSite(site: StorySourceAnalysis["site"]): site is BrowserCompanionSite {
+  return site === "huliwang" || site === "xszj";
+}
+
+function browserCompanionSiteLabel(site: BrowserCompanionSite): string {
+  return site === "huliwang" ? "Huliwang" : "XSZJ/爱下电子书";
+}
+
+function browserCompanionRequiredMessage(site: BrowserCompanionSite): string {
+  const label = browserCompanionSiteLabel(site);
+  return `${label} chỉ được đọc bằng trình duyệt mặc định và hồ sơ bạn dùng hằng ngày. Hãy bấm Kết nối trình duyệt mặc định; tool không mở trình duyệt tự động cho ${label}.`;
+}
+
 function defaultSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -104,6 +125,7 @@ export class StorySourceService implements StorySourceServiceApi {
   private readonly suppliedPageClient?: StoryPageClient;
   private pageClient?: StoryPageClient;
   private huliwangCompanion?: HuliwangCompanionSession;
+  private huliwangCompanionSite?: BrowserCompanionSite;
   private huliwangCompanionReady = false;
   private companionPairingInProgress = false;
   private active?: ActiveOperation;
@@ -194,9 +216,9 @@ export class StorySourceService implements StorySourceServiceApi {
 
   /**
    * Opens a tool-owned loopback pairing page in the person's OS-default daily
-   * browser and waits for the narrowly scoped Huliwang Companion extension.
-   * After pairing, Huliwang snapshots come from that ordinary browser/profile;
-   * no browser cookies, credentials, CDP access, or arbitrary proxy are exposed.
+   * browser and waits for the narrowly scoped companion extension. After
+   * pairing, snapshots come from that ordinary browser/profile; no browser
+   * cookies, credentials, CDP access, or arbitrary proxy are exposed.
    */
   public async openManualVerification(rawUrl: string): Promise<void> {
     this.assertOpen();
@@ -205,12 +227,13 @@ export class StorySourceService implements StorySourceServiceApi {
     }
 
     const parsed = parseStoryUrl(rawUrl);
-    if (parsed.site !== "huliwang") {
+    if (!isBrowserCompanionSite(parsed.site)) {
       throw new StorySourceError(
         "UNSUPPORTED_URL",
-        "Kết nối trình duyệt mặc định chỉ hỗ trợ link Huliwang hợp lệ.",
+        "Kết nối trình duyệt mặc định chỉ hỗ trợ link Huliwang hoặc XSZJ hợp lệ.",
       );
     }
+    const companionSite = parsed.site;
 
     this.companionPairingInProgress = true;
     let session: HuliwangCompanionSession | undefined;
@@ -220,10 +243,12 @@ export class StorySourceService implements StorySourceServiceApi {
       await this.releasePageClient();
       const previous = this.huliwangCompanion;
       this.huliwangCompanion = undefined;
+      this.huliwangCompanionSite = undefined;
       this.huliwangCompanionReady = false;
       await previous?.close();
 
-      const factory = this.options.huliwangCompanionFactory ?? (() => startHuliwangBrowserBridge());
+      const factory = this.options.huliwangCompanionFactory
+        ?? (() => startHuliwangBrowserBridge({ site: companionSite }));
       session = await factory();
       this.huliwangCompanion = session;
       const launcher = this.options.manualVerificationLauncher ?? defaultManualVerificationLauncher;
@@ -232,12 +257,14 @@ export class StorySourceService implements StorySourceServiceApi {
       // token. The renderer may immediately retry Analyze after this returns.
       await session.waitUntilPaired();
       if (this.closed || this.huliwangCompanion !== session) {
-        throw new StorySourceError("CANCELLED", "Phiên ghép nối Huliwang đã đóng.");
+        throw new StorySourceError("CANCELLED", `Phiên ghép nối ${browserCompanionSiteLabel(companionSite)} đã đóng.`);
       }
+      this.huliwangCompanionSite = companionSite;
       this.huliwangCompanionReady = true;
     } catch (error) {
       if (session && this.huliwangCompanion === session) {
         this.huliwangCompanion = undefined;
+        this.huliwangCompanionSite = undefined;
         this.huliwangCompanionReady = false;
       }
       await session?.close().catch(() => undefined);
@@ -341,6 +368,7 @@ export class StorySourceService implements StorySourceServiceApi {
     this.pageClient = undefined;
     const companion = this.huliwangCompanion;
     this.huliwangCompanion = undefined;
+    this.huliwangCompanionSite = undefined;
     this.huliwangCompanionReady = false;
     await Promise.all([client?.close?.(), companion?.close()]);
     this.emitter.removeAllListeners();
@@ -353,21 +381,21 @@ export class StorySourceService implements StorySourceServiceApi {
     site: StorySourceAnalysis["site"],
   ): Promise<AdapterRuntime> {
     let client: StoryPageClient;
-    if (site === "huliwang") {
-      if (this.huliwangCompanionReady && this.huliwangCompanion) {
-        client = this.huliwangCompanion.client;
+    if (isBrowserCompanionSite(site)) {
+      if (this.hasBrowserCompanionFor(site)) {
+        client = this.huliwangCompanion!.client;
       } else if (this.suppliedPageClient) {
         // Explicitly supplied clients are retained as a deterministic adapter
         // test boundary. Production never supplies one here.
         client = this.suppliedPageClient;
       } else {
-        // Never launch Playwright for Huliwang, even for an initial probe.
-        // Cloudflare classifies that browser before the ordinary daily profile
-        // gets a chance to load. The renderer offers the companion pairing
-        // action and retries Analyze after the real default browser connects.
+        // Never launch Playwright for either companion-only source, even for
+        // an initial probe. Cloudflare can classify that browser before the
+        // ordinary daily profile gets a chance to load. The renderer offers
+        // pairing and retries Analyze after the real default browser connects.
         throw new StorySourceError(
           "USER_ACTION_REQUIRED",
-          "Huliwang chỉ được đọc bằng trình duyệt mặc định và hồ sơ bạn dùng hằng ngày. Hãy bấm Kết nối trình duyệt mặc định; tool không mở trình duyệt tự động cho Huliwang.",
+          browserCompanionRequiredMessage(site),
         );
       }
     } else {
@@ -439,7 +467,8 @@ export class StorySourceService implements StorySourceServiceApi {
     await this.throttle(signal);
     let snapshot = await this.visitSnapshot(url, signal);
     const parsed = parseStoryUrl(url);
-    if (parsed.site === "huliwang" && snapshot.challenge === "passive") {
+    const companionReady = isBrowserCompanionSite(parsed.site) && this.hasBrowserCompanionFor(parsed.site);
+    if ((parsed.site === "huliwang" || parsed.site === "xszj") && snapshot.challenge === "passive") {
       this.emit({ analysisId, phase: "verification", completed: 0, total: 0, message: "Đang chờ Cloudflare xác minh thụ động…" });
       // Cloudflare's automatic check does not have a stable duration. Sample
       // the current page rather than navigating to the URL again: a reload
@@ -459,20 +488,28 @@ export class StorySourceService implements StorySourceServiceApi {
         // Close only a Playwright-controlled context. A paired default-browser
         // companion stays alive so the user can finish a visible check without
         // losing the ordinary tab/profile.
-        if (!this.huliwangCompanionReady) await this.releasePageClient();
+        if (!companionReady) await this.releasePageClient();
         throw new StorySourceError(
           "SOURCE_BLOCKED",
-          this.huliwangCompanionReady
+          parsed.site === "huliwang" && companionReady
             ? "Cloudflare chưa hoàn tất kiểm tra trong trình duyệt mặc định. Hãy giữ tab Huliwang mở, chờ trang hiện nội dung rồi bấm Phân tích lại."
-            : "Cloudflare chưa hoàn tất xác minh thụ động. Tool đã đóng phiên đọc tự động; hãy bấm Kết nối trình duyệt mặc định để đọc Huliwang bằng đúng trình duyệt và hồ sơ bạn thường dùng.",
+            : parsed.site === "xszj" && companionReady
+              ? "Cloudflare chưa hoàn tất kiểm tra trong trình duyệt mặc định. Hãy giữ tab XSZJ/爱下电子书 mở, chờ trang hiện nội dung rồi bấm Phân tích lại."
+            : parsed.site === "xszj"
+              ? "XSZJ/爱下电子书 vẫn đang xác minh thụ động. Tool đã giữ nguyên trang, chờ ngắn rồi mới dừng; hãy chờ trang hiện nội dung rồi bấm Phân tích lại."
+              : "Cloudflare chưa hoàn tất xác minh thụ động. Tool đã đóng phiên đọc tự động; hãy bấm Kết nối trình duyệt mặc định để đọc Huliwang bằng đúng trình duyệt và hồ sơ bạn thường dùng.",
         );
       }
     }
     if (snapshot.challenge === "interactive") {
-      const message = this.huliwangCompanionReady
+      const message = parsed.site === "huliwang" && companionReady
         ? "Cloudflare yêu cầu thao tác trong tab Huliwang của trình duyệt mặc định. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất bằng tay rồi bấm Phân tích lại."
-        : "Cloudflare không chấp nhận và tool đã đóng phiên đọc tự động; tool không bấm CAPTCHA/Turnstile. Hãy bấm Kết nối trình duyệt mặc định để Huliwang được mở bằng đúng trình duyệt và hồ sơ bạn thường dùng.";
-      if (!this.huliwangCompanionReady) await this.releasePageClient();
+        : parsed.site === "xszj" && companionReady
+          ? "Cloudflare yêu cầu thao tác trong tab XSZJ/爱下电子书 của trình duyệt mặc định. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất bằng tay rồi bấm Phân tích lại."
+          : parsed.site === "xszj"
+          ? "XSZJ/爱下电子书 yêu cầu xác minh thủ công. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất trong trình duyệt rồi bấm Phân tích lại."
+          : "Cloudflare không chấp nhận và tool đã đóng phiên đọc tự động; tool không bấm CAPTCHA/Turnstile. Hãy bấm Kết nối trình duyệt mặc định để Huliwang được mở bằng đúng trình duyệt và hồ sơ bạn thường dùng.";
+      if (!companionReady) await this.releasePageClient();
       this.emit({ analysisId, phase: "verification", completed: 0, total: 0, message });
       throw new StorySourceError("USER_ACTION_REQUIRED", message);
     }
@@ -661,10 +698,18 @@ export class StorySourceService implements StorySourceServiceApi {
 
   private async clientForUrl(url: string): Promise<StoryPageClient> {
     const parsed = parseStoryUrl(url);
-    if (parsed.site === "huliwang" && this.huliwangCompanionReady && this.huliwangCompanion) {
-      return this.huliwangCompanion.client;
+    if (isBrowserCompanionSite(parsed.site)) {
+      if (this.hasBrowserCompanionFor(parsed.site)) return this.huliwangCompanion!.client;
+      if (this.suppliedPageClient) return this.suppliedPageClient;
+      throw new StorySourceError("USER_ACTION_REQUIRED", browserCompanionRequiredMessage(parsed.site));
     }
     return this.getClient();
+  }
+
+  private hasBrowserCompanionFor(site: BrowserCompanionSite): boolean {
+    return this.huliwangCompanionReady
+      && this.huliwangCompanionSite === site
+      && Boolean(this.huliwangCompanion);
   }
 
   private isCompanionClient(client: StoryPageClient): boolean {

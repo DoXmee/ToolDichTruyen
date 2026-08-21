@@ -97,6 +97,45 @@ function chooseEnd(
 }
 
 /**
+ * Website imports inject a stable `Chương N:` heading before every source
+ * chapter. Keep an ordinary chapter intact so the model receives the same
+ * coherent context as a manual full-chapter translation. Oversized chapters
+ * still fall back to the generic lossless splitter below.
+ */
+function chapterStarts(text: string): number[] {
+  const starts: number[] = [];
+  const pattern = /(^|\n)[\t ]*chương[\t ]+\d+[\t ]*(?::|：|-|–|—)/gimu;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    starts.push(match.index + (match[1] === '\n' ? 1 : 0));
+  }
+  return starts;
+}
+
+function addGenericChunks(
+  text: string,
+  start: number,
+  end: number,
+  maxChars: number,
+  minimumFillRatio: number,
+  chunks: SourceChunk[],
+): void {
+  let offset = start;
+  while (offset < end) {
+    const chunkEnd = chooseEnd(text.slice(0, end), offset, maxChars, minimumFillRatio);
+    if (chunkEnd <= offset) throw new Error('Chunker failed to make progress.');
+    chunks.push({
+      id: `segment-${chunks.length + 1}`,
+      index: chunks.length,
+      start: offset,
+      end: chunkEnd,
+      text: text.slice(offset, chunkEnd),
+    });
+    offset = chunkEnd;
+  }
+}
+
+/**
  * Split source into exact, lossless slices no larger than maxChars. Paragraph and
  * sentence boundaries are preferred; an oversized paragraph eventually falls
  * back to a Unicode-safe hard boundary.
@@ -108,24 +147,29 @@ export function chunkSourceText(
   if (!text) return [];
   const { maxChars, minimumFillRatio } = normalizeOptions(options);
   const chunks: SourceChunk[] = [];
-  let start = 0;
+  const starts = chapterStarts(text);
 
-  while (start < text.length) {
-    const end = chooseEnd(text, start, maxChars, minimumFillRatio);
-    if (end <= start) {
-      throw new Error('Chunker failed to make progress.');
+  if (starts.length > 0) {
+    if (starts[0]! > 0) addGenericChunks(text, 0, starts[0]!, maxChars, minimumFillRatio, chunks);
+    for (let index = 0; index < starts.length; index += 1) {
+      const start = starts[index]!;
+      const end = starts[index + 1] ?? text.length;
+      if (end - start <= maxChars) {
+        chunks.push({
+          id: `segment-${chunks.length + 1}`,
+          index: chunks.length,
+          start,
+          end,
+          text: text.slice(start, end),
+        });
+      } else {
+        addGenericChunks(text, start, end, maxChars, minimumFillRatio, chunks);
+      }
     }
-
-    const index = chunks.length;
-    chunks.push({
-      id: `segment-${index + 1}`,
-      index,
-      start,
-      end,
-      text: text.slice(start, end),
-    });
-    start = end;
+    return chunks;
   }
+
+  addGenericChunks(text, 0, text.length, maxChars, minimumFillRatio, chunks);
 
   return chunks;
 }

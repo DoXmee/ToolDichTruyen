@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { mergeContinuationEntries } from "../../src/main/storySources/adapters";
 import {
   cleanXbanxiaStoryText,
+  cleanIxdzsStoryText,
+  assertCleanXbanxiaStoryText,
+  assertPlausibleStoryText,
   mergeTextParts,
   normalizeText,
   parseChapterLabel,
@@ -41,6 +44,17 @@ describe("story source text safety", () => {
     ].join("\n"))).toBe("第一段正文仍在繼續。\n第二段正文在這裡結束。");
   });
 
+  it("removes a terminal Ixdzs author/new-book block without touching narrative", () => {
+    const raw = [
+      "故事正文第一段，人物仍然在继续行动，并且仔细交代了这段故事发生的背景与动机。",
+      "故事正文第二段，情节自然结束在这里，同时留下了足够明确而自然的后续线索。",
+      "??好久不见，作者新书献上。",
+      "?年代文，纯无脑，无需过细追究内容真实性。",
+      "?求收藏，求好评～～哈",
+    ].join("\n");
+    expect(cleanIxdzsStoryText(raw)).toBe("故事正文第一段，人物仍然在继续行动，并且仔细交代了这段故事发生的背景与动机。\n故事正文第二段，情节自然结束在这里，同时留下了足够明确而自然的后续线索。");
+  });
+
   it.each(["作者有話要說", "作者有话要说"])("removes a trailing Xbanxia %s note only from the latter half", (marker) => {
     const story = [
       "夜色漸深，他們沿著山路繼續前行，誰也沒有回頭。",
@@ -67,6 +81,33 @@ describe("story source text safety", () => {
     ].join("\n");
 
     expect(cleanXbanxiaStoryText(narrative)).toBe(narrative);
+  });
+
+  it("keeps only the Xbanxia reader body and rejects residual reader chrome", () => {
+    const body = [
+      "半夏小說，快樂很多",
+      "第1章 第 1 章 他成了江城的大人物",
+      "林美言聽見熟悉的稱呼，回過頭去。",
+      "她看見雨中的車燈，腳步沒有停下來。",
+      "作者有話說：新書開啦，謝謝大家支持。",
+      "每日推薦：站外內容不得進入正文。",
+      "半夏小說，快樂很多",
+    ].join("\n");
+    const cleaned = cleanXbanxiaStoryText(body);
+    expect(cleaned).toBe([
+      "第1章 第 1 章 他成了江城的大人物",
+      "林美言聽見熟悉的稱呼，回過頭去。",
+      "她看見雨中的車燈，腳步沒有停下來。",
+    ].join("\n"));
+    expect(() => assertCleanXbanxiaStoryText(cleaned)).not.toThrow();
+    expect(() => assertCleanXbanxiaStoryText("正文\n下一章：第2章")).toThrow(/phần giao diện/u);
+  });
+
+  it("accepts ordinary dialogue that happens to contain a Cloudflare-like English phrase", () => {
+    expect(() => assertPlausibleStoryText(
+      "Cô khẽ nói: ‘Just a moment, please.’ rồi quay lại tiếp tục câu chuyện với mọi người.",
+      "Xbanxia",
+    )).not.toThrow();
   });
 
   it("merges consecutive catalog entries with the same chapter number", () => {

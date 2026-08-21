@@ -12,7 +12,9 @@ import {
 } from "./urlRules.js";
 import {
   assertPlausibleStoryText,
+  cleanIxdzsStoryText,
   cleanXbanxiaStoryText,
+  assertCleanXbanxiaStoryText,
   mergeTextParts,
   normalizeText,
   parseChapterLabel,
@@ -82,7 +84,8 @@ function canonicalChapterUrl(parsed: ParsedStoryUrl): string {
   if (parsed.site === "huliwang") return `https://m.huliwang.net/${parsed.bookId}/${parsed.chapterKey}.html`;
   if (parsed.site === "timotxt") return `https://www.timotxt.com/${parsed.bookId}/${parsed.chapterKey}.html`;
   if (parsed.site === "qingrenyouxi") return `https://www.qingrenyouxi.com/book/${parsed.bookId}/${parsed.chapterKey}.html`;
-  return `https://www.xbanxia.cc/books/${parsed.bookId}/${parsed.chapterKey}.html`;
+  if (parsed.site === "xbanxia") return `https://www.xbanxia.cc/books/${parsed.bookId}/${parsed.chapterKey}.html`;
+  return parsed.normalizedUrl;
 }
 
 function catalogReferences(
@@ -122,7 +125,7 @@ function catalogReferences(
       selectedByDefault: !label.isIntroduction,
     };
   });
-  if (parsedInput.site === "huliwang" || parsedInput.site === "timotxt") {
+  if (parsedInput.site === "huliwang" || parsedInput.site === "timotxt" || parsedInput.site === "xszj") {
     raw.sort((left, right) => {
       const leftKey = parseStoryUrl(left.url).chapterKey ?? "";
       const rightKey = parseStoryUrl(right.url).chapterKey ?? "";
@@ -268,7 +271,7 @@ function assertPageReady(snapshot: StoryPageSnapshot, parsed: ParsedStoryUrl): v
     || (parsed.site === "huliwang" && !sameHuliwangPageIdentity(actual, parsed))
     || (parsed.site !== "huliwang" && parsed.kind === "chapter" && (
       actual.chapterKey !== parsed.chapterKey
-    ))
+    )) || (parsed.site === "xszj" && parsed.kind === "chapter" && actual.page !== parsed.page)
   ) {
     throw new StorySourceError("SOURCE_CHANGED", "Nguồn đã chuyển sang trang/chương khác trong cùng sách.");
   }
@@ -603,6 +606,8 @@ function chooseBookTitle(snapshot: StoryPageSnapshot, site: StorySite): string {
       ? firstValue(snapshot, "h1", ".title")
       : site === "qingrenyouxi"
         ? firstValue(snapshot, ".bookTitle", "h1")
+        : site === "xszj"
+          ? firstValue(snapshot, "h1", ".title")
         : firstValue(snapshot, ".book-describe h1");
   title = title?.replace(/\s*(?:章节列表|章節列表|目录|目錄)\s*$/iu, "").trim();
   if (!title || title.length > 300) throw new StorySourceError("SOURCE_CHANGED", "Không đọc được tên sách từ DOM đã xác minh.");
@@ -1032,12 +1037,126 @@ class XbanxiaAdapter implements Adapter {
         throw new StorySourceError("SOURCE_CHANGED", "Số chương Xbanxia trong nội dung không khớp mục lục.");
       }
       const text = removeRepeatedHeading(cleanXbanxiaStoryText(raw), heading);
+      assertCleanXbanxiaStoryText(text);
       assertPlausibleStoryText(text, "Xbanxia");
       parts.push(text);
       sourceUrls.push(snapshot.url);
     }
     const merged = mergeTextParts(parts);
     if (merged.overlapsRemoved) warnings.push(`Đã loại ${merged.overlapsRemoved} ký tự trùng giữa các phần.`);
+    return chapterContent(chapter, merged.text, sourceUrls, warnings);
+  }
+}
+
+const XSZJ_PAGE_COUNTER = /[（(]\s*(\d+)\s*\/\s*(\d+)\s*[）)]/u;
+const XSZJ_READER_EDGE_NOISE = /^(?:没有了|目[录錄]|上一[页頁章]|下一[页頁章]|报错|手机上看|分享)$/u;
+
+function isXszjNative(parsed: ParsedStoryUrl): boolean {
+  return new URL(parsed.normalizedUrl).hostname === "xszj.org";
+}
+
+function xszjChapterNextPage(snapshot: StoryPageSnapshot, current: ParsedStoryUrl): string | undefined {
+  const candidates = new Set<string>();
+  for (const link of snapshot.links) {
+    if (!/^\s*下一[页頁]\s*$/u.test(link.text)) continue;
+    let candidate: ParsedStoryUrl;
+    try { candidate = parseStoryUrl(link.href); } catch { continue; }
+    if (
+      candidate.site === "xszj" && candidate.kind === "chapter"
+      && candidate.bookId === current.bookId && candidate.chapterKey === current.chapterKey
+      && (candidate.page ?? 1) === (current.page ?? 1) + 1
+    ) candidates.add(candidate.normalizedUrl);
+  }
+  if (candidates.size > 1) {
+    throw new StorySourceError("SOURCE_CHANGED", "XSZJ trả nhiều trang kế tiếp khác nhau cho cùng một chương.");
+  }
+  return candidates.values().next().value as string | undefined;
+}
+
+function cleanXszjText(raw: string, heading: string): string {
+  const text = removeRepeatedHeading(cleanIxdzsStoryText(raw), heading);
+  const lines = text.split("\n").filter((line) => !XSZJ_READER_EDGE_NOISE.test(line.trim()));
+  return lines.join("\n").trim();
+}
+
+class XszjAdapter implements Adapter {
+  public async analyze(input: ParsedStoryUrl, runtime: AdapterRuntime): Promise<AdapterAnalysisData> {
+    const book = await runtime.visit(input.bookUrl);
+    assertPageReady(book, parseStoryUrl(input.bookUrl));
+    // IXDZS8 does not publish a <link rel="canonical"> on its normal book
+    // and reader pages. The authenticated snapshot URL is still validated by
+    // assertPageReady on every request, so requiring a missing optional tag
+    // would reject a legitimate page before its scoped content is examined.
+    let catalog = isXszjNative(input)
+      ? await collectCatalog(input.catalogUrl, input, runtime, {
+        scopes: ["#list"],
+        nextLabels: /^\s*(?:下一[页頁]|下[页頁])\s*$/u,
+        nextPath: (candidate) => candidate.kind === "catalog",
+      })
+      : await collectCatalog(input.catalogUrl, input, runtime, { scopes: [".u-chapter"] });
+    // The native book page intentionally exposes only its newest slice.  A
+    // catalog that is empty is therefore a layout change, never a silent
+    // partial import.
+    if (!catalog.chapters.length) throw new StorySourceError("SOURCE_CHANGED", "Mục lục XSZJ không có chương hợp lệ.");
+    return {
+      bookTitle: chooseBookTitle(book, "xszj"),
+      ...(extractAuthor(book) ? { author: extractAuthor(book) } : {}),
+      chapters: catalog.chapters,
+      notices: ["XSZJ/爱下电子书: tool chỉ lấy vùng mục lục và thân chương đã xác minh; trang cùng chương được ghép tuần tự khi trang hiển thị (N/tổng)."],
+    };
+  }
+
+  public async fetch(
+    analysis: StorySourceAnalysis,
+    chapter: StoryChapterReference,
+    runtime: AdapterRuntime,
+  ): Promise<StoryChapterContent> {
+    const parts: string[] = [];
+    const sourceUrls: string[] = [];
+    const warnings: string[] = [];
+    for (const startUrl of chapter.partUrls) {
+      let next: string | undefined = startUrl;
+      const visited = new Set<string>();
+      while (next) {
+        if (visited.size >= runtime.maxChapterPages) throw new StorySourceError("SOURCE_CHANGED", "Chương XSZJ vượt giới hạn trang an toàn.");
+        const requested = parseStoryUrl(next);
+        const snapshot = await runtime.visit(requested.normalizedUrl);
+        assertPageReady(snapshot, requested);
+        const actual = assertSnapshotUrl(snapshot.url, "xszj", analysis.bookId);
+        if (actual.kind !== "chapter" || actual.chapterKey !== requested.chapterKey || actual.page !== requested.page) {
+          throw new StorySourceError("SOURCE_CHANGED", "XSZJ chuyển sang trang hoặc chương không liên tục.");
+        }
+        if (visited.has(actual.normalizedUrl)) throw new StorySourceError("SOURCE_CHANGED", "XSZJ tạo vòng lặp phân trang chương.");
+        visited.add(actual.normalizedUrl);
+        const heading = firstValue(snapshot, "h1", ".bookname");
+        const raw = firstRawValue(snapshot, "#content", "article.page-content");
+        if (!heading || !raw) throw new StorySourceError("SOURCE_CHANGED", "DOM chương XSZJ thiếu tiêu đề hoặc vùng nội dung an toàn.");
+        const headingLabel = parseChapterLabel(heading.replace(XSZJ_PAGE_COUNTER, "").trim());
+        if (chapter.number !== undefined && headingLabel.number !== chapter.number) {
+          throw new StorySourceError("SOURCE_CHANGED", "Số chương XSZJ trong nội dung không khớp mục lục.");
+        }
+        const counter = XSZJ_PAGE_COUNTER.exec(heading);
+        const currentPage = actual.page ?? 1;
+        const totalPage = counter?.[2] ? Number.parseInt(counter[2], 10) : 1;
+        if (counter?.[1] && Number.parseInt(counter[1], 10) !== currentPage) {
+          throw new StorySourceError("SOURCE_CHANGED", "Số trang XSZJ không liên tục.");
+        }
+        const successor = xszjChapterNextPage(snapshot, actual);
+        if (currentPage < totalPage && !successor) {
+          throw new StorySourceError("SOURCE_CHANGED", "XSZJ báo chương chưa hết nhưng không có liên kết trang kế tiếp hợp lệ.");
+        }
+        if (successor && currentPage >= totalPage) {
+          throw new StorySourceError("SOURCE_CHANGED", "XSZJ trả liên kết trang kế tiếp sau trang cuối chương.");
+        }
+        const text = cleanXszjText(raw, heading);
+        assertPlausibleStoryText(text, "XSZJ");
+        parts.push(text);
+        sourceUrls.push(snapshot.url);
+        next = successor;
+      }
+    }
+    const merged = mergeTextParts(parts);
+    if (merged.overlapsRemoved) warnings.push(`Đã loại ${merged.overlapsRemoved} ký tự trùng giữa các trang.`);
     return chapterContent(chapter, merged.text, sourceUrls, warnings);
   }
 }
@@ -1067,6 +1186,7 @@ const ADAPTERS: Readonly<Record<StorySite, Adapter>> = {
   timotxt: new TimotxtAdapter(),
   qingrenyouxi: new QingrenyouxiAdapter(),
   xbanxia: new XbanxiaAdapter(),
+  xszj: new XszjAdapter(),
 };
 
 export function adapterFor(site: StorySite): Adapter {

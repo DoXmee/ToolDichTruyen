@@ -7,7 +7,9 @@ import {
   EXTENSION_VERSION,
   HEARTBEAT_PORT_NAME,
   assertPairingPageUrl,
+  companionPageIdentity,
   huliPageIdentity,
+  normalizeCompanionUrl,
   normalizeHuliUrl,
   mustWaitForPairedTab,
   nextPollFailureState,
@@ -157,15 +159,15 @@ async function tabComplete(tabId, expectedUrl) {
     let tab;
     try { tab = await chrome.tabs.get(tabId); } catch { throw new Error("Paired browser tab was closed."); }
     let current;
-    try { current = normalizeHuliUrl(tab.url); } catch { current = undefined; }
+    try { current = normalizeCompanionUrl(tab.url); } catch { current = undefined; }
     try {
-      if (huliPageIdentity(current) === huliPageIdentity(expectedUrl) && tab.status === "complete") return;
+      if (companionPageIdentity(current) === companionPageIdentity(expectedUrl) && tab.status === "complete") return;
     } catch {
-      // Keep waiting until the tab reaches the exact Huliwang page identity.
+      // Keep waiting until the tab reaches the exact allow-listed page identity.
     }
     await delay(250);
   }
-  throw new Error("Timed out waiting for Huliwang to finish loading.");
+  throw new Error("Timed out waiting for the allow-listed story page to finish loading.");
 }
 
 async function collectSnapshot(tabId, requestedUrl) {

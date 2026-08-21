@@ -1,15 +1,19 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 
-export type SupportedPromptMode = "historical" | "modern" | "custom";
+export type SupportedPromptMode = "period" | "modern" | "ancient" | "cultivation" | "custom";
 
 export interface PromptCatalog {
-  historical: string;
+  period: string;
   modern: string;
+  ancient: string;
+  cultivation: string;
 }
 const FILE_CANDIDATES: Record<Exclude<SupportedPromptMode, "custom">, readonly string[]> = {
-  historical: ["nien-dai.txt", "niên đại.txt", "historical.txt"],
+  period: ["nien-dai.txt", "niên đại.txt", "historical.txt"],
   modern: ["hien-dai.txt", "hiện đại.txt", "modern.txt"],
+  ancient: ["co-trang.txt", "cổ trang.txt", "ancient.txt"],
+  cultivation: ["tu-tien.txt", "tu tiên.txt", "cultivation.txt"],
 };
 
 function stripBom(value: string): string {
@@ -22,10 +26,16 @@ export function normalizePromptMode(value: unknown): SupportedPromptMode {
 
   const normalized = value.trim().toLocaleLowerCase("vi-VN");
   if (["historical", "period", "era", "nien-dai", "niên đại"].includes(normalized)) {
-    return "historical";
+    return "period";
   }
   if (["modern", "hien-dai", "hiện đại"].includes(normalized)) {
     return "modern";
+  }
+  if (["ancient", "co-trang", "cổ trang", "cổ đại"].includes(normalized)) {
+    return "ancient";
+  }
+  if (["cultivation", "tu-tien", "tu tiên", "tiên hiệp", "tu chân"].includes(normalized)) {
+    return "cultivation";
   }
   if (["custom", "other", "khac", "khác"].includes(normalized)) {
     return "custom";
@@ -41,11 +51,13 @@ export class PromptLoader {
   }
 
   public async loadCatalog(): Promise<PromptCatalog> {
-    const [historical, modern] = await Promise.all([
-      this.loadBuiltIn("historical"),
+    const [period, modern, ancient, cultivation] = await Promise.all([
+      this.loadBuiltIn("period"),
       this.loadBuiltIn("modern"),
+      this.loadBuiltIn("ancient"),
+      this.loadBuiltIn("cultivation"),
     ]);
-    return { historical, modern };
+    return { period, modern, ancient, cultivation };
   }
 
   public async resolve(modeValue: unknown, customPrompt?: unknown): Promise<string> {
@@ -85,9 +97,8 @@ export class PromptLoader {
     }
 
     throw new Error(
-      `Không tìm thấy prompt ${mode === "historical" ? "truyện niên đại" : "truyện hiện đại"}. ` +
+      `Không tìm thấy prompt ${({ period: "truyện niên đại", modern: "truyện hiện đại", ancient: "truyện cổ trang", cultivation: "truyện tu tiên" } as const)[mode]}. ` +
         `Đã kiểm tra: ${attempted.join(", ")}`,
     );
   }
 }
-

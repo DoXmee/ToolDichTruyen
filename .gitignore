@@ -5,6 +5,7 @@ release/
 release-*/
 transfer-staging-*/
 update-script-smoke-*/
+zip-verify-*/
 backups/
 deployment-backups/
 coverage/

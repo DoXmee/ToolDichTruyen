@@ -28,11 +28,15 @@ describe("PromptLoader", () => {
     const root = await temporaryDirectory();
     await writeFile(path.join(root, "nien-dai.txt"), "\uFEFFPrompt niên đại\n", "utf8");
     await writeFile(path.join(root, "hien-dai.txt"), "Prompt hiện đại", "utf8");
+    await writeFile(path.join(root, "co-trang.txt"), "Prompt cổ trang", "utf8");
+    await writeFile(path.join(root, "tu-tien.txt"), "Prompt tu tiên", "utf8");
     const loader = new PromptLoader([root]);
 
     await expect(loader.loadCatalog()).resolves.toEqual({
-      historical: "Prompt niên đại",
+      period: "Prompt niên đại",
       modern: "Prompt hiện đại",
+      ancient: "Prompt cổ trang",
+      cultivation: "Prompt tu tiên",
     });
     await expect(loader.resolve("period")).resolves.toBe("Prompt niên đại");
     await expect(loader.resolve("custom", "  Prompt riêng  ")).resolves.toBe("Prompt riêng");
@@ -285,4 +289,3 @@ describe("TranslationJobRunner", () => {
     expect((stored.get(jobId) as { status: string }).status).toBe("completed");
   });
 });
-

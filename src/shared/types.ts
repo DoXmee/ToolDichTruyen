@@ -114,11 +114,13 @@ export interface SplitConfig {
   useAI?: boolean;
 }
 
-export type PromptMode = 'period' | 'modern' | 'custom';
+export type PromptMode = 'period' | 'modern' | 'ancient' | 'cultivation' | 'custom';
 
 export interface PromptCatalog {
   period: string;
   modern: string;
+  ancient: string;
+  cultivation: string;
 }
 
 export interface PromptSelection {
@@ -198,6 +200,24 @@ export interface TranslationSegment extends TextRange {
   error?: string;
 }
 
+/**
+ * Immutable destination settings for a link-import translation. Keeping this
+ * on the runner checkpoint lets a paused/cancelled job resume file output
+ * after the renderer or the application has been restarted.
+ */
+export interface TranslationAutoExportBinding {
+  directory: string;
+  startChapter: number;
+  endChapter: number;
+  sourceChapterNumbers: number[];
+  exportOriginalChapters: boolean;
+  exportCombinedChapters: boolean;
+  /** Create one compilation from the immutable, untranslated source chapters. */
+  exportCombinedSourceChapters?: boolean;
+  outputChapterStart?: number;
+  omitOutputChapterTitles: boolean;
+}
+
 export interface TranslationJob {
   id: string;
   createdAt: string;
@@ -211,6 +231,19 @@ export interface TranslationJob {
   segments: TranslationSegment[];
   currentSegmentIndex?: number;
   error?: string;
+  autoExport?: TranslationAutoExportBinding;
+  /** Bounded, human-readable execution history stored with the checkpoint. */
+  activityLog?: TranslationActivityEntry[];
+}
+
+export type TranslationActivityTone = 'info' | 'warning' | 'error' | 'success';
+
+export interface TranslationActivityEntry {
+  at: string;
+  tone: TranslationActivityTone;
+  message: string;
+  segmentId?: string;
+  segmentIndex?: number;
 }
 
 export interface TranslationSegmentSnapshot {
@@ -231,12 +264,16 @@ export interface TranslationJobSnapshot {
   segments: TranslationSegmentSnapshot[];
   currentSegmentIndex?: number;
   error?: string;
+  activityLog?: TranslationActivityEntry[];
   /**
    * Present when a caller explicitly asks for one job. It lets the renderer
    * restore completed checkpoints after a reload without making lightweight
    * active-job polling copy the entire translation on every interval.
    */
   translatedText?: string;
+  /** Included only by an explicit full-job lookup for durable source exports. */
+  sourceText?: string;
+  autoExport?: TranslationAutoExportBinding;
 }
 
 export interface SourceChunk extends TextRange {
@@ -315,7 +352,7 @@ export type IpcResult<T, E = IpcError> =
   | { ok: true; data: T }
   | { ok: false; error: E };
 
-export type StorySite = 'huliwang' | 'timotxt' | 'qingrenyouxi' | 'xbanxia';
+export type StorySite = 'huliwang' | 'timotxt' | 'qingrenyouxi' | 'xbanxia' | 'xszj';
 
 export type StoryUrlKind = 'book' | 'catalog' | 'chapter';
 
@@ -435,6 +472,9 @@ export interface CombinedChapterExportInput {
   /** A contiguous original website source range; it can be shorter than the output range after splitting. */
   sourceChapterNumbers: number[];
   chapters: FinalChapterExportInput[];
+  /** Link-job recovery may publish a complete replacement set in a clean
+   * child directory when an older aggregate has the same name but differs. */
+  recoveryOnConflict?: boolean;
 }
 
 export interface CombinedChapterExportResult {

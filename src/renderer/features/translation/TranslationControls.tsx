@@ -113,7 +113,9 @@ export function TranslationControls({
             <Icon name="stop" /> Hủy
           </button>
         )}
-        {!connected && <span className="action-hint">Kết nối ChatGPT trước khi bắt đầu.</span>}
+        <span className={`action-hint${connected ? ' action-hint--connected' : ''}`}>
+          {connected ? 'ChatGPT đang kết nối.' : 'Kết nối ChatGPT trước khi bắt đầu.'}
+        </span>
       </div>
 
       {errors.length > 0 && (

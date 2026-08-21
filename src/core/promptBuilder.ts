@@ -55,6 +55,10 @@ export function resolvePrompt(selection: PromptSelection, catalog: PromptCatalog
       return requireText(catalog.period, 'period prompt');
     case 'modern':
       return requireText(catalog.modern, 'modern prompt');
+    case 'ancient':
+      return requireText(catalog.ancient, 'ancient prompt');
+    case 'cultivation':
+      return requireText(catalog.cultivation, 'cultivation prompt');
     case 'custom':
       return requireText(selection.customPrompt ?? '', 'custom prompt');
   }
@@ -81,7 +85,6 @@ export function buildContinuationTranslationPrompt(input: TranslationPromptInput
 
 export function buildRetryPrompt(input: RetryPromptInput): string {
   const basePrompt = requireText(input.basePrompt, 'basePrompt');
-  const previous = input.previousTranslation.trim() || '(phản hồi trống)';
   const attempt = Math.max(1, Math.trunc(input.attempt));
   const issues = input.validation.issues.length
     ? input.validation.issues
@@ -94,11 +97,14 @@ export function buildRetryPrompt(input: RetryPromptInput): string {
         .join('\n')
     : '1. [unknown] Bản dịch chưa vượt qua bước kiểm tra.';
 
-  return `${basePrompt}\n\n---\nBẢN DỊCH TRƯỚC CÓ LỖI (LẦN SỬA ${attempt}):\n${issues}\n\nHãy dịch lại TOÀN BỘ đoạn nguồn, sửa tất cả lỗi nêu trên. Không chỉ trả phần đã sửa. Không thêm lời dẫn, giải thích, ghi chú hoặc thẻ đánh dấu.\n\n${commonEnvelope(input)}\n\n<BAN_DICH_LOI>\n${previous}\n</BAN_DICH_LOI>\n\nChỉ trả về bản dịch tiếng Việt hoàn chỉnh đã sửa.`;
+  // Do not paste an entire bad answer back into the conversation. It can make
+  // the model anchor on a repeated/truncated answer and it buries the base
+  // translation rules. Validation samples identify the parts that need extra
+  // attention; the complete source remains the sole text to translate.
+  return `${basePrompt}\n\n---\nDỊCH LẠI ĐOẠN NÀY (LẦN ${attempt}):\nCác lỗi/phần cần chú ý:\n${issues}\n\nHãy áp dụng lại đầy đủ prompt gốc, dịch TOÀN BỘ đoạn nguồn dưới đây từ đầu và đặc biệt sửa các lỗi/phần vừa liệt kê. Không tham chiếu, lặp lại hay sửa nối tiếp bản dịch cũ. Không thêm lời dẫn, giải thích, ghi chú hoặc thẻ đánh dấu.\n\n${commonEnvelope(input)}\n\nChỉ trả về bản dịch tiếng Việt hoàn chỉnh đã sửa.`;
 }
 
 export function buildContinuationRetryPrompt(input: RetryPromptInput): string {
-  const previous = input.previousTranslation.trim() || '(phản hồi trống)';
   const attempt = Math.max(1, Math.trunc(input.attempt));
   const issues = input.validation.issues.length
     ? input.validation.issues
@@ -111,7 +117,7 @@ export function buildContinuationRetryPrompt(input: RetryPromptInput): string {
         .join('\n')
     : '1. [unknown] Bản dịch chưa vượt qua bước kiểm tra.';
 
-  return `TIẾP TỤC SỬA ĐOẠN HIỆN TẠI TRONG CÙNG CHAT (LẦN ${attempt}):\n- Giữ toàn bộ quy tắc, tên riêng, thuật ngữ và cách xưng hô đã thống nhất.\n${issues}\n\nHãy dịch lại TOÀN BỘ đoạn nguồn và sửa tất cả lỗi trên. Không thêm lời dẫn, giải thích, ghi chú hoặc thẻ đánh dấu.\n\n${commonEnvelope(input)}\n\n<BAN_DICH_LOI>\n${previous}\n</BAN_DICH_LOI>\n\nChỉ trả về bản dịch tiếng Việt hoàn chỉnh đã sửa.`;
+  return `TIẾP TỤC SỬA ĐOẠN HIỆN TẠI TRONG CÙNG CHAT (LẦN ${attempt}):\n- Giữ toàn bộ quy tắc, tên riêng, thuật ngữ và cách xưng hô đã thống nhất.\n- Các lỗi/phần cần chú ý:\n${issues}\n\nHãy dịch lại TOÀN BỘ đoạn nguồn từ đầu, đặc biệt sửa các lỗi/phần vừa liệt kê. Không tham chiếu hoặc sửa nối tiếp bản dịch cũ. Không thêm lời dẫn, giải thích, ghi chú hoặc thẻ đánh dấu.\n\n${commonEnvelope(input)}\n\nChỉ trả về bản dịch tiếng Việt hoàn chỉnh đã sửa.`;
 }
 
 function safeTargetId(value: string): string {

@@ -13,6 +13,11 @@ describe("story source URL rules", () => {
     ["https://qingrenyouxi.com/book/115013/33160353.html", "qingrenyouxi", "chapter", "115013", "33160353", undefined],
     ["https://www.xbanxia.cc/books/143300.html", "xbanxia", "book", "143300", undefined, undefined],
     ["https://xbanxia.cc/books/143300/28251886.html", "xbanxia", "chapter", "143300", "28251886", undefined],
+    ["https://xszj.org/b/485734", "xszj", "book", "485734", undefined, undefined],
+    ["https://xszj.org/b/485734/cs/2", "xszj", "catalog", "485734", undefined, undefined],
+    ["https://xszj.org/b/485734/c/856451?page=2", "xszj", "chapter", "485734", "856451", 2],
+    ["https://ixdzs8.com/read/646225/", "xszj", "book", "646225", undefined, undefined],
+    ["https://ixdzs8.com/read/646225/p1.html", "xszj", "chapter", "646225", "1", undefined],
     ["https://www.xbanxia.cc/books/143300.html", "xbanxia", "book", "143300", undefined, undefined],
     ["https://xbanxia.cc/books/143300/28251886.html", "xbanxia", "chapter", "143300", "28251886", undefined],
   ] as const)("classifies %s", (url, site, kind, bookId, chapterKey, page) => {
@@ -84,5 +89,14 @@ describe("story source URL rules", () => {
       catalogUrl: "https://www.xbanxia.cc/books/143300.html",
     });
     expect(chapter.normalizedUrl).not.toMatch(/[?#]/u);
+  });
+
+  it("keeps only XSZJ's allowed page query and canonicalizes both supported host families", () => {
+    expect(parseStoryUrl("https://xszj.org/b/485734/c/856451?page=2&utm=no#x")).toMatchObject({
+      site: "xszj", normalizedUrl: "https://xszj.org/b/485734/c/856451?page=2", page: 2,
+      bookUrl: "https://xszj.org/b/485734", catalogUrl: "https://xszj.org/b/485734/cs/1",
+    });
+    expect(parseStoryUrl("https://ixdzs8.com/read/646225/p1.html?junk=1").normalizedUrl)
+      .toBe("https://ixdzs8.com/read/646225/p1.html");
   });
 });

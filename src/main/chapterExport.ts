@@ -33,6 +33,9 @@ export interface ExportChapterFilesRequest {
   /** Required by the IPC boundary; optional only for direct legacy callers. */
   exportJobId?: string;
   chapters: FinalChapterExportInput[];
+  /** Automatic link exports may safely restart in a dedicated subfolder when
+   * an older user file has the same name but different contents. */
+  recoveryOnConflict?: boolean;
 }
 
 /** The IPC always supplies the two optional fields below. Keeping the direct
@@ -40,6 +43,17 @@ export interface ExportChapterFilesRequest {
 export interface ExportCombinedChapterFileRequest extends Omit<CombinedChapterExportInput, 'exportJobId' | 'sourceChapterNumbers'> {
   exportJobId?: string;
   sourceChapterNumbers?: number[];
+}
+
+export interface ExportCombinedSourceChapterFileRequest {
+  directory: string;
+  exportJobId?: string;
+  sourceStartChapter: number;
+  sourceEndChapter: number;
+  outputStartChapter: number;
+  outputEndChapter: number;
+  chapters: FinalChapterExportInput[];
+  recoveryOnConflict?: boolean;
 }
 
 function chapterTitleSuffix(title: string, index: number): string {
@@ -85,6 +99,15 @@ export function chapterFileName(chapter: Pick<FinalChapterExportInput, 'index' |
 
 export function combinedChapterFileName(startChapter: number, endChapter: number): string {
   return `Tổng hợp từ chương ${startChapter}-${endChapter}.txt`;
+}
+
+export function combinedSourceChapterFileName(
+  sourceStartChapter: number,
+  sourceEndChapter: number,
+  outputStartChapter: number,
+  outputEndChapter: number,
+): string {
+  return `File tổng c.gốc (${sourceStartChapter}-${sourceEndChapter})_c.mới (${outputStartChapter}-${outputEndChapter}).txt`;
 }
 
 function chapterDocument(chapter: FinalChapterExportInput): string {
@@ -200,6 +223,18 @@ async function validateDirectory(directory: unknown): Promise<string> {
   return resolved;
 }
 
+/** Verify a previously chosen export folder before a long link translation
+ * starts. This is intentionally separate from writing so the user never
+ * spends time fetching/translating a book whose result has nowhere to go. */
+export async function validateChapterExportDirectory(directory: unknown): Promise<{ directory: string }> {
+  try {
+    return { directory: await validateDirectory(directory) };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'Đường dẫn không hợp lệ.';
+    throw new Error(`Không tìm thấy thư mục xuất; không thể bắt đầu dịch. ${detail}`, { cause: error });
+  }
+}
+
 async function createOriginalChaptersDirectory(parentDirectory: string): Promise<string> {
   const originalDirectory = path.join(parentDirectory, ORIGINAL_TRANSLATED_CHAPTERS_DIRECTORY_NAME);
   await mkdir(originalDirectory, { recursive: true });
@@ -287,66 +322,78 @@ export async function exportChapterFiles(
   const exportJobId = validateExportJobId(request.exportJobId);
 
   const directory = await validateDirectory(request.directory);
-  const records: ChapterExportRecord[] = [];
-
-  for (const chapter of request.chapters) {
-    const fileName = chapterFileName(chapter);
-    const filePath = path.join(directory, fileName);
-    const status = await writeAtomicExclusive(directory, fileName, chapterDocument(chapter));
-    records.push({
-      exportJobId,
-      exportDirectory: directory,
-      contentHash: chapterContentFingerprint(chapter),
-      index: chapter.index,
-      ...(chapter.sourceChapterNumber === undefined ? {} : { sourceChapterNumber: chapter.sourceChapterNumber }),
-      title: chapter.title.normalize('NFC'),
-      fileName,
-      filePath,
-      wordCount: chapter.wordCount,
-      status,
-    });
+  const recoveryOnConflict = request.recoveryOnConflict === true;
+  const write = async (targetDirectory: string): Promise<ChapterExportResult> => {
+    const records: ChapterExportRecord[] = [];
+    for (const chapter of request.chapters) {
+      const fileName = chapterFileName(chapter);
+      const filePath = path.join(targetDirectory, fileName);
+      const status = await writeAtomicExclusive(targetDirectory, fileName, chapterDocument(chapter));
+      records.push({
+        exportJobId,
+        exportDirectory: targetDirectory,
+        contentHash: chapterContentFingerprint(chapter),
+        index: chapter.index,
+        ...(chapter.sourceChapterNumber === undefined ? {} : { sourceChapterNumber: chapter.sourceChapterNumber }),
+        title: chapter.title.normalize('NFC'),
+        fileName,
+        filePath,
+        wordCount: chapter.wordCount,
+        status,
+      });
+    }
+    return { directory: targetDirectory, records };
+  };
+  try {
+    return await write(directory);
+  } catch (error) {
+    if (!recoveryOnConflict || !/đã tồn tại nhưng nội dung khác/iu.test(error instanceof Error ? error.message : '')) throw error;
+    const recoveryDirectory = path.join(directory, `Xuất lại hoàn chỉnh ${exportJobId.slice(0, 8)}`);
+    await mkdir(recoveryDirectory, { recursive: true });
+    return write(recoveryDirectory);
   }
-
-  return { directory, records };
 }
 
-/**
- * Saves the completed translated source chapters before any splitter output is
- * applied. The deterministic child directory keeps the two user-facing forms
- * separate while allowing a resumed job to call this repeatedly safely.
- */
 export async function exportOriginalChapterFiles(
   request: ExportChapterFilesRequest,
 ): Promise<ChapterExportResult> {
   if (!request || typeof request !== 'object' || !Array.isArray(request.chapters)) {
-    throw new TypeError('Yêu cầu xuất chương dịch gốc không hợp lệ.');
+    throw new TypeError('Yêu cầu lưu chương dịch gốc không hợp lệ.');
   }
   validateChapterList(request.chapters);
   const exportJobId = validateExportJobId(request.exportJobId);
-
   const parentDirectory = await validateDirectory(request.directory);
-  const directory = await createOriginalChaptersDirectory(parentDirectory);
-  const records: ChapterExportRecord[] = [];
-
-  for (const chapter of request.chapters) {
-    const fileName = chapterFileName(chapter);
-    const filePath = path.join(directory, fileName);
-    const status = await writeAtomicExclusive(directory, fileName, chapterDocument(chapter));
-    records.push({
-      exportJobId,
-      exportDirectory: parentDirectory,
-      contentHash: chapterContentFingerprint(chapter),
-      index: chapter.index,
-      ...(chapter.sourceChapterNumber === undefined ? {} : { sourceChapterNumber: chapter.sourceChapterNumber }),
-      title: chapter.title.normalize('NFC'),
-      fileName,
-      filePath,
-      wordCount: chapter.wordCount,
-      status,
-    });
+  const recoveryOnConflict = request.recoveryOnConflict === true;
+  const write = async (targetParentDirectory: string): Promise<ChapterExportResult> => {
+    const targetDirectory = await createOriginalChaptersDirectory(targetParentDirectory);
+    const records: ChapterExportRecord[] = [];
+    for (const chapter of request.chapters) {
+      const fileName = chapterFileName(chapter);
+      const filePath = path.join(targetDirectory, fileName);
+      const status = await writeAtomicExclusive(targetDirectory, fileName, chapterDocument(chapter));
+      records.push({
+        exportJobId,
+        exportDirectory: targetParentDirectory,
+        contentHash: chapterContentFingerprint(chapter),
+        index: chapter.index,
+        ...(chapter.sourceChapterNumber === undefined ? {} : { sourceChapterNumber: chapter.sourceChapterNumber }),
+        title: chapter.title.normalize('NFC'),
+        fileName,
+        filePath,
+        wordCount: chapter.wordCount,
+        status,
+      });
+    }
+    return { directory: targetDirectory, records };
+  };
+  try {
+    return await write(parentDirectory);
+  } catch (error) {
+    if (!recoveryOnConflict || !/đã tồn tại nhưng nội dung khác/iu.test(error instanceof Error ? error.message : '')) throw error;
+    const recoveryParentDirectory = path.join(parentDirectory, `Xuất lại hoàn chỉnh ${exportJobId.slice(0, 8)}`);
+    await mkdir(recoveryParentDirectory, { recursive: true });
+    return write(recoveryParentDirectory);
   }
-
-  return { directory, records };
 }
 
 /**
@@ -372,23 +419,106 @@ export async function exportCombinedChapterFile(
 
   const directory = await validateDirectory(request.directory);
   const fileName = combinedChapterFileName(startChapter, endChapter);
-  const filePath = path.join(directory, fileName);
   const content = request.chapters.map(chapterDocument).join('\r\n\r\n---\r\n\r\n');
   if (Buffer.byteLength(content, 'utf8') > MAX_TOTAL_BYTES) {
     throw new RangeError('Nội dung file tổng hợp vượt quá 128 MB.');
   }
 
-  const status = await writeAtomicExclusive(directory, fileName, content);
-  return {
-    directory,
-    exportDirectory: directory,
-    exportJobId,
-    contentHash: combinedChapterContentFingerprint(startChapter, endChapter, request.chapters),
-    fileName,
-    filePath,
-    startChapter,
-    endChapter,
-    chapterCount: request.chapters.length,
-    status,
+  const write = async (targetDirectory: string): Promise<CombinedChapterExportResult> => {
+    const filePath = path.join(targetDirectory, fileName);
+    const status = await writeAtomicExclusive(targetDirectory, fileName, content);
+    return {
+      directory: targetDirectory,
+      exportDirectory: targetDirectory,
+      exportJobId,
+      contentHash: combinedChapterContentFingerprint(startChapter, endChapter, request.chapters),
+      fileName,
+      filePath,
+      startChapter,
+      endChapter,
+      chapterCount: request.chapters.length,
+      status,
+    };
   };
+  try {
+    return await write(directory);
+  } catch (error) {
+    if (!request.recoveryOnConflict || !/đã tồn tại nhưng nội dung khác/iu.test(error instanceof Error ? error.message : '')) throw error;
+    const recoveryDirectory = path.join(directory, `Xuất lại hoàn chỉnh ${exportJobId.slice(0, 8)}`);
+    await mkdir(recoveryDirectory, { recursive: true });
+    return write(recoveryDirectory);
+  }
+}
+
+/** Publish one TXT containing the immutable untranslated website chapters.
+ * Source and remapped ranges are both encoded in the filename so this file
+ * cannot be confused with the translated split compilation. */
+export async function exportCombinedSourceChapterFile(
+  request: ExportCombinedSourceChapterFileRequest,
+): Promise<CombinedChapterExportResult> {
+  if (!request || typeof request !== 'object' || !Array.isArray(request.chapters)) {
+    throw new TypeError('Yêu cầu xuất file tổng chương gốc không hợp lệ.');
+  }
+  const exportJobId = validateExportJobId(request.exportJobId);
+  const sourceRange = validateCombinedRange(request.sourceStartChapter, request.sourceEndChapter);
+  const outputRange = validateCombinedRange(request.outputStartChapter, request.outputEndChapter);
+  validateChapterList(request.chapters);
+  const expectedChapterCount = sourceRange.endChapter - sourceRange.startChapter + 1;
+  if (
+    request.chapters.length !== expectedChapterCount
+    || outputRange.endChapter - outputRange.startChapter + 1 !== expectedChapterCount
+  ) {
+    throw new RangeError('Dải chương gốc và dải chương mới không khớp số lượng nội dung.');
+  }
+  request.chapters.forEach((chapter, offset) => {
+    if (chapter.index !== outputRange.startChapter + offset) {
+      throw new RangeError('Số chương mới trong file tổng chương gốc không liên tục.');
+    }
+    if (
+      chapter.sourceChapterNumber !== undefined
+      && chapter.sourceChapterNumber !== sourceRange.startChapter + offset
+    ) {
+      throw new RangeError('Số chương gốc trong file tổng chương gốc không liên tục.');
+    }
+  });
+
+  const directory = await validateDirectory(request.directory);
+  const fileName = combinedSourceChapterFileName(
+    sourceRange.startChapter,
+    sourceRange.endChapter,
+    outputRange.startChapter,
+    outputRange.endChapter,
+  );
+  const content = request.chapters.map(chapterDocument).join('\r\n\r\n---\r\n\r\n');
+  if (Buffer.byteLength(content, 'utf8') > MAX_TOTAL_BYTES) {
+    throw new RangeError('Nội dung file tổng chương gốc vượt quá 128 MB.');
+  }
+  const write = async (targetDirectory: string): Promise<CombinedChapterExportResult> => {
+    const filePath = path.join(targetDirectory, fileName);
+    const status = await writeAtomicExclusive(targetDirectory, fileName, content);
+    return {
+      directory: targetDirectory,
+      exportDirectory: targetDirectory,
+      exportJobId,
+      contentHash: combinedChapterContentFingerprint(
+        outputRange.startChapter,
+        outputRange.endChapter,
+        request.chapters,
+      ),
+      fileName,
+      filePath,
+      startChapter: outputRange.startChapter,
+      endChapter: outputRange.endChapter,
+      chapterCount: request.chapters.length,
+      status,
+    };
+  };
+  try {
+    return await write(directory);
+  } catch (error) {
+    if (!request.recoveryOnConflict || !/đã tồn tại nhưng nội dung khác/iu.test(error instanceof Error ? error.message : '')) throw error;
+    const recoveryDirectory = path.join(directory, `Xuất lại hoàn chỉnh ${exportJobId.slice(0, 8)}`);
+    await mkdir(recoveryDirectory, { recursive: true });
+    return write(recoveryDirectory);
+  }
 }

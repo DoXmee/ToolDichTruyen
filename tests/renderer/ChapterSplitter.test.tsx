@@ -17,7 +17,7 @@ const CONFIG: SplitConfig = {
 
 function installStoryTool(): void {
   const api: StoryToolApi = {
-    loadPrompts: vi.fn(async () => ({ historical: '', modern: '' })),
+    loadPrompts: vi.fn(async () => ({ period: '', modern: '', ancient: '', cultivation: '' })),
     getDraft: vi.fn(async () => null),
     saveDraft: vi.fn(async () => undefined),
     connectChatGPT: vi.fn(async () => ({ status: 'ready' })),

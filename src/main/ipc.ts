@@ -1,12 +1,14 @@
-import type { BrowserWindow, IpcMain, IpcMainInvokeEvent } from "electron";
+import { nativeTheme, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent } from "electron";
 import { access } from "node:fs/promises";
 import path from "node:path";
 import type { FinalChapterExportInput, PromptMode } from "../shared/types.js";
 import { IPC_CHANNELS } from "../preload/channels.js";
 import {
   chooseChapterDirectory,
+  validateChapterExportDirectory,
   exportChapterFiles,
   exportCombinedChapterFile,
+  exportCombinedSourceChapterFile,
   exportOriginalChapterFiles,
 } from "./chapterExport.js";
 import type { ChatGptWebAdapter } from "./chatgpt/ChatGptWebAdapter.js";
@@ -103,8 +105,7 @@ function boundedPositiveInteger(value: unknown, name: string): number {
 }
 
 function promptMode(value: unknown): PromptMode {
-  const normalized = normalizePromptMode(value);
-  return normalized === "historical" ? "period" : normalized;
+  return normalizePromptMode(value);
 }
 
 function assertPayloadSize(payload: unknown, maximumBytes = 128 * 1024 * 1024): void {
@@ -198,6 +199,29 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   };
 
   handle(IPC_CHANNELS.appVersion, () => dependencies.appVersion());
+  handle(IPC_CHANNELS.windowSetTheme, (_event, payload) => {
+    if (payload !== 'light' && payload !== 'dark') throw new TypeError('Giao diện không hợp lệ.');
+    // Keep the native non-client area (resize edge/shadow) in the same theme as
+    // the renderer. Without this, Windows can leave a bright one-pixel border
+    // around a frameless dark window even though every HTML surface is dark.
+    nativeTheme.themeSource = payload;
+    const window = dependencies.mainWindow();
+    if (!window || window.isDestroyed()) return;
+    window.setBackgroundColor(payload === 'dark' ? '#181818' : '#f4f1ea');
+  });
+  handle(IPC_CHANNELS.windowMinimize, () => {
+    const window = dependencies.mainWindow();
+    if (window && !window.isDestroyed()) window.minimize();
+  });
+  handle(IPC_CHANNELS.windowToggleMaximize, () => {
+    const window = dependencies.mainWindow();
+    if (!window || window.isDestroyed()) return;
+    if (window.isMaximized()) window.unmaximize(); else window.maximize();
+  });
+  handle(IPC_CHANNELS.windowClose, () => {
+    const window = dependencies.mainWindow();
+    if (window && !window.isDestroyed()) window.close();
+  });
   handle(IPC_CHANNELS.promptsLoadAll, async () => dependencies.prompts.loadCatalog());
   handle(IPC_CHANNELS.draftLoad, () => dependencies.persistence.loadDraft());
   handle(IPC_CHANNELS.draftSave, async (_event, payload) => {
@@ -234,11 +258,62 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
       }
       return candidate;
     };
+    const rawAutoExport = payload.autoExport;
+    let autoExport: {
+      directory: string;
+      startChapter: number;
+      endChapter: number;
+      sourceChapterNumbers: number[];
+      exportOriginalChapters: boolean;
+      exportCombinedChapters: boolean;
+      outputChapterStart?: number;
+      omitOutputChapterTitles: boolean;
+    } | undefined;
+    if (rawAutoExport !== undefined) {
+      const binding = objectPayload(rawAutoExport, "Cấu hình lưu tự động");
+      const directory = stringField(binding, "directory", { required: true, max: 32_000 })!;
+      const integer = (name: string, required = true): number | undefined => {
+        const value = binding[name];
+        if (value === undefined && !required) return undefined;
+        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+          throw new TypeError(`Cấu hình lưu tự động ${name} không hợp lệ.`);
+        }
+        return value;
+      };
+      const startChapter = integer("startChapter")!;
+      const endChapter = integer("endChapter")!;
+      const sourceChapterNumbers = binding.sourceChapterNumbers;
+      if (!Array.isArray(sourceChapterNumbers)
+        || sourceChapterNumbers.length === 0
+        || sourceChapterNumbers.some((value) => typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)) {
+        throw new TypeError("Cấu hình lưu tự động sourceChapterNumbers không hợp lệ.");
+      }
+      if (endChapter < startChapter || typeof binding.exportOriginalChapters !== "boolean"
+        || typeof binding.exportCombinedChapters !== "boolean"
+        || (binding.exportCombinedSourceChapters !== undefined && typeof binding.exportCombinedSourceChapters !== "boolean")
+        || typeof binding.omitOutputChapterTitles !== "boolean") {
+        throw new TypeError("Cấu hình lưu tự động không hợp lệ.");
+      }
+      autoExport = {
+        directory,
+        startChapter,
+        endChapter,
+        sourceChapterNumbers: [...sourceChapterNumbers],
+        exportOriginalChapters: binding.exportOriginalChapters,
+        exportCombinedChapters: binding.exportCombinedChapters,
+        ...(binding.exportCombinedSourceChapters === true ? { exportCombinedSourceChapters: true } : {}),
+        ...(integer("outputChapterStart", false) !== undefined
+          ? { outputChapterStart: integer("outputChapterStart", false) }
+          : {}),
+        omitOutputChapterTitles: binding.omitOutputChapterTitles,
+      };
+    }
     return dependencies.translator.start({
       source,
       promptMode: mode,
       ...(customPrompt ? { customPrompt } : {}),
       resolvedPrompt,
+      ...(autoExport ? { autoExport } : {}),
       settings: {
         maxChunkChars: numberSetting("maxChunkChars"),
         maxCharsPerSegment: numberSetting("maxCharsPerSegment"),
@@ -328,19 +403,24 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   handle(IPC_CHANNELS.exportChooseDirectory, () =>
     chooseChapterDirectory(dependencies.dialog, dependencies.mainWindow()),
   );
+  handle(IPC_CHANNELS.exportValidateDirectory, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, 'Yêu cầu kiểm tra thư mục xuất');
+    const directory = stringField(payload, 'directory', { required: true, max: 32_767 })!;
+    return validateChapterExportDirectory(directory);
+  });
   handle(IPC_CHANNELS.exportChapters, async (_event, rawPayload) => {
     const payload = objectPayload(rawPayload, "Yêu cầu lưu các chương");
     const directory = stringField(payload, "directory", { required: true, max: 32_767 })!;
     const exportJobId = stringField(payload, "exportJobId", { required: true, max: 200 })!;
     const chapters = chapterExportInputs(payload);
-    return exportChapterFiles({ directory, exportJobId, chapters });
+    return exportChapterFiles({ directory, exportJobId, chapters, recoveryOnConflict: payload.recoveryOnConflict === true });
   });
   handle(IPC_CHANNELS.exportOriginalChapters, async (_event, rawPayload) => {
     const payload = objectPayload(rawPayload, "Yêu cầu lưu chương dịch gốc");
     const directory = stringField(payload, "directory", { required: true, max: 32_767 })!;
     const exportJobId = stringField(payload, "exportJobId", { required: true, max: 200 })!;
     const chapters = chapterExportInputs(payload);
-    return exportOriginalChapterFiles({ directory, exportJobId, chapters });
+    return exportOriginalChapterFiles({ directory, exportJobId, chapters, recoveryOnConflict: payload.recoveryOnConflict === true });
   });
   handle(IPC_CHANNELS.exportCombinedChapters, async (_event, rawPayload) => {
     const payload = objectPayload(rawPayload, "Yêu cầu lưu file tổng hợp");
@@ -368,6 +448,27 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
       endChapter,
       sourceChapterNumbers,
       chapters,
+      recoveryOnConflict: payload.recoveryOnConflict === true,
+    });
+  });
+  handle(IPC_CHANNELS.exportCombinedSourceChapters, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, "Yêu cầu lưu file tổng chương gốc");
+    const directory = stringField(payload, "directory", { required: true, max: 32_767 })!;
+    const exportJobId = stringField(payload, "exportJobId", { required: true, max: 200 })!;
+    const sourceStartChapter = boundedPositiveInteger(payload.sourceStartChapter, 'sourceStartChapter');
+    const sourceEndChapter = boundedPositiveInteger(payload.sourceEndChapter, 'sourceEndChapter');
+    const outputStartChapter = boundedPositiveInteger(payload.outputStartChapter, 'outputStartChapter');
+    const outputEndChapter = boundedPositiveInteger(payload.outputEndChapter, 'outputEndChapter');
+    const chapters = chapterExportInputs(payload);
+    return exportCombinedSourceChapterFile({
+      directory,
+      exportJobId,
+      sourceStartChapter,
+      sourceEndChapter,
+      outputStartChapter,
+      outputEndChapter,
+      chapters,
+      recoveryOnConflict: payload.recoveryOnConflict === true,
     });
   });
 

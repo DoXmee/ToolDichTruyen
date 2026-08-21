@@ -37,41 +37,47 @@ function normalizeForComparison(value: string): string {
   return value.normalize('NFC').replace(/\s+/gu, ' ').trim();
 }
 
-function hasUnclosedDelimiter(value: string): boolean {
-  const pairs: ReadonlyArray<readonly [string, string]> = [
-    ['(', ')'],
-    ['[', ']'],
-    ['{', '}'],
-    ['“', '”'],
-    ['‘', '’'],
-    ['«', '»'],
-  ];
+const MIN_REPEATED_PARAGRAPH_CHARACTERS = 120;
+const MIN_REPEATED_SENTENCE_SEQUENCE_CHARACTERS = 100;
 
-  return pairs.some(([open, close]) => {
-    let depth = 0;
-    for (const character of value) {
-      if (character === open) depth += 1;
-      if (character === close && depth > 0) depth -= 1;
-    }
-    return depth > 0;
-  });
+function normalizedRepeatKey(value: string): string {
+  return value.toLocaleLowerCase('vi-VN').replace(/\s+/gu, ' ').trim();
 }
 
-function findRepeatedSample(value: string): string | null {
-  const units = value
-    .normalize('NFC')
-    .split(/(?:\r\n|\r|\n)+|(?<=[.!?。！？])\s+/u)
-    .map((part) => part.trim())
-    .filter((part) => part.length >= 20);
-
+function thirdRepeatSample(units: readonly string[], minimumCharacters: number): string | null {
   const counts = new Map<string, number>();
   for (const unit of units) {
-    const key = unit.toLocaleLowerCase('vi-VN').replace(/\s+/gu, ' ');
+    const trimmed = unit.trim();
+    if (codePointLength(trimmed) < minimumCharacters) continue;
+    const key = normalizedRepeatKey(trimmed);
     const count = (counts.get(key) ?? 0) + 1;
-    if (count >= 3) return unit.slice(0, 120);
+    if (count >= 3) return trimmed.slice(0, 160);
     counts.set(key, count);
   }
   return null;
+}
+
+/**
+ * Catch copied blocks, not natural repeated prose. A single short sentence
+ * such as “Lâm Mỹ Ngôn khẽ thở dài.” can appear several times in a chapter
+ * without any corruption. We therefore require either a long repeated
+ * paragraph or a repeated sequence of at least two consecutive sentences.
+ */
+function findRepeatedSample(value: string): string | null {
+  const normalized = value.normalize('NFC');
+  const paragraphs = normalized.split(/(?:\r\n|\r|\n){2,}/u);
+  const repeatedParagraph = thirdRepeatSample(paragraphs, MIN_REPEATED_PARAGRAPH_CHARACTERS);
+  if (repeatedParagraph) return repeatedParagraph;
+
+  const sentences = normalized
+    .split(/(?<=[.!?。！？])\s+/u)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => codePointLength(sentence) >= 20);
+  const pairs: string[] = [];
+  for (let index = 0; index + 1 < sentences.length; index += 1) {
+    pairs.push(`${sentences[index]} ${sentences[index + 1]}`);
+  }
+  return thirdRepeatSample(pairs, MIN_REPEATED_SENTENCE_SEQUENCE_CHARACTERS);
 }
 
 function chapterHeaderNumbers(value: string): number[] {
@@ -196,34 +202,11 @@ export function validateTranslation(
       });
     }
 
-    if (rules.checkTruncation) {
-      const trimmed = translation.trimEnd();
-      const trimmedSource = source.trimEnd();
-      // Source chunks may stop at any punctuation or symbol: a full stop,
-      // ellipsis, quote, dash, comma, etc.  When both source and translated
-      // chunk end at a boundary mark, the mark cannot prove that the model
-      // stopped early.  The actual source tail is the authority here; do not
-      // reject a faithful chunk just because its final punctuation differs.
-      const sourceEndsWithBoundaryMark = /[\p{P}\p{S}]$/u.test(trimmedSource);
-      const translationEndsWithBoundaryMark = /[\p{P}\p{S}]$/u.test(trimmed);
-      const faithfulChunkBoundary =
-        sourceEndsWithBoundaryMark && translationEndsWithBoundaryMark;
-      const sourceHasUnclosedDelimiter = hasUnclosedDelimiter(trimmedSource);
-      const translationHasUnclosedDelimiter = hasUnclosedDelimiter(trimmed);
-      const faithfulOpenDelimiterBoundary =
-        sourceHasUnclosedDelimiter && translationHasUnclosedDelimiter;
-      if (
-        (!faithfulChunkBoundary && /(?:\.\.\.|…|[,;:，；：\-–—])$/u.test(trimmed)) ||
-        (translationHasUnclosedDelimiter && !faithfulOpenDelimiterBoundary)
-      ) {
-        issues.push({
-          code: 'likely_truncated',
-          severity: 'error',
-          message: 'Bản dịch có dấu hiệu bị ngắt giữa chừng.',
-          sample: trimmed.slice(-160),
-        });
-      }
-    }
+    // Do not infer a truncated translation from punctuation or an unmatched
+    // quote. Source pages and model output routinely split at different text
+    // boundaries, so this heuristic produced false failures and paused valid
+    // checkpoints. Empty/error/too-short and structural checks above remain
+    // the reliable protections against incomplete output.
 
     if (rules.checkRepetition) {
       const repeatedSample = findRepeatedSample(translation);

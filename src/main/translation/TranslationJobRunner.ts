@@ -14,6 +14,9 @@ import type {
   PromptMode,
   TranslationJob,
   TranslationJobSnapshot,
+  TranslationActivityEntry,
+  TranslationActivityTone,
+  TranslationAutoExportBinding,
   TranslationSegment,
   TranslationSettings,
   TranslationValidationResult,
@@ -32,6 +35,7 @@ export interface StartTranslationRequest {
   promptMode: PromptMode;
   customPrompt?: string;
   resolvedPrompt: string;
+  autoExport?: TranslationAutoExportBinding;
   settings?: Partial<TranslationSettings> & {
     maxChunkChars?: number;
     timeoutMs?: number;
@@ -56,11 +60,25 @@ interface PersistedTranslationJob extends TranslationJob {
    * context has been abandoned, plus the one compensating fresh-chat send.
    */
   freshChatRecoveryAttemptLimits: Record<string, number>;
+  /**
+   * Recovery ladder dedicated to an abnormally short translation. The first
+   * result moves to a newly created tool chat; a repeat then restarts the
+   * tool-owned browser before creating its replacement chat.
+   */
+  shortTranslationRecoveryAttempts: Record<string, number>;
   /** Number of bounded full browser restarts used for a segment. */
   browserRestartRecoveryAttempts: Record<string, number>;
   /** Number of bounded in-place ChatGPT page reloads used for a segment. */
   pageReloadRecoveryAttempts: Record<string, number>;
+  /** Context prompts sent after ChatGPT itself returned a safety refusal. */
+  safetyRefusalPromptAttempts: Record<string, number>;
+  /** A safety refusal may move to one clean chat after three in-chat prompts. */
+  safetyRefusalFreshChatAttempts: Record<string, number>;
+  /** Durable marker: the next translation request must carry the context prompt. */
+  safetyRefusalContextPending: Record<string, boolean>;
 }
+
+const MAX_ACTIVITY_LOG_ENTRIES = 240;
 
 export interface TranslationEvent {
   jobId: string;
@@ -72,7 +90,8 @@ export interface TranslationEvent {
     | "segment-completed"
     | "segment-failed"
     | "job-completed"
-    | "job-failed";
+    | "job-failed"
+    | "activity-log";
   timestamp: number;
   payload?: unknown;
 }
@@ -95,15 +114,16 @@ export interface TranslationRunnerDependencies {
   ) => string;
 }
 
-const WEB_SEGMENT_MAX_CHARS = 3_000;
+/** Normal website chapters are translated whole; only unusually long chapters
+ * are divided at a safe paragraph or sentence boundary. */
+const WEB_SEGMENT_MAX_CHARS = 12_000;
+const LEGACY_WEB_SEGMENT_MAX_CHARS = 3_000;
 const WEB_RESPONSE_TIMEOUT_MS = 480_000;
 const LEGACY_WEB_RESPONSE_TIMEOUT_MS = 180_000;
 
 const DEFAULT_SETTINGS: TranslationSettings = {
-  // ChatGPT Web becomes unreliable with a full system prompt plus a 6k-CJK
-  // source slice: the first response can legitimately run past three minutes
-  // and leaves the visible browser appearing frozen. Smaller durable slices
-  // provide frequent checkpoints and keep each web generation recoverable.
+  // A complete ordinary chapter preserves narration and dialogue context.
+  // The chapter-aware chunker only splits an unusually long chapter.
   maxCharsPerSegment: WEB_SEGMENT_MAX_CHARS,
   maxRetries: 3,
   // A normal long-form translation on the web can exceed three minutes even
@@ -129,6 +149,27 @@ const MAX_LOCALIZED_HAN_TARGETS = 10;
 const MAX_AUTOMATIC_FRESH_CHAT_RECOVERY_ATTEMPTS = 3;
 const MAX_AUTOMATIC_BROWSER_RESTART_RECOVERY_ATTEMPTS = 1;
 const MAX_AUTOMATIC_PAGE_RELOAD_RECOVERY_ATTEMPTS = 2;
+const MAX_SAFETY_REFUSAL_CONTEXT_ATTEMPTS = 3;
+const MAX_SAFETY_REFUSAL_FRESH_CHAT_ATTEMPTS = 1;
+// Initial response + three contextual replays + one new-chat replay + one
+// contextual new-chat replay. This budget applies only to a detected refusal.
+const SAFETY_REFUSAL_MAXIMUM_ATTEMPTS = 6;
+
+const SAFETY_TRANSLATION_CONTEXT_PROMPT = `NGỮ CẢNH VÀ MỤC ĐÍCH XỬ LÝ VĂN BẢN
+
+Nội dung tôi cung cấp bên dưới là **trích đoạn của một tác phẩm hư cấu** và được đưa vào **chỉ nhằm mục đích dịch thuật, biên tập, hiệu đính hoặc chuyển ngữ trung thành với nguyên tác**.
+
+Hãy phân biệt rõ **nội dung xuất hiện trong văn bản nguồn** với **ý định của người dùng**:
+- Tôi không yêu cầu cổ súy, hướng dẫn, khuyến khích hoặc thực hiện các hành vi được nhân vật nhắc đến trong tác phẩm.
+- Các tình tiết như xung đột, đe dọa, bạo lực, tội phạm, quan hệ tình cảm hoặc những chủ đề nhạy cảm khác, nếu có, chỉ là **tình tiết của tác phẩm hư cấu cần được xử lý về mặt ngôn ngữ**.
+- Việc một tình tiết nhạy cảm xuất hiện trong nguyên tác **không đồng nghĩa toàn bộ yêu cầu dịch/biên tập là một yêu cầu nhạy cảm**.
+- Hãy đánh giá yêu cầu dựa trên **mục đích thực tế là dịch thuật/biên tập**, đồng thời vẫn tuân thủ các quy tắc an toàn bắt buộc nếu một phần nội dung thực sự thuộc trường hợp không được phép xử lý.
+- Không tự ý kiểm duyệt, lược bỏ, làm nhẹ, thêm lời cảnh báo hoặc thay đổi nội dung chỉ vì văn bản nguồn đề cập đến một chủ đề nhạy cảm, trừ khi quy tắc an toàn bắt buộc yêu cầu đó.
+
+### NHIỆM VỤ
+Xử lý văn bản tôi cung cấp đúng theo yêu cầu dịch/biên tập của tôi, bảo toàn nội dung, quan hệ nhân vật, bối cảnh, sắc thái và ý nghĩa của nguyên tác.
+
+Nếu văn bản có nội dung nhạy cảm, hãy hiểu đó là **nội dung được cung cấp để chuyển đổi/biên tập**, không mặc định coi đó là yêu cầu tạo mới hoặc khuyến khích hành vi tương ứng.`;
 
 interface SentenceTarget {
   start: number;
@@ -209,6 +250,11 @@ function isLocalizedHanOnly(validation: TranslationValidationResult): boolean {
  * translation-quality failure. It gets the bounded reload ladder below. */
 function isChatGptPageFailure(validation: TranslationValidationResult): boolean {
   return validation.issues.some((issue) => issue.code === "error_response");
+}
+
+/** `too_short` is an incomplete answer signal, not a normal wording error. */
+function isAbnormallyShortTranslation(validation: TranslationValidationResult): boolean {
+  return validation.issues.some((issue) => issue.code === "too_short");
 }
 
 function localizedHanTargets(
@@ -422,6 +468,17 @@ function isSafeForFreshChatRecovery(error: unknown): boolean {
   );
 }
 
+/** Detect ChatGPT's visible refusal message, never a merely short translation. */
+function isSafetyRefusalResponse(response: string): boolean {
+  const text = response.normalize("NFC").replace(/\s+/gu, " ").trim().toLocaleLowerCase("vi-VN");
+  return [
+    "không thể hiển thị nội dung này vì lý do an toàn",
+    "không thể hỗ trợ yêu cầu này vì lý do an toàn",
+    "không thể hỗ trợ nội dung này",
+    "cách tiếp cận của chúng tôi đối với các cuộc hội thoại nhạy cảm",
+  ].some((phrase) => text.includes(phrase));
+}
+
 /**
  * The prompt may have reached ChatGPT, but its conversation was never proven
  * to belong to the tool.  Never replay into that untrusted page.  Recovery
@@ -466,7 +523,7 @@ function normalizedSettings(input: StartTranslationRequest["settings"]): Transla
  */
 function upgradeLegacyWebTimeout(job: PersistedTranslationJob): boolean {
   if (
-    job.settings.maxCharsPerSegment > WEB_SEGMENT_MAX_CHARS &&
+    job.settings.maxCharsPerSegment > LEGACY_WEB_SEGMENT_MAX_CHARS &&
     job.settings.responseTimeoutMs <= LEGACY_WEB_RESPONSE_TIMEOUT_MS
   ) {
     job.settings.responseTimeoutMs = WEB_RESPONSE_TIMEOUT_MS;
@@ -575,6 +632,7 @@ export class TranslationJobRunner {
       promptMode: request.promptMode,
       ...(request.customPrompt ? { customPrompt: request.customPrompt } : {}),
       resolvedPrompt: request.resolvedPrompt,
+      ...(request.autoExport ? { autoExport: request.autoExport } : {}),
       sourceText,
       translatedText: "",
       segments,
@@ -585,9 +643,15 @@ export class TranslationJobRunner {
       localizedHanRepairAttempts: {},
       freshChatRecoveryAttempts: {},
       freshChatRecoveryAttemptLimits: {},
+      shortTranslationRecoveryAttempts: {},
       browserRestartRecoveryAttempts: {},
       pageReloadRecoveryAttempts: {},
+      safetyRefusalPromptAttempts: {},
+      safetyRefusalFreshChatAttempts: {},
+      safetyRefusalContextPending: {},
+      activityLog: [],
     };
+    this.logActivity(job, "Đã tạo checkpoint. Đang chuẩn bị kết nối ChatGPT.");
     this.jobs.set(id, job);
     await this.checkpoint(job);
     this.emit(job.id, "job-created", { job: this.publicJob(job) });
@@ -602,6 +666,7 @@ export class TranslationJobRunner {
     }
     this.pauseRequests.add(job.id);
     job.status = "paused";
+    this.logActivity(job, "Người dùng đã tạm dừng tác vụ. Checkpoint đã được giữ nguyên.", "warning");
     job.updatedAt = nowIso();
     await this.checkpoint(job);
     this.emit(job.id, "job-status", { status: job.status });
@@ -660,6 +725,7 @@ export class TranslationJobRunner {
     }
     const existingRunWillContinue = this.running.has(job.id);
     job.status = existingRunWillContinue ? "running" : "queued";
+    this.logActivity(job, "Đã tiếp tục từ checkpoint đã lưu.");
     job.updatedAt = nowIso();
     await this.checkpoint(job);
     this.emit(job.id, "job-status", { status: job.status });
@@ -681,6 +747,9 @@ export class TranslationJobRunner {
       promptMode: job.promptMode,
       ...(job.customPrompt ? { customPrompt: job.customPrompt } : {}),
       resolvedPrompt: job.resolvedPrompt,
+      ...(job.autoExport
+        ? { autoExport: { ...job.autoExport, sourceChapterNumbers: [...job.autoExport.sourceChapterNumbers] } }
+        : {}),
       settings: {
         ...job.settings,
         validation: { ...job.settings.validation },
@@ -710,6 +779,7 @@ export class TranslationJobRunner {
     if (job.status === "cancelled") return;
     this.pauseRequests.delete(job.id);
     job.status = "cancelled";
+    this.logActivity(job, "Người dùng đã hủy tác vụ. Checkpoint vẫn được giữ để có thể xem lại.", "warning");
     job.updatedAt = nowIso();
     const current = job.segments.find((segment) =>
       ["sending", "streaming", "validating", "retrying"].includes(segment.status),
@@ -762,8 +832,10 @@ export class TranslationJobRunner {
     // retry budget again, including one later automatic fresh-chat hand-off.
     delete job.freshChatRecoveryAttempts[segment.id];
     delete job.freshChatRecoveryAttemptLimits[segment.id];
+    delete job.shortTranslationRecoveryAttempts[segment.id];
     delete job.browserRestartRecoveryAttempts[segment.id];
     delete job.pageReloadRecoveryAttempts[segment.id];
+    this.clearSafetyRefusalRecovery(job, segment.id);
     job.error = undefined;
     job.status = "queued";
     // A failed/cancelled job may have yielded the shared ChatGPT adapter to a
@@ -772,6 +844,7 @@ export class TranslationJobRunner {
     job.conversationInitialized = false;
     job.conversationRecoveryPending = true;
     job.conversationHasBasePrompt = false;
+    this.logActivity(job, `Đã đưa đoạn ${segment.index + 1} về hàng đợi để thử lại từ checkpoint lỗi.`, "warning", segment);
     job.updatedAt = nowIso();
     this.rebuildTranslation(job);
     await this.checkpoint(job);
@@ -820,8 +893,13 @@ export class TranslationJobRunner {
       candidate.localizedHanRepairAttempts ??= {};
       candidate.freshChatRecoveryAttempts ??= {};
       candidate.freshChatRecoveryAttemptLimits ??= {};
+      candidate.shortTranslationRecoveryAttempts ??= {};
       candidate.browserRestartRecoveryAttempts ??= {};
       candidate.pageReloadRecoveryAttempts ??= {};
+      candidate.safetyRefusalPromptAttempts ??= {};
+      candidate.safetyRefusalFreshChatAttempts ??= {};
+      candidate.safetyRefusalContextPending ??= {};
+      candidate.activityLog ??= [];
       upgradeLegacyWebTimeout(candidate);
       candidate.conversationInitialized = false;
       candidate.conversationHasBasePrompt = false;
@@ -896,18 +974,22 @@ export class TranslationJobRunner {
     if (this.cancelRequests.has(job.id) || job.status === "cancelled") return;
     const controller = new AbortController();
     this.abortControllers.set(job.id, controller);
+    this.logActivity(job, "Đang kiểm tra phiên ChatGPT trước khi dịch tiếp.");
     await this.dependencies.chatGpt.ensureReady();
     if (this.shouldStop(job, controller.signal)) return;
     if (!job.conversationInitialized) {
+      this.logActivity(job, "Đang tạo chat dịch mới và gửi prompt gốc cho đoạn kế tiếp.");
       await this.dependencies.chatGpt.startNewConversation();
       if (this.shouldStop(job, controller.signal)) return;
       job.conversationInitialized = true;
       job.conversationHasBasePrompt = false;
       await this.checkpoint(job);
+      this.logActivity(job, "Đã sẵn sàng chat dịch mới.", "success");
       if (this.shouldStop(job, controller.signal)) return;
     }
     if (this.pauseRequests.has(job.id) || job.status === "paused") return;
     job.status = "running";
+    this.logActivity(job, "Bắt đầu xử lý các đoạn còn lại.");
     job.updatedAt = nowIso();
     await this.checkpoint(job);
     if (this.shouldStop(job, controller.signal)) return;
@@ -962,13 +1044,15 @@ export class TranslationJobRunner {
     // receives every remaining ordinary retry; it is not an extra retry.
     // Reloading the page twice, then restarting the browser, changes the
     // recovery environment only. It does not silently grant extra sends.
-    const maximumAttempts = normalMaximumAttempts;
+    let maximumAttempts = this.hasSafetyRefusalRecovery(job, segment.id)
+      ? Math.max(normalMaximumAttempts, SAFETY_REFUSAL_MAXIMUM_ATTEMPTS)
+      : normalMaximumAttempts;
     if (
       freshChatRecoveryAttempts > 0 &&
       boundedFreshChatRecoveryAttemptLimit(job.freshChatRecoveryAttemptLimits[segment.id])
-        !== normalMaximumAttempts
+        !== maximumAttempts
     ) {
-      job.freshChatRecoveryAttemptLimits[segment.id] = normalMaximumAttempts;
+      job.freshChatRecoveryAttemptLimits[segment.id] = maximumAttempts;
     }
 
     if (
@@ -1033,6 +1117,12 @@ export class TranslationJobRunner {
       const isRetry = segment.attempts > 1;
       segment.status = isRetry ? "retrying" : "sending";
       segment.error = undefined;
+      this.logActivity(
+        job,
+        `${isRetry ? "Thử lại" : "Gửi"} đoạn ${segment.index + 1}/${job.segments.length}, lần ${segment.attempts}/${maximumAttempts} (${segment.sourceText.length.toLocaleString("vi-VN")} ký tự nguồn).`,
+        isRetry ? "warning" : "info",
+        segment,
+      );
       job.updatedAt = nowIso();
       await this.checkpoint(job);
       if (this.shouldStop(job, signal)) return false;
@@ -1066,6 +1156,7 @@ export class TranslationJobRunner {
           ? this.promptBuilder(commonPromptInput)
           : this.continuationPromptBuilder(commonPromptInput);
       prompt = this.withPendingRecoveryContext(job, prompt);
+      prompt = this.withSafetyRefusalContext(job, segment.id, prompt);
       if (includeBasePrompt) job.conversationHasBasePrompt = true;
 
       let retryUnsafe = false;
@@ -1073,8 +1164,10 @@ export class TranslationJobRunner {
       let adapterErrorOccurred = false;
       let pageRecoveryRequested = false;
       let conversationVerificationFailed = false;
+      let safetyRefusalDetected = false;
       try {
         segment.status = "streaming";
+        this.logActivity(job, `ChatGPT đang tạo bản dịch cho đoạn ${segment.index + 1}/${job.segments.length}.`, "info", segment);
         await this.checkpoint(job);
         if (this.shouldStop(job, signal)) return false;
         this.emit(job.id, "segment-status", { segment: publicSegment(segment) });
@@ -1084,10 +1177,12 @@ export class TranslationJobRunner {
         });
         if (this.shouldStop(job, signal)) return false;
         this.consumeRecoveryContext(job);
+        this.consumeSafetyRefusalContext(job, segment.id);
         segment.status = "validating";
         segment.translatedText = response.trim().normalize("NFC");
         job.updatedAt = nowIso();
         await this.checkpoint(job);
+        this.logActivity(job, `Đã nhận phản hồi, đang kiểm tra chất lượng đoạn ${segment.index + 1}/${job.segments.length}.`, "info", segment);
         if (this.shouldStop(job, signal)) return false;
         this.emit(job.id, "segment-status", { segment: publicSegment(segment) });
 
@@ -1102,6 +1197,7 @@ export class TranslationJobRunner {
         if (validation.valid) {
           return this.completeSegment(job, segment, signal);
         }
+        safetyRefusalDetected = isSafetyRefusalResponse(segment.translatedText);
         if (isLocalizedHanOnly(validation)) {
           const outcome = await this.repairLocalizedHan(
             job,
@@ -1129,10 +1225,12 @@ export class TranslationJobRunner {
         }
         pageRecoveryRequested = isChatGptPageFailure(validation);
         segment.error = validation.issues.map((issue) => issue.message).join("; ");
+        this.logActivity(job, `Đoạn chưa đạt kiểm tra: ${segment.error}`, "warning", segment);
       } catch (error) {
         if (this.shouldStop(job, signal) || isAbortError(error)) return false;
         adapterErrorOccurred = true;
         segment.error = errorMessage(error);
+        this.logActivity(job, `Lỗi khi chờ ChatGPT: ${segment.error}`, "warning", segment);
         freshChatRecoveryRequested = isSafeForFreshChatRecovery(error);
         conversationVerificationFailed = isConversationVerificationFailure(error);
         // A context that the adapter has positively abandoned is the one
@@ -1156,6 +1254,69 @@ export class TranslationJobRunner {
       }
       if (retryUnsafe) {
         return this.failSegment(job, segment, signal);
+      }
+
+      if (safetyRefusalDetected) {
+        maximumAttempts = Math.max(maximumAttempts, SAFETY_REFUSAL_MAXIMUM_ATTEMPTS);
+        const freshChatUsed = Math.min(
+          MAX_SAFETY_REFUSAL_FRESH_CHAT_ATTEMPTS,
+          Math.max(0, Math.trunc(job.safetyRefusalFreshChatAttempts[segment.id] ?? 0)),
+        );
+        const contextLimit = freshChatUsed > 0 ? 1 : MAX_SAFETY_REFUSAL_CONTEXT_ATTEMPTS;
+        const contextUsed = Math.min(
+          contextLimit,
+          Math.max(0, Math.trunc(job.safetyRefusalPromptAttempts[segment.id] ?? 0)),
+        );
+        if (contextUsed < contextLimit) {
+          const nextContextAttempt = contextUsed + 1;
+          job.safetyRefusalPromptAttempts[segment.id] = nextContextAttempt;
+          job.safetyRefusalContextPending[segment.id] = true;
+          segment.status = "retrying";
+          segment.error = "ChatGPT trả thông báo an toàn; sẽ gửi ngữ cảnh dịch thuật rồi gửi lại đúng đoạn.";
+          this.logActivity(
+            job,
+            freshChatUsed > 0
+              ? "Chat mới trả thông báo an toàn: gửi ngữ cảnh dịch thuật lần duy nhất rồi gửi lại đoạn."
+              : `ChatGPT trả thông báo an toàn: gửi ngữ cảnh dịch thuật lần ${nextContextAttempt}/${MAX_SAFETY_REFUSAL_CONTEXT_ATTEMPTS} rồi gửi lại đoạn.`,
+            "warning",
+            segment,
+          );
+          job.updatedAt = nowIso();
+          await this.checkpoint(job);
+          if (this.shouldStop(job, signal)) return false;
+          this.emit(job.id, "segment-retry", {
+            segment: publicSegment(segment),
+            kind: "safety-context",
+            contextAttempt: nextContextAttempt,
+            maximumContextAttempts: contextLimit,
+            maximumAttempts,
+          });
+          await this.waitBeforeRetry(segment.attempts, signal);
+          continue;
+        }
+        if (freshChatUsed < MAX_SAFETY_REFUSAL_FRESH_CHAT_ATTEMPTS) {
+          job.safetyRefusalFreshChatAttempts[segment.id] = freshChatUsed + 1;
+          job.safetyRefusalPromptAttempts[segment.id] = 0;
+          delete job.safetyRefusalContextPending[segment.id];
+          this.logActivity(
+            job,
+            "ChatGPT vẫn trả thông báo an toàn sau 3 lần nhắc ngữ cảnh; tạo chat mới để thử lại đoạn một lần.",
+            "warning",
+            segment,
+          );
+          return this.queueFreshChatRecovery(job, segment, signal, {
+            normalMaximumAttempts: maximumAttempts,
+            trigger: "safety-refusal",
+          });
+        }
+        segment.error = "ChatGPT tiếp tục từ chối nội dung sau khi đã gửi ngữ cảnh trong chat mới.";
+        return this.failSegment(job, segment, signal);
+      }
+      if (this.hasSafetyRefusalRecovery(job, segment.id)) {
+        // A later reply is an ordinary translation failure, so return to the
+        // existing retry policy instead of extending the special safety budget.
+        this.clearSafetyRefusalRecovery(job, segment.id);
+        maximumAttempts = normalMaximumAttempts;
       }
 
       // A missing ownership marker is special: the outgoing prompt may exist
@@ -1183,6 +1344,43 @@ export class TranslationJobRunner {
         return this.queueBrowserRestartRecovery(job, segment, signal, {
           normalMaximumAttempts: maximumAttempts,
         });
+      }
+
+      // An abnormally short response is commonly an incomplete ChatGPT turn.
+      // Do not append a repair to that same turn: first delete the verified
+      // tool chat and create a new one; if the fresh chat still returns a
+      // short answer, restart the browser and create another clean chat.
+      if (previousValidation && isAbnormallyShortTranslation(previousValidation)) {
+        const shortRecoveryAttempts = Math.min(
+          Math.max(0, Math.trunc(job.shortTranslationRecoveryAttempts[segment.id] ?? 0)),
+          2,
+        );
+        if (shortRecoveryAttempts === 0) {
+          job.shortTranslationRecoveryAttempts[segment.id] = 1;
+          this.logActivity(
+            job,
+            "Bản dịch ngắn bất thường: đang xóa chat do tool tạo và tạo chat mới để gửi lại prompt gốc.",
+            "warning",
+            segment,
+          );
+          return this.queueFreshChatRecovery(job, segment, signal, {
+            normalMaximumAttempts: maximumAttempts,
+            trigger: "short-translation",
+          });
+        }
+        if (shortRecoveryAttempts === 1) {
+          job.shortTranslationRecoveryAttempts[segment.id] = 2;
+          this.logActivity(
+            job,
+            "Chat mới vẫn trả bản dịch ngắn: đang khởi động lại browser rồi tạo chat mới để gửi lại prompt gốc.",
+            "warning",
+            segment,
+          );
+          return this.queueBrowserRestartRecovery(job, segment, signal, {
+            normalMaximumAttempts: maximumAttempts,
+            trigger: "short-translation-after-fresh-chat",
+          });
+        }
       }
 
       // A genuine page/browser failure uses a deterministic ladder before we
@@ -1221,6 +1419,7 @@ export class TranslationJobRunner {
       }
 
       segment.status = "retrying";
+      this.logActivity(job, `Chờ ngắn trước khi thử lại đoạn ${segment.index + 1}.`, "warning", segment);
       await this.checkpoint(job);
       if (this.shouldStop(job, signal)) return false;
       this.emit(job.id, "segment-retry", {
@@ -1237,7 +1436,8 @@ export class TranslationJobRunner {
    * The adapter has positively closed the old browser context, so the old
    * generation cannot overlap a new prompt. Persist the hand-off before
    * leaving this run; launch.finally starts the replacement chat afterwards.
-   * Validation failures never reach this path: they retry in the same chat.
+   * The sole validation exception is `too_short`, which uses this mechanism
+   * because an incomplete answer must not share the old conversation.
    */
   private async queueFreshChatRecovery(
     job: PersistedTranslationJob,
@@ -1246,6 +1446,7 @@ export class TranslationJobRunner {
     input: {
       normalMaximumAttempts: number;
       preserveLocalizedRepair?: boolean;
+      trigger?: "safe-adapter" | "short-translation" | "safety-refusal";
     },
   ): Promise<false> {
     if (
@@ -1311,7 +1512,7 @@ export class TranslationJobRunner {
       maximumFreshChatAttempts: Math.max(0, input.normalMaximumAttempts - 1),
       normalMaximumAttempts: input.normalMaximumAttempts,
       maximumAttempts: attemptLimit,
-      trigger: "safe-adapter",
+      trigger: input.trigger ?? "safe-adapter",
     });
     return false;
   }
@@ -1381,7 +1582,10 @@ export class TranslationJobRunner {
     job: PersistedTranslationJob,
     segment: TranslationSegment,
     signal: AbortSignal,
-    input: { normalMaximumAttempts: number },
+    input: {
+      normalMaximumAttempts: number;
+      trigger?: "page-reloads-exhausted" | "short-translation-after-fresh-chat";
+    },
   ): Promise<false> {
     if (
       this.shouldStop(job, signal) ||
@@ -1394,21 +1598,45 @@ export class TranslationJobRunner {
     const used = boundedFreshChatRecoveryAttempts(
       job.browserRestartRecoveryAttempts[segment.id],
     );
-    if (
-      used >= MAX_AUTOMATIC_BROWSER_RESTART_RECOVERY_ATTEMPTS ||
-      !this.dependencies.chatGpt.restartForRecovery
-    ) {
+    if (used >= MAX_AUTOMATIC_BROWSER_RESTART_RECOVERY_ATTEMPTS) {
       return this.failSegment(job, segment, signal);
+    }
+
+    if (!this.dependencies.chatGpt.restartForRecovery) {
+      // Keep an older adapter from turning a recoverable ownership-proof
+      // failure into a terminal job. `sendAndWait()` has already stopped the
+      // uncertain generation before this point; opening a fresh owned chat is
+      // therefore safe and preserves the remaining ordinary retry budget.
+      this.logActivity(
+        job,
+        "Không có khả năng khởi động lại browser; chuyển sang chat mới an toàn để gửi lại checkpoint.",
+        "warning",
+        segment,
+      );
+      return this.queueFreshChatRecovery(job, segment, signal, {
+        normalMaximumAttempts: input.normalMaximumAttempts,
+      });
     }
 
     try {
       await this.dependencies.chatGpt.restartForRecovery();
     } catch (error) {
-      segment.error = `Không thể khởi động lại trình duyệt ChatGPT: ${errorMessage(error)}`;
-      return this.failSegment(job, segment, signal);
+      // Strict browser close can fail transiently on Windows. Do not abandon
+      // a checkpoint merely because this optional escalation failed: leave
+      // the old page alone and create a fresh owned chat for the same segment.
+      this.logActivity(
+        job,
+        `Không thể khởi động lại browser (${errorMessage(error)}); chuyển sang chat mới an toàn để gửi lại checkpoint.`,
+        "warning",
+        segment,
+      );
+      return this.queueFreshChatRecovery(job, segment, signal, {
+        normalMaximumAttempts: input.normalMaximumAttempts,
+      });
     }
 
     job.browserRestartRecoveryAttempts[segment.id] = used + 1;
+    this.logActivity(job, "Đã khởi động lại browser ChatGPT; sẽ tạo chat mới và gửi lại checkpoint.", "warning", segment);
     segment.translatedText = "";
     segment.validation = undefined;
     segment.error = undefined;
@@ -1432,7 +1660,7 @@ export class TranslationJobRunner {
       browserRestartAttempt: used + 1,
       maximumBrowserRestartAttempts: MAX_AUTOMATIC_BROWSER_RESTART_RECOVERY_ATTEMPTS,
       maximumAttempts: input.normalMaximumAttempts,
-      trigger: "page-reloads-exhausted",
+      trigger: input.trigger ?? "page-reloads-exhausted",
     });
     return false;
   }
@@ -1576,11 +1804,14 @@ export class TranslationJobRunner {
   ): Promise<boolean> {
     segment.status = "completed";
     segment.error = undefined;
+    this.logActivity(job, `Đoạn ${segment.index + 1}/${job.segments.length} đạt kiểm tra và đã lưu checkpoint.`, "success", segment);
     delete job.localizedHanRepairAttempts[segment.id];
     delete job.freshChatRecoveryAttempts[segment.id];
     delete job.freshChatRecoveryAttemptLimits[segment.id];
+    delete job.shortTranslationRecoveryAttempts[segment.id];
     delete job.browserRestartRecoveryAttempts[segment.id];
     delete job.pageReloadRecoveryAttempts[segment.id];
+    this.clearSafetyRefusalRecovery(job, segment.id);
     this.rebuildTranslation(job);
     job.updatedAt = nowIso();
     await this.checkpoint(job);
@@ -1608,6 +1839,7 @@ export class TranslationJobRunner {
     delete job.localizedHanRepairAttempts[segment.id];
     job.status = "failed";
     job.error = `Đoạn ${segment.index + 1} lỗi sau ${segment.attempts} lần thử: ${segment.error ?? "không rõ lỗi"}`;
+    this.logActivity(job, job.error, "error", segment);
     job.updatedAt = nowIso();
     await this.checkpoint(job);
     if (this.shouldStop(job, signal)) return false;
@@ -1646,6 +1878,31 @@ export class TranslationJobRunner {
     if (job.conversationRecoveryPending) job.conversationRecoveryPending = false;
   }
 
+  private hasSafetyRefusalRecovery(job: PersistedTranslationJob, segmentId: string): boolean {
+    return Boolean(job.safetyRefusalContextPending[segmentId]) ||
+      (job.safetyRefusalPromptAttempts[segmentId] ?? 0) > 0 ||
+      (job.safetyRefusalFreshChatAttempts[segmentId] ?? 0) > 0;
+  }
+
+  private withSafetyRefusalContext(
+    job: PersistedTranslationJob,
+    segmentId: string,
+    prompt: string,
+  ): string {
+    if (!job.safetyRefusalContextPending[segmentId]) return prompt;
+    return `${SAFETY_TRANSLATION_CONTEXT_PROMPT}\n\n---\n${prompt}`;
+  }
+
+  private consumeSafetyRefusalContext(job: PersistedTranslationJob, segmentId: string): void {
+    delete job.safetyRefusalContextPending[segmentId];
+  }
+
+  private clearSafetyRefusalRecovery(job: PersistedTranslationJob, segmentId: string): void {
+    delete job.safetyRefusalPromptAttempts[segmentId];
+    delete job.safetyRefusalFreshChatAttempts[segmentId];
+    delete job.safetyRefusalContextPending[segmentId];
+  }
+
   private buildRecoveryContext(job: PersistedTranslationJob): string {
     const latestCompleted = [...job.segments]
       .filter((segment) => segment.status === "completed" && segment.translatedText.trim())
@@ -1680,8 +1937,13 @@ export class TranslationJobRunner {
         job.localizedHanRepairAttempts ??= {};
         job.freshChatRecoveryAttempts ??= {};
         job.freshChatRecoveryAttemptLimits ??= {};
+        job.shortTranslationRecoveryAttempts ??= {};
         job.browserRestartRecoveryAttempts ??= {};
         job.pageReloadRecoveryAttempts ??= {};
+        job.safetyRefusalPromptAttempts ??= {};
+        job.safetyRefusalFreshChatAttempts ??= {};
+        job.safetyRefusalContextPending ??= {};
+        job.activityLog ??= [];
         upgradeLegacyWebTimeout(job);
         job.conversationInitialized = false;
         job.conversationHasBasePrompt = false;
@@ -1735,6 +1997,26 @@ export class TranslationJobRunner {
     await this.dependencies.persistence.saveJob(job);
   }
 
+  private logActivity(
+    job: PersistedTranslationJob,
+    message: string,
+    tone: TranslationActivityTone = "info",
+    segment?: Pick<TranslationSegment, "id" | "index">,
+  ): void {
+    job.activityLog ??= [];
+    const entry: TranslationActivityEntry = {
+      at: nowIso(),
+      tone,
+      message,
+      ...(segment ? { segmentId: segment.id, segmentIndex: segment.index } : {}),
+    };
+    job.activityLog.push(entry);
+    if (job.activityLog.length > MAX_ACTIVITY_LOG_ENTRIES) {
+      job.activityLog.splice(0, job.activityLog.length - MAX_ACTIVITY_LOG_ENTRIES);
+    }
+    this.emit(job.id, "activity-log", { entry });
+  }
+
   private emit(jobId: string, type: TranslationEvent["type"], payload?: unknown): void {
     this.emitter.emit("event", { jobId, type, timestamp: Date.now(), payload } satisfies TranslationEvent);
   }
@@ -1753,6 +2035,8 @@ export class TranslationJobRunner {
       segments: job.segments.map(publicSegment),
       ...(job.currentSegmentIndex === undefined ? {} : { currentSegmentIndex: job.currentSegmentIndex }),
       ...(job.error ? { error: job.error } : {}),
+      ...(job.autoExport ? { autoExport: { ...job.autoExport, sourceChapterNumbers: [...job.autoExport.sourceChapterNumbers] } } : {}),
+      ...(job.activityLog?.length ? { activityLog: job.activityLog.map((entry) => ({ ...entry })) } : {}),
     };
   }
 
@@ -1772,10 +2056,12 @@ export class TranslationJobRunner {
       })),
       ...(job.currentSegmentIndex === undefined ? {} : { currentSegmentIndex: job.currentSegmentIndex }),
       ...(job.error ? { error: job.error } : {}),
+      ...(job.autoExport ? { autoExport: { ...job.autoExport, sourceChapterNumbers: [...job.autoExport.sourceChapterNumbers] } } : {}),
+      ...(job.activityLog?.length ? { activityLog: job.activityLog.map((entry) => ({ ...entry })) } : {}),
       // A full job lookup is a recovery operation, not the 1.5-second progress
       // poll. Returning the accumulated completed segments here means a window
       // refresh or a pause never loses the already validated part of a book.
-      ...(includeOutput ? { translatedText: job.translatedText } : {}),
+      ...(includeOutput ? { translatedText: job.translatedText, sourceText: job.sourceText } : {}),
     };
   }
 }

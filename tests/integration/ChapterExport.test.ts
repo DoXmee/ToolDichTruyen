@@ -6,9 +6,12 @@ import {
   chapterFileName,
   chooseChapterDirectory,
   combinedChapterFileName,
+  combinedSourceChapterFileName,
   exportChapterFiles,
   exportCombinedChapterFile,
+  exportCombinedSourceChapterFile,
   exportOriginalChapterFiles,
+  validateChapterExportDirectory,
   ORIGINAL_TRANSLATED_CHAPTERS_DIRECTORY_NAME,
 } from '../../src/main/chapterExport';
 import type { FinalChapterExportInput } from '../../src/shared/types';
@@ -37,6 +40,14 @@ afterEach(async () => {
 });
 
 describe('chapter TXT export', () => {
+  it('rejects a missing export folder before a translation can start', async () => {
+    const parent = await temporaryDirectory();
+    const missing = path.join(parent, 'đã-xóa');
+    await expect(validateChapterExportDirectory(missing)).rejects.toThrow(
+      'Không tìm thấy thư mục xuất; không thể bắt đầu dịch.',
+    );
+  });
+
   it('chooses a directory with or without an owner and handles cancel', async () => {
     const directory = await temporaryDirectory();
     const showOpenDialog = vi
@@ -105,6 +116,24 @@ describe('chapter TXT export', () => {
     expect(await readdir(directory)).toEqual([fileName]);
   });
 
+  it('moves an automatic conflicting checkpoint into one clean recovery folder without overwriting the old TXT', async () => {
+    const directory = await temporaryDirectory();
+    const input = chapter({ index: 7, sourceChapterNumber: 2, title: 'Chương 7: Bản hoàn chỉnh' });
+    const oldPath = path.join(directory, chapterFileName(input));
+    await writeFile(oldPath, 'Bản checkpoint cũ khác nội dung', 'utf8');
+
+    const result = await exportChapterFiles({
+      directory,
+      exportJobId: '12345678-full-job',
+      chapters: [input],
+      recoveryOnConflict: true,
+    });
+
+    expect(result.directory).toBe(path.join(directory, 'Xuất lại hoàn chỉnh 12345678'));
+    expect(await readFile(oldPath, 'utf8')).toBe('Bản checkpoint cũ khác nội dung');
+    expect(await readFile(result.records[0]?.filePath ?? '', 'utf8')).toContain('Chương 7: Bản hoàn chỉnh');
+  });
+
   it('only treats an existing checkpoint file as idempotent when its bytes match', async () => {
     const directory = await temporaryDirectory();
     const input = chapter({ index: 9, title: 'Chương 9: Trùng tên' });
@@ -156,6 +185,24 @@ describe('chapter TXT export', () => {
       chapters: [chapter({ index: 152, title: 'Chương 152: Bản dịch gốc' })],
     });
     expect(repeated.records[0]?.status).toBe('skipped-existing');
+  });
+
+  it('recovers a conflicting original chapter in the same clean recovery folder', async () => {
+    const directory = await temporaryDirectory();
+    const input = chapter({ index: 7, sourceChapterNumber: 2, title: 'Chương 7: Bản hoàn chỉnh' });
+    const originalDirectory = path.join(directory, ORIGINAL_TRANSLATED_CHAPTERS_DIRECTORY_NAME);
+    await mkdir(originalDirectory, { recursive: true });
+    await writeFile(path.join(originalDirectory, chapterFileName(input)), 'Bản checkpoint cũ khác nội dung', 'utf8');
+
+    const result = await exportOriginalChapterFiles({
+      directory,
+      exportJobId: '12345678-full-job',
+      chapters: [input],
+      recoveryOnConflict: true,
+    });
+
+    expect(result.directory).toBe(path.join(directory, 'Xuất lại hoàn chỉnh 12345678', ORIGINAL_TRANSLATED_CHAPTERS_DIRECTORY_NAME));
+    expect(await readFile(result.records[0]?.filePath ?? '', 'utf8')).toContain('Chương 7: Bản hoàn chỉnh');
   });
 
   it('exports a numbered-only chapter without a descriptive filename or heading suffix', async () => {
@@ -242,6 +289,89 @@ describe('chapter TXT export', () => {
 
     expect(result.fileName).toBe('Tổng hợp từ chương 101-103.txt');
     await expect(readFile(result.filePath, 'utf8')).resolves.toContain('Chương 103: Chương kế');
+  });
+
+  it('exports one exact untranslated source aggregate with both original and new ranges', async () => {
+    const directory = await temporaryDirectory();
+    const request = {
+      directory,
+      exportJobId: 'job-source-aggregate',
+      sourceStartChapter: 40,
+      sourceEndChapter: 41,
+      outputStartChapter: 101,
+      outputEndChapter: 102,
+      chapters: [
+        chapter({ index: 101, sourceChapterNumber: 40, title: 'Chương 101: 原题甲', content: '第一段原文。', wordCount: 1 }),
+        chapter({ index: 102, sourceChapterNumber: 41, title: 'Chương 102: 原题乙', content: '第二段原文。', wordCount: 1 }),
+      ],
+    };
+    expect(combinedSourceChapterFileName(40, 41, 101, 102)).toBe(
+      'File tổng c.gốc (40-41)_c.mới (101-102).txt',
+    );
+
+    const result = await exportCombinedSourceChapterFile(request);
+    expect(result).toMatchObject({
+      fileName: 'File tổng c.gốc (40-41)_c.mới (101-102).txt',
+      startChapter: 101,
+      endChapter: 102,
+      chapterCount: 2,
+      status: 'saved',
+    });
+    await expect(readFile(result.filePath, 'utf8')).resolves.toBe(
+      'Chương 101: 原题甲\r\n\r\n第一段原文。\r\n\r\n---\r\n\r\nChương 102: 原题乙\r\n\r\n第二段原文。',
+    );
+    await expect(exportCombinedSourceChapterFile(request)).resolves.toMatchObject({
+      status: 'skipped-existing',
+    });
+  });
+
+  it('rejects a source aggregate whose original/new ranges or chapter provenance do not match', async () => {
+    const directory = await temporaryDirectory();
+    await expect(exportCombinedSourceChapterFile({
+      directory,
+      sourceStartChapter: 40,
+      sourceEndChapter: 41,
+      outputStartChapter: 101,
+      outputEndChapter: 103,
+      chapters: [chapter({ index: 101, sourceChapterNumber: 40 })],
+    })).rejects.toThrow(/khớp số lượng/u);
+    await expect(exportCombinedSourceChapterFile({
+      directory,
+      sourceStartChapter: 40,
+      sourceEndChapter: 41,
+      outputStartChapter: 101,
+      outputEndChapter: 102,
+      chapters: [
+        chapter({ index: 101, sourceChapterNumber: 40 }),
+        chapter({ index: 102, sourceChapterNumber: 42 }),
+      ],
+    })).rejects.toThrow(/chương gốc/u);
+    expect(await readdir(directory)).toEqual([]);
+  });
+
+  it('recovers a complete aggregate beside recovered split/original outputs without replacing a user file', async () => {
+    const directory = await temporaryDirectory();
+    const request = {
+      directory,
+      exportJobId: '12345678-full-job',
+      startChapter: 7,
+      endChapter: 8,
+      sourceChapterNumbers: [2, 3],
+      chapters: [
+        chapter({ index: 7, sourceChapterNumber: 2, title: 'Chương 7', content: 'Đủ chương bảy.', wordCount: 3 }),
+        chapter({ index: 8, sourceChapterNumber: 3, title: 'Chương 8', content: 'Đủ chương tám.', wordCount: 3 }),
+      ],
+      recoveryOnConflict: true,
+    };
+    const oldPath = path.join(directory, combinedChapterFileName(7, 8));
+    await writeFile(oldPath, 'File tổng hợp checkpoint cũ không đầy đủ.', 'utf8');
+
+    const result = await exportCombinedChapterFile(request);
+    expect(result.directory).toBe(path.join(directory, 'Xuất lại hoàn chỉnh 12345678'));
+    expect(await readFile(oldPath, 'utf8')).toBe('File tổng hợp checkpoint cũ không đầy đủ.');
+    await expect(readFile(result.filePath, 'utf8')).resolves.toBe(
+      'Chương 7\r\n\r\nĐủ chương bảy.\r\n\r\n---\r\n\r\nChương 8\r\n\r\nĐủ chương tám.',
+    );
   });
 
   it('validates the absolute folder, directory kind, chapter fields and limits before writing', async () => {

@@ -6,6 +6,7 @@ import type {
   StorySourceAnalysis,
   StorySourceProgress,
   TranslationJobSnapshot,
+  TranslationAutoExportBinding,
 } from '../shared';
 
 export interface TranslationEvent {
@@ -19,6 +20,7 @@ export interface TranslationRequest {
   source: string;
   promptMode: string;
   customPrompt?: string;
+  autoExport?: TranslationAutoExportBinding;
   settings?: {
     maxChunkChars?: number;
     maxCharsPerSegment?: number;
@@ -29,7 +31,11 @@ export interface TranslationRequest {
 }
 
 export interface StoryToolApi {
-  loadPrompts(): Promise<{ historical: string; modern: string }>;
+  setWindowTheme?(theme: 'light' | 'dark'): Promise<void>;
+  minimizeWindow?(): Promise<void>;
+  toggleMaximizeWindow?(): Promise<void>;
+  closeWindow?(): Promise<void>;
+  loadPrompts(): Promise<{ period: string; modern: string; ancient: string; cultivation: string }>;
   getDraft(): Promise<unknown | null>;
   saveDraft(draft: unknown): Promise<void>;
   connectChatGPT(): Promise<{ status: string; message?: string }>;
@@ -59,15 +65,18 @@ export interface StoryToolApi {
   onTranslationEvent(callback: (event: TranslationEvent) => void): () => void;
   exportText(request: { content: string; defaultName?: string }): Promise<{ canceled: boolean; filePath?: string }>;
   chooseChapterDirectory(): Promise<{ canceled: boolean; directory?: string }>;
+  validateChapterDirectory(directory: string): Promise<{ directory: string }>;
   exportChapters(request: {
     directory: string;
     exportJobId: string;
     chapters: FinalChapterExportInput[];
+    recoveryOnConflict?: boolean;
   }): Promise<ChapterExportResult>;
   exportOriginalChapters(request: {
     directory: string;
     exportJobId: string;
     chapters: FinalChapterExportInput[];
+    recoveryOnConflict?: boolean;
   }): Promise<ChapterExportResult>;
   exportCombinedChapters(request: {
     directory: string;
@@ -76,6 +85,17 @@ export interface StoryToolApi {
     endChapter: number;
     sourceChapterNumbers: number[];
     chapters: FinalChapterExportInput[];
+    recoveryOnConflict?: boolean;
+  }): Promise<CombinedChapterExportResult>;
+  exportCombinedSourceChapters(request: {
+    directory: string;
+    exportJobId: string;
+    sourceStartChapter: number;
+    sourceEndChapter: number;
+    outputStartChapter: number;
+    outputEndChapter: number;
+    chapters: FinalChapterExportInput[];
+    recoveryOnConflict?: boolean;
   }): Promise<CombinedChapterExportResult>;
   generateTitles(request: {
     chapters: Array<{ id?: string; content: string }>;

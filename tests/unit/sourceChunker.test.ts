@@ -37,4 +37,20 @@ describe('source chunker', () => {
     expect(() => chunkSourceText('abc', 0)).toThrow(RangeError);
     expect(() => chunkSourceText('abc', Number.NaN)).toThrow(RangeError);
   });
+
+  it('keeps ordinary headed chapters whole and splits only an oversized chapter', () => {
+    const source = [
+      'Chương 1: Mở đầu\n' + '甲'.repeat(30),
+      'Chương 2: Dài\n' + '乙'.repeat(95),
+      'Chương 3: Kết\n' + '丙'.repeat(25),
+    ].join('\n\n');
+    const chunks = chunkSourceText(source, { maxChars: 60 });
+
+    expect(chunks.map((chunk) => chunk.text).join('')).toBe(source);
+    expect(chunks[0]?.text).toContain('Chương 1: Mở đầu');
+    expect(chunks.filter((chunk) => chunk.text.includes('Chương 2: Dài'))).toHaveLength(1);
+    expect(chunks.filter((chunk) => chunk.text.includes('Chương 3: Kết'))).toHaveLength(1);
+    expect(chunks).toHaveLength(4);
+    expect(chunks.every((chunk) => chunk.text.length <= 60)).toBe(true);
+  });
 });

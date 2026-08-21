@@ -23,10 +23,14 @@ export const HULIWANG_COMPANION_EXTENSION_ORIGIN =
  * expose the narrowly scoped `catalog-next` command, so pairing them would
  * otherwise fail later with a misleading empty/partial catalog error.
  */
-// Version 1.0.4 adds the verified full-navigation reader continuation used
-// by Huliwang's real `button#pt_next[data-url]` controls.  Older helpers can
-// only see the first page of a split chapter, so refuse them before import.
-export const HULIWANG_COMPANION_MINIMUM_VERSION = "1.0.4";
+// Version 1.0.6 adds the fixed IXDZS full-catalog expansion to the existing
+// strict XSZJ reader surface. Older helpers would otherwise pair successfully
+// and silently expose only the initial catalog slice.
+// helper. Older helpers must be reloaded before they can be paired because
+// they cannot read that host at all.
+export const HULIWANG_COMPANION_MINIMUM_VERSION = "1.0.6";
+
+export type BrowserCompanionSite = "huliwang" | "xszj";
 
 const MAX_RESULT_BYTES = 2 * 1024 * 1024;
 const MAX_PAIR_BYTES = 4 * 1024;
@@ -36,6 +40,8 @@ const STRICT_EXTENSION_VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\
 const MINIMUM_COMPANION_VERSION = parseExtensionVersion(HULIWANG_COMPANION_MINIMUM_VERSION);
 
 export interface HuliwangBrowserBridgeOptions {
+  /** Source host that this one paired tab is allowed to read. Defaults to Huliwang. */
+  site?: BrowserCompanionSite;
   /** Exact extension origins allowed to use the authenticated API. */
   allowedExtensionOrigins?: readonly string[];
   /** Defaults to 45 seconds. */
@@ -139,10 +145,14 @@ function isExtensionVersionAtLeast(
   return true;
 }
 
-function incompatibleCompanionVersionError(extensionVersion: string): StorySourceError {
+function companionSiteLabel(site: BrowserCompanionSite): string {
+  return site === "huliwang" ? "Huliwang" : "XSZJ/爱下电子书";
+}
+
+function incompatibleCompanionVersionError(extensionVersion: string, site: BrowserCompanionSite): StorySourceError {
   return new StorySourceError(
     "USER_ACTION_REQUIRED",
-    `Tiện ích Huli Browser Helper đang là phiên bản ${extensionVersion}, nhưng tool cần tối thiểu ${HULIWANG_COMPANION_MINIMUM_VERSION} để đọc mục lục Huliwang. Hãy mở edge://extensions hoặc chrome://extensions, bấm Tải lại tiện ích rồi kết nối lại.`,
+    `Tiện ích Browser Helper đang là phiên bản ${extensionVersion}, nhưng tool cần tối thiểu ${HULIWANG_COMPANION_MINIMUM_VERSION} để đọc ${companionSiteLabel(site)}. Hãy mở edge://extensions hoặc chrome://extensions, bấm Tải lại tiện ích rồi kết nối lại.`,
   );
 }
 
@@ -151,7 +161,7 @@ function stringArray(value: unknown, name: string, maximumItems: number, maximum
   return value.map((item) => boundedString(item, name, maximumLength));
 }
 
-function assertHuliwangHttpsUrl(value: unknown, name: string): string {
+function assertCompanionHttpsUrl(value: unknown, name: string, site: BrowserCompanionSite): string {
   const raw = boundedString(value, name, 2_048, false);
   let parsed: URL;
   try {
@@ -160,43 +170,46 @@ function assertHuliwangHttpsUrl(value: unknown, name: string): string {
     throw new TypeError(`${name} is not a valid URL.`);
   }
   const host = parsed.hostname.toLowerCase();
+  const allowedHosts = site === "huliwang"
+    ? ["huliwang.net", "www.huliwang.net", "m.huliwang.net"]
+    : ["xszj.org", "www.xszj.org", "ixdzs8.com", "www.ixdzs8.com"];
   if (
     parsed.protocol !== "https:"
     || parsed.username
     || parsed.password
     || parsed.port
-    || !["huliwang.net", "www.huliwang.net", "m.huliwang.net"].includes(host)
+    || !allowedHosts.includes(host)
   ) {
-    throw new TypeError(`${name} is outside the Huliwang allow-list.`);
+    throw new TypeError(`${name} is outside the companion allow-list.`);
   }
   return parsed.toString();
 }
 
-function validateStoryUrl(value: unknown, name: string) {
-  const raw = assertHuliwangHttpsUrl(value, name);
+function validateStoryUrl(value: unknown, name: string, site: BrowserCompanionSite) {
+  const raw = assertCompanionHttpsUrl(value, name, site);
   const parsed = parseStoryUrl(raw);
-  if (parsed.site !== "huliwang") throw new TypeError(`${name} is not a Huliwang story URL.`);
+  if (parsed.site !== site) throw new TypeError(`${name} is not an allowed ${companionSiteLabel(site)} story URL.`);
   return parsed;
 }
 
-function validateLink(value: unknown): StoryPageLink {
+function validateLink(value: unknown, site: BrowserCompanionSite): StoryPageLink {
   if (!plainRecord(value)) throw new TypeError("snapshot.links contains an invalid entry.");
   assertOnlyKeys(value, new Set(["href", "text", "scopes"]));
   return {
-    href: assertHuliwangHttpsUrl(value.href, "snapshot.links.href"),
+    href: assertCompanionHttpsUrl(value.href, "snapshot.links.href", site),
     text: boundedString(value.text, "snapshot.links.text", 4_096),
     scopes: stringArray(value.scopes, "snapshot.links.scopes", 32, 512),
   };
 }
 
-function validateFontAsset(value: unknown): StoryPageFontAsset {
+function validateFontAsset(value: unknown, site: BrowserCompanionSite): StoryPageFontAsset {
   if (!plainRecord(value)) throw new TypeError("snapshot.fontAssets contains an invalid entry.");
   assertOnlyKeys(value, new Set(["family", "url", "sha256"]));
   const sha256 = boundedString(value.sha256, "snapshot.fontAssets.sha256", 64, false);
   if (!/^[a-f\d]{64}$/iu.test(sha256)) throw new TypeError("snapshot.fontAssets.sha256 is invalid.");
   return {
     family: boundedString(value.family, "snapshot.fontAssets.family", 512, false),
-    url: assertHuliwangHttpsUrl(value.url, "snapshot.fontAssets.url"),
+    url: assertCompanionHttpsUrl(value.url, "snapshot.fontAssets.url", site),
     sha256: sha256.toLowerCase(),
   };
 }
@@ -238,6 +251,7 @@ function validateSnapshot(
   value: unknown,
   commandUrl: string,
   commandType: PendingCommandType,
+  site: BrowserCompanionSite,
   expectedChapterPage?: number,
 ): StoryPageSnapshot {
   if (!plainRecord(value)) throw new TypeError("snapshot must be an object.");
@@ -247,26 +261,26 @@ function validateSnapshot(
     "readerMetadata", "catalogPagination", "chapterPagination", "challenge",
   ]));
 
-  const expected = validateStoryUrl(commandUrl, "command.url");
-  const requested = validateStoryUrl(value.requestedUrl, "snapshot.requestedUrl");
+  const expected = validateStoryUrl(commandUrl, "command.url", site);
+  const requested = validateStoryUrl(value.requestedUrl, "snapshot.requestedUrl", site);
   if (requested.normalizedUrl !== expected.normalizedUrl) {
     throw new TypeError("snapshot.requestedUrl does not match the command URL.");
   }
-  const actual = validateStoryUrl(value.url, "snapshot.url");
+  const actual = validateStoryUrl(value.url, "snapshot.url", site);
   if (actual.bookId !== expected.bookId) {
-    throw new TypeError("snapshot.url changed to another Huliwang book.");
+    throw new TypeError("snapshot.url changed to another book.");
   }
   if (
     commandType === "catalog-next"
     && (expected.kind !== "catalog" || actual.kind !== "catalog" || actual.normalizedUrl !== expected.normalizedUrl)
   ) {
-    throw new TypeError("catalog-next result did not remain on the exact current Huliwang catalog URL.");
+      throw new TypeError("catalog-next result did not remain on the exact current Huliwang catalog URL.");
   }
   let canonicalUrl: string | undefined;
   if (value.canonicalUrl !== undefined) {
-    const canonical = validateStoryUrl(value.canonicalUrl, "snapshot.canonicalUrl");
+    const canonical = validateStoryUrl(value.canonicalUrl, "snapshot.canonicalUrl", site);
     if (canonical.bookId !== expected.bookId) {
-      throw new TypeError("snapshot.canonicalUrl changed to another Huliwang book.");
+      throw new TypeError("snapshot.canonicalUrl changed to another book.");
     }
     if (
       commandType === "catalog-next"
@@ -291,10 +305,10 @@ function validateSnapshot(
   if (!Array.isArray(value.links) || value.links.length > 20_000) {
     throw new TypeError("snapshot.links is invalid.");
   }
-  const links = value.links.map(validateLink);
+  const links = value.links.map((link) => validateLink(link, site));
   const fontFamilies = stringArray(value.fontFamilies, "snapshot.fontFamilies", 256, 512);
   const fontUrls = stringArray(value.fontUrls, "snapshot.fontUrls", 256, 2_048)
-    .map((url) => assertHuliwangHttpsUrl(url, "snapshot.fontUrls"));
+    .map((url) => assertCompanionHttpsUrl(url, "snapshot.fontUrls", site));
   const fontHashes = stringArray(value.fontHashes, "snapshot.fontHashes", 256, 64)
     .map((hash) => {
       if (!/^[a-f\d]{64}$/iu.test(hash)) throw new TypeError("snapshot.fontHashes is invalid.");
@@ -306,7 +320,7 @@ function validateSnapshot(
     if (!Array.isArray(value.fontAssets) || value.fontAssets.length > 256) {
       throw new TypeError("snapshot.fontAssets is invalid.");
     }
-    fontAssets = value.fontAssets.map(validateFontAsset);
+    fontAssets = value.fontAssets.map((asset) => validateFontAsset(asset, site));
   }
 
   let readerMetadata: StoryPageSnapshot["readerMetadata"];
@@ -397,10 +411,11 @@ function validateSnapshot(
   };
 }
 
-function pairingPage(): string {
+function pairingPage(site: BrowserCompanionSite): string {
+  const label = companionSiteLabel(site);
   return "<!doctype html><html lang=vi><meta charset=utf-8><meta name=referrer content=no-referrer>"
     + "<title>Kết nối Tool dịch truyện</title><h1>Đang kết nối Tool dịch truyện…</h1>"
-    + "<p>Hãy cài và bật tiện ích Huliwang Companion. Không đóng tab này cho đến khi tool báo đã kết nối.</p>"
+    + `<p>Hãy cài và bật tiện ích Browser Helper để đọc ${label}. Không đóng tab này cho đến khi tool báo đã kết nối.</p>`
     + "<p>Trang ghép nối này không đọc cookie, mật khẩu hay lịch sử duyệt web.</p></html>";
 }
 
@@ -412,6 +427,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
   public bridgeOrigin = "";
   public pairingUrl = "";
   public readonly client: StoryPageClient;
+  public readonly site: BrowserCompanionSite;
 
   private readonly token = randomBytes(32).toString("base64url");
   private readonly sessionId = randomUUID();
@@ -446,11 +462,14 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
     this.visitTimeoutMs = boundedInteger(options.visitTimeoutMs, 90_000, 180_000);
     this.pollTimeoutMs = boundedInteger(options.pollTimeoutMs, 20_000, 30_000);
     this.port = options.port === undefined ? 0 : Math.min(65_535, Math.max(0, Math.trunc(options.port)));
+    this.site = options.site ?? "huliwang";
     this.client = {
       visit: (url, signal) => this.visit(url, signal),
       inspectCurrent: (signal) => this.inspectCurrent(signal),
-      advanceCatalogPage: (currentUrl, signal) => this.advanceCatalogPage(currentUrl, signal),
-      advanceChapterPage: (currentUrl, signal) => this.advanceChapterPage(currentUrl, signal),
+      ...(this.site === "huliwang" ? {
+        advanceCatalogPage: (currentUrl: string, signal?: AbortSignal) => this.advanceCatalogPage(currentUrl, signal),
+        advanceChapterPage: (currentUrl: string, signal?: AbortSignal) => this.advanceChapterPage(currentUrl, signal),
+      } : {}),
       close: () => this.close(),
     };
   }
@@ -565,7 +584,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
     if (signal?.aborted) return Promise.reject(abortReason(signal));
     let parsed;
     try {
-      parsed = validateStoryUrl(rawCurrentUrl, "catalog-next.url");
+      parsed = validateStoryUrl(rawCurrentUrl, "catalog-next.url", this.site);
       if (parsed.kind !== "catalog") throw new TypeError("catalog-next requires a catalog URL.");
     } catch (error) {
       return Promise.reject(new StorySourceError(
@@ -620,7 +639,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
     if (signal?.aborted) return Promise.reject(abortReason(signal));
     let parsed;
     try {
-      parsed = validateStoryUrl(rawCurrentUrl, "chapter-next.url");
+      parsed = validateStoryUrl(rawCurrentUrl, "chapter-next.url", this.site);
       if (parsed.kind !== "chapter" || !parsed.chapterKey) {
         throw new TypeError("chapter-next requires a Huliwang chapter URL.");
       }
@@ -677,7 +696,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
     if (signal?.aborted) return Promise.reject(abortReason(signal));
     let parsed;
     try {
-      parsed = validateStoryUrl(rawUrl, "visit.url");
+      parsed = validateStoryUrl(rawUrl, "visit.url", this.site);
     } catch (error) {
       return Promise.reject(new StorySourceError(
         "UNSUPPORTED_URL",
@@ -743,7 +762,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
       response.statusCode = 200;
       response.setHeader("Content-Type", "text/html; charset=utf-8");
       response.setHeader("Content-Security-Policy", "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
-      response.end(pairingPage());
+      response.end(pairingPage(this.site));
       return;
     }
 
@@ -803,7 +822,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
       // Do not make a successfully paired compatible helper unusable because
       // of a later stale retry. Before pairing, however, surface the precise
       // upgrade instruction to the app immediately.
-      if (!this.paired) this.rejectPairing(incompatibleCompanionVersionError(extensionVersion));
+      if (!this.paired) this.rejectPairing(incompatibleCompanionVersionError(extensionVersion, this.site));
       return this.sendText(
         response,
         426,
@@ -893,6 +912,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
         body.snapshot,
         pending.url,
         pending.type,
+        this.site,
         pending.expectedChapterPage,
       );
       this.lastSnapshot = snapshot;

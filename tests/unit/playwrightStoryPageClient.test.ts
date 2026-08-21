@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BrowserContext, Page, Response } from "playwright-core";
-import { PlaywrightPageClient } from "../../src/main/storySources/PlaywrightStoryPageClient";
+import { classifyCloudflareChallenge, PlaywrightPageClient } from "../../src/main/storySources/PlaywrightStoryPageClient";
 import type { StoryPageSnapshot } from "../../src/main/storySources/types";
 
 function documentData(overrides: Partial<StoryPageSnapshot> = {}) {
@@ -22,6 +22,36 @@ function documentData(overrides: Partial<StoryPageSnapshot> = {}) {
 }
 
 describe("PlaywrightPageClient Cloudflare status tracking", () => {
+  it("does not classify a normal story surface with hidden Cloudflare wording as a challenge", () => {
+    expect(classifyCloudflareChallenge({
+      title: "Mẹ Vu và thức ăn",
+      bodyText: "Nội dung chương bình thường. Checking your browser Cloudflare Ray ID",
+      hasStorySurface: true,
+      hasVisibleChallengeControl: false,
+    })).toBe("none");
+    expect(classifyCloudflareChallenge({
+      title: "Mẹ Vu và thức ăn",
+      bodyText: "Checking your browser",
+      hasStorySurface: false,
+      hasVisibleChallengeControl: false,
+    })).toBe("none");
+  });
+
+  it("requires a real Cloudflare signature when no story surface exists", () => {
+    expect(classifyCloudflareChallenge({
+      title: "Just a moment...",
+      bodyText: "Checking your browser",
+      hasStorySurface: false,
+      hasVisibleChallengeControl: false,
+    })).toBe("passive");
+    expect(classifyCloudflareChallenge({
+      title: "Verification",
+      bodyText: "Performing security verification — Cloudflare Ray ID 123",
+      hasStorySurface: false,
+      hasVisibleChallengeControl: false,
+    })).toBe("passive");
+  });
+
   it("replaces the initial challenge 403 after the same tab navigates to story content with HTTP 200", async () => {
     const mainFrame = {};
     const responseHandlers: Array<(response: Response) => void> = [];

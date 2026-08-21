@@ -2,7 +2,7 @@ const LABELS = { idle: "Chưa ghép nối", connected: "Đã kết nối", worki
 async function render() {
   const { helperStatus } = await chrome.storage.session.get("helperStatus");
   document.querySelector("#status").textContent = LABELS[helperStatus?.status] ?? LABELS.idle;
-  document.querySelector("#detail").textContent = helperStatus?.detail ?? "Mở Tool Dịch Truyện và bấm kết nối Huliwang.";
+  document.querySelector("#detail").textContent = helperStatus?.detail ?? "Mở Tool Dịch Truyện và bấm kết nối trình duyệt thường.";
   document.querySelector("#disconnect").disabled = !helperStatus || helperStatus.status === "idle";
 }
 document.querySelector("#disconnect").addEventListener("click", () => { chrome.runtime.sendMessage({ type: "disconnect" }); setTimeout(render, 100); });
