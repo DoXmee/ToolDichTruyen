@@ -1,9 +1,45 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { Worker } from "node:worker_threads";
 
 export interface AtomicJsonStoreOptions {
   maxBytes?: number;
+}
+
+const OFF_THREAD_PARSE_THRESHOLD = 1024 * 1024;
+
+function readAndParseOffThread(filePath: string, maxBytes: number): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(`
+      const { parentPort, workerData } = require('node:worker_threads');
+      const fs = require('node:fs');
+      try {
+        const raw = fs.readFileSync(workerData.filePath, 'utf8');
+        if (Buffer.byteLength(raw, 'utf8') > workerData.maxBytes) {
+          throw new RangeError('File dữ liệu vượt giới hạn.');
+        }
+        parentPort.postMessage({ ok: true, value: JSON.parse(raw) });
+      } catch (error) {
+        parentPort.postMessage({
+          ok: false,
+          message: error instanceof Error ? error.message : String(error),
+          code: error && typeof error === 'object' ? error.code : undefined,
+        });
+      }
+    `, { eval: true, workerData: { filePath, maxBytes } });
+    worker.once("message", (message: { ok: boolean; value?: unknown; message?: string; code?: string }) => {
+      void worker.terminate();
+      if (message.ok) {
+        resolve(message.value);
+        return;
+      }
+      const error = new Error(message.message || "Không thể đọc JSON.") as NodeJS.ErrnoException;
+      if (message.code) error.code = message.code;
+      reject(error);
+    });
+    worker.once("error", reject);
+  });
 }
 /**
  * A tiny, dependency-free JSON store. Writes are serialized and committed by
@@ -22,6 +58,13 @@ export class AtomicJsonStore<T> {
 
   public async read(fallback: T): Promise<T> {
     try {
+      const metadata = await stat(this.filePath);
+      if (metadata.size > this.maxBytes) {
+        throw new RangeError(`File dữ liệu vượt giới hạn: ${this.filePath}`);
+      }
+      if (metadata.size >= OFF_THREAD_PARSE_THRESHOLD) {
+        return await readAndParseOffThread(this.filePath, this.maxBytes) as T;
+      }
       const raw = await readFile(this.filePath, "utf8");
       if (Buffer.byteLength(raw, "utf8") > this.maxBytes) {
         throw new RangeError(`File dữ liệu vượt giới hạn: ${this.filePath}`);

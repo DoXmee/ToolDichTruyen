@@ -30,6 +30,49 @@ describe('PersistenceService', () => {
     expect(raw).toContain(draft.output)
   })
 
+  it('đọc draft lớn ngoài luồng và chỉ trả metadata khi nội dung đã nằm trong checkpoint', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'tool-dich-truyen-large-'))
+    const service = new PersistenceService(directory, createSafeStorage())
+    const source = '原'.repeat(700_000)
+    const output = 'Bản dịch '.repeat(90_000)
+    await service.saveJob({
+      id: 'job-large', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      status: 'paused', aiProvider: 'chatgpt', sourceText: source, translatedText: output,
+      segments: [{ id: 's1', index: 0, status: 'completed', sourceText: source, translatedText: output }],
+    })
+    await service.saveDraft({
+      source, output, autoExportOutput: output, autoExportJobId: 'job-large', autoExportStartedAt: Date.now(),
+    })
+    await service.flush()
+
+    await expect(service.loadDraft()).resolves.toMatchObject({ source, output })
+    await expect(service.loadRendererDraft()).resolves.toMatchObject({
+      source: '', output: '', autoExportOutput: '', autoExportJobId: 'job-large',
+    })
+  })
+
+  it('lịch sử checkpoint chỉ trả tóm tắt, không chuyển nội dung sách lớn qua IPC', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'tool-dich-truyen-summary-'))
+    const service = new PersistenceService(directory, createSafeStorage())
+    await service.saveJob({
+      id: 'job-summary', createdAt: '2026-08-25T00:00:00.000Z', updatedAt: '2026-08-25T00:01:00.000Z',
+      status: 'failed', aiProvider: 'kimi', sourceText: '原文'.repeat(400_000), translatedText: 'Bản dịch'.repeat(200_000),
+      segments: [
+        { id: 's1', index: 0, status: 'completed', sourceText: 'nguồn', translatedText: 'dịch' },
+        { id: 's2', index: 1, status: 'failed', error: 'Lỗi kiểm thử', sourceText: 'nguồn 2', translatedText: '' },
+      ],
+      activityLog: [{ at: '2026-08-25T00:01:00.000Z', tone: 'warning', message: 'Đã thử lại.' }],
+    })
+
+    const summaries = await service.listJobSummaries()
+    expect(summaries).toEqual([expect.objectContaining({
+      id: 'job-summary', status: 'failed', aiProvider: 'kimi', totalSegments: 2, completedSegments: 1,
+    })])
+    expect(summaries[0]).not.toHaveProperty('sourceText')
+    expect(summaries[0]).not.toHaveProperty('translatedText')
+    expect(summaries[0]?.segments[1]).toMatchObject({ status: 'failed', error: 'Lỗi kiểm thử' })
+  })
+
   it('mã hóa Gemini API key và không ghi khóa thô vào settings', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'tool-dich-truyen-'))
     const service = new PersistenceService(directory, createSafeStorage())
@@ -49,5 +92,17 @@ describe('PersistenceService', () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'tool-dich-truyen-'))
     const service = new PersistenceService(directory, createSafeStorage())
     await expect(service.loadJob('../outside')).rejects.toThrow(/Mã tác vụ không hợp lệ/u)
+  })
+
+  it('lưu lựa chọn Kimi riêng trong settings và mặc định ChatGPT cho bản cũ', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'tool-dich-truyen-'))
+    const service = new PersistenceService(directory, createSafeStorage())
+
+    await expect(service.getAiProvider()).resolves.toBe('chatgpt')
+    await expect(service.setAiProvider('kimi')).resolves.toBe('kimi')
+    await service.flush()
+
+    const restored = new PersistenceService(directory, createSafeStorage())
+    await expect(restored.getAiProvider()).resolves.toBe('kimi')
   })
 })

@@ -12,6 +12,7 @@ import {
 import type { LocalizedHanRepairPromptInput } from "../../core/index.js";
 import type {
   PromptMode,
+  AiProvider,
   TranslationJob,
   TranslationJobSnapshot,
   TranslationActivityEntry,
@@ -29,12 +30,14 @@ import {
   type ChatGptWebAdapter,
 } from "../chatgpt/ChatGptWebAdapter.js";
 import type { PersistenceService } from "../persistence/PersistenceService.js";
+import { repairLegacyXbanxiaCheckpointSegment } from "../storySources/text.js";
 
 export interface StartTranslationRequest {
   source: string;
   promptMode: PromptMode;
   customPrompt?: string;
   resolvedPrompt: string;
+  aiProvider?: AiProvider;
   autoExport?: TranslationAutoExportBinding;
   settings?: Partial<TranslationSettings> & {
     maxChunkChars?: number;
@@ -100,9 +103,11 @@ export interface TranslationRunnerDependencies {
   chatGpt: Pick<
     ChatGptWebAdapter,
     "ensureReady" | "startNewConversation" | "sendAndWait" | "cancelGeneration"
-  > & Partial<Pick<ChatGptWebAdapter, "restartForRecovery" | "reloadForRecovery">>;
+  > & Partial<Pick<ChatGptWebAdapter, "restartForRecovery" | "reloadForRecovery">> & {
+    selectProvider?: (provider: AiProvider) => Promise<void>;
+  };
   persistence: Pick<PersistenceService, "saveJob" | "loadJob"> &
-    Partial<Pick<PersistenceService, "listJobs" | "removeJob">>;
+    Partial<Pick<PersistenceService, "listJobs" | "listJobSummaries" | "removeJob">>;
   chunker?: typeof chunkSourceText;
   validator?: typeof validateTranslation;
   promptBuilder?: typeof buildTranslationPrompt;
@@ -120,6 +125,24 @@ const WEB_SEGMENT_MAX_CHARS = 12_000;
 const LEGACY_WEB_SEGMENT_MAX_CHARS = 3_000;
 const WEB_RESPONSE_TIMEOUT_MS = 480_000;
 const LEGACY_WEB_RESPONSE_TIMEOUT_MS = 180_000;
+
+function repairLegacyXbanxiaCheckpoint(job: PersistedTranslationJob): number {
+  if (!job.autoExport || !/^Chương\s+\d+/mu.test(job.sourceText)) return 0;
+  const controlCount = (job.sourceText.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu) ?? []).length;
+  const unmistakableXbanxiaNoise = controlCount >= 10
+    || /\?{5,}|cx\d+|(?:^|\n)\s*【\s*第\s*\d+\s*章|(?:^|\n)\s*p\.?\s*s\.?\s*[：:]/imu.test(job.sourceText);
+  if (!unmistakableXbanxiaNoise) return 0;
+
+  let repairedCount = 0;
+  for (const segment of job.segments) {
+    const repaired = repairLegacyXbanxiaCheckpointSegment(segment.sourceText);
+    if (repaired === segment.sourceText) continue;
+    segment.sourceText = repaired;
+    repairedCount += 1;
+  }
+  if (repairedCount) job.sourceText = job.segments.map((segment) => segment.sourceText.trim()).join("\n\n");
+  return repairedCount;
+}
 
 const DEFAULT_SETTINGS: TranslationSettings = {
   // A complete ordinary chapter preserves narration and dialogue context.
@@ -141,6 +164,7 @@ const DEFAULT_SETTINGS: TranslationSettings = {
 
 const MAX_LOCALIZED_HAN_RUNS = 10;
 const MAX_LOCALIZED_HAN_TARGETS = 10;
+const MAX_LOCALIZED_HAN_REPAIR_ATTEMPTS = 10;
 // A failed adapter send already consumes one ordinary attempt.  With the
 // current maximum of three retries, at most three hand-offs can remain before
 // the fourth consumed attempt terminally fails.  Do not let a browser/context
@@ -292,7 +316,7 @@ function localizedRepairResponseError(
   targetId: string,
 ): string | null {
   const candidate = response.normalize("NFC").trim();
-  if (!candidate) return "ChatGPT trả về câu sửa trống.";
+  if (!candidate) return "AI trả về câu sửa trống.";
   if (/\r|\n/u.test(candidate)) return "Phản hồi sửa cục bộ chứa nhiều dòng.";
   if (candidate.toLocaleLowerCase("en-US").includes(targetId.toLocaleLowerCase("en-US"))) {
     return "Phản hồi làm lộ mã target sửa cục bộ.";
@@ -306,6 +330,37 @@ function localizedRepairResponseError(
   }
   if ((candidate.match(/[.!?。！？]+/gu) ?? []).length > 1) {
     return "Phản hồi sửa cục bộ không phải đúng một câu.";
+  }
+
+  // A matching target id alone is not enough: ChatGPT can occasionally put
+  // an unrelated sentence inside the requested tag.  The repaired sentence
+  // must retain most of the non-Han wording, in the same order, before it is
+  // allowed to replace the checkpoint text.
+  const stableTokens = (value: string): string[] => (
+    value
+      .normalize("NFC")
+      .replace(/[\u3400-\u9fff\uf900-\ufaff]/gu, " ")
+      .toLocaleLowerCase("vi-VN")
+      .match(/[\p{L}\p{N}]+/gu) ?? []
+  );
+  const originalTokens = stableTokens(target.text);
+  const candidateTokens = stableTokens(candidate);
+  if (originalTokens.length >= 3) {
+    const row = new Array<number>(candidateTokens.length + 1).fill(0);
+    for (const originalToken of originalTokens) {
+      let diagonal = 0;
+      for (let index = 1; index <= candidateTokens.length; index += 1) {
+        const previous = row[index] ?? 0;
+        row[index] = originalToken === candidateTokens[index - 1]
+          ? diagonal + 1
+          : Math.max(row[index] ?? 0, row[index - 1] ?? 0);
+        diagonal = previous;
+      }
+    }
+    const retainedRatio = (row[candidateTokens.length] ?? 0) / originalTokens.length;
+    if (retainedRatio < 0.6) {
+      return "AI trả về không đúng câu đang cần sửa.";
+    }
   }
 
   const validation = validateTranslation(target.text, candidate, {
@@ -325,7 +380,7 @@ function localizedRepairBatchResponseError(
   targets: readonly LocalizedHanTarget[],
 ): { error?: string; replacements?: Map<string, string> } {
   const candidate = response.normalize("NFC").trim();
-  if (!candidate) return { error: "ChatGPT trả về phần sửa cục bộ trống." };
+  if (!candidate) return { error: "AI trả về phần sửa cục bộ trống." };
 
   const matches = [...candidate.matchAll(
     /<CAU_DA_SUA\s+id=["']([^"']+)["']\s*>([\s\S]*?)<\/CAU_DA_SUA>/giu,
@@ -470,12 +525,21 @@ function isSafeForFreshChatRecovery(error: unknown): boolean {
 
 /** Detect ChatGPT's visible refusal message, never a merely short translation. */
 function isSafetyRefusalResponse(response: string): boolean {
-  const text = response.normalize("NFC").replace(/\s+/gu, " ").trim().toLocaleLowerCase("vi-VN");
+  const text = response
+    .normalize("NFC")
+    .replace(/[’‘]/gu, "'")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLocaleLowerCase("vi-VN");
   return [
     "không thể hiển thị nội dung này vì lý do an toàn",
     "không thể hỗ trợ yêu cầu này vì lý do an toàn",
     "không thể hỗ trợ nội dung này",
     "cách tiếp cận của chúng tôi đối với các cuộc hội thoại nhạy cảm",
+    "this content can't be shown for safety reasons",
+    "this content cannot be shown for safety reasons",
+    "if this seems like a mistake, give this response a thumbs down",
+    "approach to sensitive conversations",
   ].some((phrase) => text.includes(phrase));
 }
 
@@ -562,6 +626,7 @@ function publicSegment(segment: TranslationSegment): TranslationSegment {
 export class TranslationJobRunner {
   private readonly emitter = new EventEmitter();
   private readonly jobs = new Map<string, PersistedTranslationJob>();
+  private readonly persistedJobSummaries = new Map<string, TranslationJobSnapshot>();
   private readonly running = new Map<string, Promise<void>>();
   private readonly pauseRequests = new Set<string>();
   private readonly cancelRequests = new Set<string>();
@@ -575,6 +640,8 @@ export class TranslationJobRunner {
   private readonly localizedRepairPromptBuilder: (
     input: LocalizedHanRepairPromptInput,
   ) => string;
+  private restorePromise: Promise<void> | undefined;
+  private restoreComplete = false;
   private shuttingDown = false;
 
   public constructor(private readonly dependencies: TranslationRunnerDependencies) {
@@ -629,6 +696,7 @@ export class TranslationJobRunner {
       createdAt: timestamp,
       updatedAt: timestamp,
       status: "queued",
+      aiProvider: request.aiProvider === "kimi" ? "kimi" : "chatgpt",
       promptMode: request.promptMode,
       ...(request.customPrompt ? { customPrompt: request.customPrompt } : {}),
       resolvedPrompt: request.resolvedPrompt,
@@ -651,7 +719,7 @@ export class TranslationJobRunner {
       safetyRefusalContextPending: {},
       activityLog: [],
     };
-    this.logActivity(job, "Đã tạo checkpoint. Đang chuẩn bị kết nối ChatGPT.");
+    this.logActivity(job, `Đã tạo checkpoint. Đang chuẩn bị kết nối ${job.aiProvider === "kimi" ? "Kimi AI" : "ChatGPT"}.`);
     this.jobs.set(id, job);
     await this.checkpoint(job);
     this.emit(job.id, "job-created", { job: this.publicJob(job) });
@@ -692,6 +760,14 @@ export class TranslationJobRunner {
       );
     }
     this.assertNoOtherActiveJob(job.id);
+    const repairedXbanxiaSegments = repairLegacyXbanxiaCheckpoint(job);
+    if (repairedXbanxiaSegments) {
+      this.logActivity(
+        job,
+        `Đã làm sạch ${repairedXbanxiaSegments} đoạn Xbanxia trong checkpoint: loại ký tự ẩn, ghi chú ngoài truyện và tiêu đề lặp trước khi tiếp tục.`,
+        "success",
+      );
+    }
     this.pauseRequests.delete(job.id);
     this.cancelRequests.delete(job.id);
     if (resumeCancelledJob) {
@@ -799,7 +875,7 @@ export class TranslationJobRunner {
     this.emit(job.id, "job-status", { status: job.status });
     if (stopError !== undefined) {
       throw new Error(
-        "Tác vụ đã được lưu là đã hủy, nhưng không thể xác nhận dừng phản hồi trên ChatGPT Web.",
+        "Tác vụ đã được lưu là đã hủy, nhưng không thể xác nhận dừng phản hồi trên AI Web.",
         { cause: stopError },
       );
     }
@@ -882,37 +958,66 @@ export class TranslationJobRunner {
     this.pauseRequests.delete(job.id);
     this.cancelRequests.delete(job.id);
     this.jobs.delete(job.id);
+    this.persistedJobSummaries.delete(job.id);
     await this.dependencies.persistence.removeJob(job.id);
   }
 
-  public async restorePersistedJobs(): Promise<void> {
-    const persisted = await this.dependencies.persistence.listJobs?.<PersistedTranslationJob>() ?? [];
-    for (const candidate of persisted) {
-      if (!candidate || typeof candidate.id !== "string" || !Array.isArray(candidate.segments)) continue;
-      if (this.jobs.has(candidate.id)) continue;
-      candidate.localizedHanRepairAttempts ??= {};
-      candidate.freshChatRecoveryAttempts ??= {};
-      candidate.freshChatRecoveryAttemptLimits ??= {};
-      candidate.shortTranslationRecoveryAttempts ??= {};
-      candidate.browserRestartRecoveryAttempts ??= {};
-      candidate.pageReloadRecoveryAttempts ??= {};
-      candidate.safetyRefusalPromptAttempts ??= {};
-      candidate.safetyRefusalFreshChatAttempts ??= {};
-      candidate.safetyRefusalContextPending ??= {};
-      candidate.activityLog ??= [];
-      upgradeLegacyWebTimeout(candidate);
-      candidate.conversationInitialized = false;
-      candidate.conversationHasBasePrompt = false;
-      candidate.conversationRecoveryPending = candidate.segments.some(
-        (segment) => segment.status === "completed" && Boolean(segment.translatedText?.trim()),
-      );
-      if (candidate.status === "running" || candidate.status === "queued") {
-        candidate.status = "paused";
-        candidate.updatedAt = nowIso();
-        await this.dependencies.persistence.saveJob(candidate);
-      }
-      this.jobs.set(candidate.id, candidate);
+  private async restoreCandidate(candidate: PersistedTranslationJob | null | undefined): Promise<void> {
+    if (!candidate || typeof candidate.id !== "string" || !Array.isArray(candidate.segments)) return;
+    if (this.jobs.has(candidate.id)) return;
+    candidate.localizedHanRepairAttempts ??= {};
+    candidate.aiProvider = candidate.aiProvider === "kimi" ? "kimi" : "chatgpt";
+    candidate.freshChatRecoveryAttempts ??= {};
+    candidate.freshChatRecoveryAttemptLimits ??= {};
+    candidate.shortTranslationRecoveryAttempts ??= {};
+    candidate.browserRestartRecoveryAttempts ??= {};
+    candidate.pageReloadRecoveryAttempts ??= {};
+    candidate.safetyRefusalPromptAttempts ??= {};
+    candidate.safetyRefusalFreshChatAttempts ??= {};
+    candidate.safetyRefusalContextPending ??= {};
+    candidate.activityLog ??= [];
+    upgradeLegacyWebTimeout(candidate);
+    candidate.conversationInitialized = false;
+    candidate.conversationHasBasePrompt = false;
+    candidate.conversationRecoveryPending = candidate.segments.some(
+      (segment) => segment.status === "completed" && Boolean(segment.translatedText?.trim()),
+    );
+    if (candidate.status === "running" || candidate.status === "queued") {
+      candidate.status = "paused";
+      candidate.updatedAt = nowIso();
+      await this.dependencies.persistence.saveJob(candidate);
     }
+    this.jobs.set(candidate.id, candidate);
+    this.persistedJobSummaries.set(candidate.id, this.snapshot(candidate, false));
+  }
+
+  public restorePersistedJobs(): Promise<void> {
+    if (this.restoreComplete) return Promise.resolve();
+    if (this.restorePromise) return this.restorePromise;
+
+    this.restorePromise = (async () => {
+      if (this.dependencies.persistence.listJobSummaries) {
+        const summaries = await this.dependencies.persistence.listJobSummaries();
+        for (const summary of summaries) this.persistedJobSummaries.set(summary.id, summary);
+        const activeIds = summaries
+          .filter((summary) => ["queued", "running", "paused"].includes(summary.status))
+          .map((summary) => summary.id);
+        for (const id of activeIds) {
+          const candidate = await this.dependencies.persistence.loadJob<PersistedTranslationJob>(id);
+          if (candidate) await this.restoreCandidate(candidate);
+        }
+        this.restoreComplete = true;
+        return;
+      }
+      const persisted = await this.dependencies.persistence.listJobs?.<PersistedTranslationJob>() ?? [];
+      for (const candidate of persisted) {
+        await this.restoreCandidate(candidate);
+      }
+      this.restoreComplete = true;
+    })().finally(() => {
+      if (!this.restoreComplete) this.restorePromise = undefined;
+    });
+    return this.restorePromise;
   }
 
   /**
@@ -923,9 +1028,10 @@ export class TranslationJobRunner {
    */
   public async discoverJobs(): Promise<TranslationJobSnapshot[]> {
     await this.restorePersistedJobs();
-    return [...this.jobs.values()]
-      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
-      .map((job) => this.snapshot(job, true));
+    const summaries = new Map(this.persistedJobSummaries);
+    for (const job of this.jobs.values()) summaries.set(job.id, this.snapshot(job, false));
+    return [...summaries.values()]
+      .sort((left, right) => Date.parse(right.createdAt ?? "") - Date.parse(left.createdAt ?? ""));
   }
 
   public async get(jobId: string): Promise<TranslationJobSnapshot> {
@@ -974,7 +1080,9 @@ export class TranslationJobRunner {
     if (this.cancelRequests.has(job.id) || job.status === "cancelled") return;
     const controller = new AbortController();
     this.abortControllers.set(job.id, controller);
-    this.logActivity(job, "Đang kiểm tra phiên ChatGPT trước khi dịch tiếp.");
+    await this.dependencies.chatGpt.selectProvider?.(job.aiProvider);
+    const providerLabel = job.aiProvider === "kimi" ? "Kimi AI" : "ChatGPT";
+    this.logActivity(job, `Đang kiểm tra phiên ${providerLabel} trước khi dịch tiếp.`);
     await this.dependencies.chatGpt.ensureReady();
     if (this.shouldStop(job, controller.signal)) return;
     if (!job.conversationInitialized) {
@@ -1141,7 +1249,9 @@ export class TranslationJobRunner {
       // Every retry repeats the full base prompt.  A fresh request for the
       // next normal segment may still use the short continuation envelope,
       // but no error recovery relies on context that ChatGPT may have lost.
-      const includeBasePrompt = isRetry || !job.conversationHasBasePrompt;
+      const includeBasePrompt = isRetry
+        || !job.conversationHasBasePrompt
+        || job.aiProvider === "kimi";
       const retryPromptInput = previousValidation
         ? {
             ...commonPromptInput,
@@ -1167,7 +1277,7 @@ export class TranslationJobRunner {
       let safetyRefusalDetected = false;
       try {
         segment.status = "streaming";
-        this.logActivity(job, `ChatGPT đang tạo bản dịch cho đoạn ${segment.index + 1}/${job.segments.length}.`, "info", segment);
+        this.logActivity(job, `${job.aiProvider === "kimi" ? "Kimi AI" : "ChatGPT"} đang tạo bản dịch cho đoạn ${segment.index + 1}/${job.segments.length}.`, "info", segment);
         await this.checkpoint(job);
         if (this.shouldStop(job, signal)) return false;
         this.emit(job.id, "segment-status", { segment: publicSegment(segment) });
@@ -1230,7 +1340,7 @@ export class TranslationJobRunner {
         if (this.shouldStop(job, signal) || isAbortError(error)) return false;
         adapterErrorOccurred = true;
         segment.error = errorMessage(error);
-        this.logActivity(job, `Lỗi khi chờ ChatGPT: ${segment.error}`, "warning", segment);
+        this.logActivity(job, `Lỗi khi chờ ${job.aiProvider === "kimi" ? "Kimi AI" : "ChatGPT"}: ${segment.error}`, "warning", segment);
         freshChatRecoveryRequested = isSafeForFreshChatRecovery(error);
         conversationVerificationFailed = isConversationVerificationFailure(error);
         // A context that the adapter has positively abandoned is the one
@@ -1272,7 +1382,7 @@ export class TranslationJobRunner {
           job.safetyRefusalPromptAttempts[segment.id] = nextContextAttempt;
           job.safetyRefusalContextPending[segment.id] = true;
           segment.status = "retrying";
-          segment.error = "ChatGPT trả thông báo an toàn; sẽ gửi ngữ cảnh dịch thuật rồi gửi lại đúng đoạn.";
+          segment.error = `${job.aiProvider === "kimi" ? "Kimi AI" : "ChatGPT"} trả thông báo an toàn; sẽ gửi ngữ cảnh dịch thuật rồi gửi lại đúng đoạn.`;
           this.logActivity(
             job,
             freshChatUsed > 0
@@ -1300,7 +1410,7 @@ export class TranslationJobRunner {
           delete job.safetyRefusalContextPending[segment.id];
           this.logActivity(
             job,
-            "ChatGPT vẫn trả thông báo an toàn sau 3 lần nhắc ngữ cảnh; tạo chat mới để thử lại đoạn một lần.",
+            `${job.aiProvider === "kimi" ? "Kimi AI" : "ChatGPT"} vẫn trả thông báo an toàn sau 3 lần nhắc ngữ cảnh; tạo chat mới để thử lại đoạn một lần.`,
             "warning",
             segment,
           );
@@ -1309,7 +1419,7 @@ export class TranslationJobRunner {
             trigger: "safety-refusal",
           });
         }
-        segment.error = "ChatGPT tiếp tục từ chối nội dung sau khi đã gửi ngữ cảnh trong chat mới.";
+        segment.error = `${job.aiProvider === "kimi" ? "Kimi AI" : "ChatGPT"} tiếp tục từ chối nội dung sau khi đã gửi ngữ cảnh trong chat mới.`;
         return this.failSegment(job, segment, signal);
       }
       if (this.hasSafetyRefusalRecovery(job, segment.id)) {
@@ -1636,7 +1746,7 @@ export class TranslationJobRunner {
     }
 
     job.browserRestartRecoveryAttempts[segment.id] = used + 1;
-    this.logActivity(job, "Đã khởi động lại browser ChatGPT; sẽ tạo chat mới và gửi lại checkpoint.", "warning", segment);
+    this.logActivity(job, `Đã khởi động lại browser ${job.aiProvider === "kimi" ? "Kimi AI" : "ChatGPT"}; sẽ tạo chat mới và gửi lại checkpoint.`, "warning", segment);
     segment.translatedText = "";
     segment.validation = undefined;
     segment.error = undefined;
@@ -1669,16 +1779,15 @@ export class TranslationJobRunner {
     job: PersistedTranslationJob,
     segment: TranslationSegment,
     signal: AbortSignal,
-    maximumAttempts: number,
+    _maximumAttempts: number,
   ): Promise<LocalizedRepairOutcome> {
-    return this.repairLocalizedHanBatch(job, segment, signal, maximumAttempts);
+    return this.repairLocalizedHanBatch(job, segment, signal);
   }
 
   private async repairLocalizedHanBatch(
     job: PersistedTranslationJob,
     segment: TranslationSegment,
     signal: AbortSignal,
-    maximumAttempts: number,
   ): Promise<LocalizedRepairOutcome> {
     let localAttempts = job.localizedHanRepairAttempts[segment.id] ?? 0;
     // A small residual-Han repair is not a full retranslation.  It deserves
@@ -1686,7 +1795,11 @@ export class TranslationJobRunner {
     // one that exposed the one leaked character.  Otherwise a job can spend
     // all ordinary attempts and fail without ever asking ChatGPT to repair
     // the only bad sentence.
-    const maximumLocalAttempts = Math.max(1, maximumAttempts - 1);
+    // Local Han cleanup has a dedicated ceiling. It must not inherit the
+    // much smaller full-segment retry budget: a valid translation with one
+    // leaked character should keep asking for that exact sentence until it
+    // is clean, but must still stop deterministically after ten attempts.
+    const maximumLocalAttempts = MAX_LOCALIZED_HAN_REPAIR_ATTEMPTS;
 
     while (localAttempts < maximumLocalAttempts) {
       if (
@@ -1711,16 +1824,24 @@ export class TranslationJobRunner {
       localAttempts += 1;
       job.localizedHanRepairAttempts[segment.id] = localAttempts;
       segment.attempts += 1;
+      const separateBasePrompt = localAttempts === 3;
       const prompt = this.localizedRepairPromptBuilder({
         basePrompt: job.resolvedPrompt,
         targets: targets.map((target) => ({ targetId: target.targetId, sentence: target.text })),
         attempt: localAttempts,
         hanSample: validation.hanCharacters.map((item) => item.character).join(""),
-        // A local repair is still a retry: always repeat the base prompt.
-        includeBasePrompt: true,
+        // The first two local repairs repeat the base prompt in the same
+        // message. On the third repair, prime the chat with the base prompt as
+        // its own turn, then send only the still-faulty sentences below.
+        includeBasePrompt: !separateBasePrompt,
       });
       job.conversationHasBasePrompt = true;
-      const promptWithRecovery = this.withPendingRecoveryContext(job, prompt);
+      const promptWithRecovery = separateBasePrompt
+        ? prompt
+        : this.withPendingRecoveryContext(job, prompt);
+      const separateBasePromptWithRecovery = separateBasePrompt
+        ? this.withPendingRecoveryContext(job, job.resolvedPrompt)
+        : undefined;
 
       segment.status = "retrying";
       segment.error = undefined;
@@ -1742,12 +1863,28 @@ export class TranslationJobRunner {
         await this.checkpoint(job);
         if (this.shouldStop(job, signal)) return "stopped";
         this.emit(job.id, "segment-status", { segment: publicSegment(segment) });
+        if (separateBasePromptWithRecovery) {
+          this.logActivity(
+            job,
+            `Lượt sửa chữ Hán thứ 3: đang gửi lại prompt gốc riêng trước khi gửi ${targets.length} câu lỗi.`,
+            "warning",
+            segment,
+          );
+          await this.dependencies.chatGpt.sendAndWait(separateBasePromptWithRecovery, {
+            timeoutMs: job.settings.responseTimeoutMs,
+            signal,
+          });
+          if (this.shouldStop(job, signal)) return "stopped";
+          this.consumeRecoveryContext(job);
+          job.updatedAt = nowIso();
+          await this.checkpoint(job);
+        }
         const response = await this.dependencies.chatGpt.sendAndWait(promptWithRecovery, {
           timeoutMs: job.settings.responseTimeoutMs,
           signal,
         });
         if (this.shouldStop(job, signal)) return "stopped";
-        this.consumeRecoveryContext(job);
+        if (!separateBasePrompt) this.consumeRecoveryContext(job);
 
         segment.status = "validating";
         const parsed = localizedRepairBatchResponseError(response, targets);
@@ -1778,6 +1915,12 @@ export class TranslationJobRunner {
           segment.error ||= "Câu sửa cục bộ làm bản dịch phát sinh lỗi kiểm tra khác.";
           return "full-retry";
         }
+        this.logActivity(
+          job,
+          `Lượt sửa chữ Hán ${localAttempts}/${maximumLocalAttempts} vẫn lỗi: ${segment.error ?? "câu trả về chưa đạt kiểm tra"}. Sẽ gửi lại đúng câu lỗi.`,
+          "warning",
+          segment,
+        );
       } catch (error) {
         if (this.shouldStop(job, signal) || isAbortError(error)) return "stopped";
         segment.error = errorMessage(error);
@@ -1790,7 +1933,7 @@ export class TranslationJobRunner {
       // chat. Validation/output errors continue here and use normal retries.
       if (freshChatRecoveryRequested) return "fresh-chat";
       if (retryUnsafe) return "failed";
-      await this.waitBeforeRetry(segment.attempts, signal);
+      await this.waitBeforeLocalizedHanRetry(signal);
     }
 
     segment.error ||= "Đã dùng hết số lần thử khi sửa chữ Hán cục bộ.";
@@ -1861,6 +2004,20 @@ export class TranslationJobRunner {
         signal.removeEventListener("abort", onAbort);
         resolve();
       }, Math.min(3_000, 500 * 2 ** (attempts - 1)));
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  private async waitBeforeLocalizedHanRetry(signal: AbortSignal): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = (): void => {
+        clearTimeout(timeout);
+        reject(signal.reason ?? new DOMException("Đã hủy tác vụ.", "AbortError"));
+      };
+      const timeout = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, 250);
       signal.addEventListener("abort", onAbort, { once: true });
     });
   }
@@ -2027,6 +2184,7 @@ export class TranslationJobRunner {
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       status: job.status,
+      aiProvider: job.aiProvider,
       promptMode: job.promptMode,
       ...(job.customPrompt ? { customPrompt: job.customPrompt } : {}),
       resolvedPrompt: job.resolvedPrompt,
@@ -2046,6 +2204,7 @@ export class TranslationJobRunner {
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       status: job.status,
+      aiProvider: job.aiProvider,
       totalSegments: job.segments.length,
       completedSegments: job.segments.filter((segment) => segment.status === "completed").length,
       segments: job.segments.map((segment) => ({

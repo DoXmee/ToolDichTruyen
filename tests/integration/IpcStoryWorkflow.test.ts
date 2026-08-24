@@ -188,6 +188,8 @@ describe('IPC nhập link truyện và xuất từng chương', () => {
       sourceEndChapter: 41,
       outputStartChapter: 101,
       outputEndChapter: 102,
+      splitOutputStartChapter: 101,
+      splitOutputEndChapter: 103,
       chapters: [{
         index: 101,
         sourceChapterNumber: 40,
@@ -202,7 +204,7 @@ describe('IPC nhập link truyện và xuất từng chương', () => {
         wordCount: 1,
       }],
     }) as { fileName: string; filePath: string; status: string };
-    expect(sourceAggregate.fileName).toBe('File tổng c.gốc (40-41)_c.mới (101-102).txt');
+    expect(sourceAggregate.fileName).toBe('File tổng c.gốc (40-41)_c.mới (101-103).txt');
     expect(sourceAggregate.status).toBe('saved');
     await expect(readFile(sourceAggregate.filePath, 'utf8')).resolves.toBe(
       'Chương 101: 原题甲\r\n\r\n第一段原文。\r\n\r\n---\r\n\r\nChương 102: 原题乙\r\n\r\n第二段原文。',

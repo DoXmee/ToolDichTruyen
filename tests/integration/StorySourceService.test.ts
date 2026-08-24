@@ -132,7 +132,7 @@ function xbanxiaCatalog(overrides: Partial<StoryPageSnapshot> = {}): StoryPageSn
     const url = number === 1
       ? XBANXIA_CHAPTER_ONE_URL
       : `https://www.xbanxia.cc/books/143300/${29_000_000 + number}.html`;
-    return link(url, number === 1 ? "第1章 替婚" : `第${number}章 測試章節${number}`, [".book-list"]);
+    return link(url, number === 1 ? "【第1章 替婚】" : `【第${number}章 測試章節${number}】`, [".book-list"]);
   });
   return page(XBANXIA_BOOK_URL, {
     title: "嫁給殘疾皇子後, 嫁給殘疾皇子後小說全文在線閱讀 - 半夏小說",
@@ -1164,6 +1164,65 @@ describe("StorySourceService integration", () => {
     );
     // The next-chapter navigation is page chrome, not same-chapter pagination.
     expect(client.visits).toEqual([XBANXIA_BOOK_URL, XBANXIA_CHAPTER_ONE_URL]);
+  });
+
+  it("preserves the real Xbanxia number when the entire catalog title is wrapped in 【】", async () => {
+    const wrappedText = "喬桑回到家後開始查閱資料，認真準備挑選自己的第一隻寵獸，故事內容完整且連續。";
+    const client = new FakeClient(new Map([
+      [XBANXIA_BOOK_URL, xbanxiaCatalog({
+        links: [link(XBANXIA_CHAPTER_ONE_URL, "【第3章 換房子】", [".book-list"])],
+      })],
+      [XBANXIA_CHAPTER_ONE_URL, xbanxiaChapterOne({
+        elements: {
+          "#nr_title": ["【第3章 換房子】"],
+          "#nr1": [`【第3章 換房子】\n${wrappedText}\n半夏小說，快樂很多`],
+        },
+      })],
+    ]));
+    const source = service(client);
+    const analysis = await source.analyzeUrl(XBANXIA_BOOK_URL);
+
+    expect(analysis.chapters).toHaveLength(1);
+    expect(analysis.chapters[0]).toMatchObject({ number: 3, numberLabel: "第3章", title: "換房子" });
+    const result = await source.fetchChapters({
+      analysisId: analysis.analysisId,
+      chapterIds: analysis.defaultSelectedChapterIds,
+    });
+    expect(result.combinedSource).toBe(`Chương 3: 換房子\n\n${wrappedText}`);
+    expect(result.combinedSource).not.toMatch(/Chương\s+1\s*:\s*【/u);
+  });
+
+  it("recovers a clean Xbanxia title from the reader when catalog text is corrupt", async () => {
+    const body = [
+      "【第507章「禦獸從零分開始cx129」 這種感覺......】",
+      "第一段正文完整保留，人物進入醫務室接受檢查。",
+      "第二段正文接續前文，對話和動作都沒有中斷。",
+      "第三段正文自然結束，情節已經交代完整。",
+      "\u000e\u000e\u000e",
+      "ps：下一章稍後更新。",
+    ].join("\n");
+    const client = new FakeClient(new Map([
+      [XBANXIA_BOOK_URL, xbanxiaCatalog({
+        links: [link(XBANXIA_CHAPTER_ONE_URL, "【第507章????????????????????】", [".book-list"])],
+      })],
+      [XBANXIA_CHAPTER_ONE_URL, xbanxiaChapterOne({
+        elements: { "#nr_title": ["第507章 這種感覺......"], "#nr1": [body] },
+      })],
+    ]));
+    const source = service(client);
+    const analysis = await source.analyzeUrl(XBANXIA_BOOK_URL);
+    const result = await source.fetchChapters({
+      analysisId: analysis.analysisId,
+      chapterIds: analysis.defaultSelectedChapterIds,
+    });
+
+    expect(result.combinedSource).toBe([
+      "Chương 507: 這種感覺......",
+      "",
+      "第一段正文完整保留，人物進入醫務室接受檢查。",
+      "第二段正文接續前文，對話和動作都沒有中斷。",
+      "第三段正文自然結束，情節已經交代完整。",
+    ].join("\n"));
   });
 
   it("fails closed when required Xbanxia catalog or chapter selectors disappear", async () => {

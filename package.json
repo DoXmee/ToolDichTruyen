@@ -1,7 +1,7 @@
 {
   "name": "tool-dich-truyen",
-  "version": "1.2.0",
-  "description": "Ứng dụng Windows dịch truyện Trung - Việt qua ChatGPT Web và chia chương tự động.",
+  "version": "1.3.0",
+  "description": "Ứng dụng Windows dịch truyện Trung - Việt qua ChatGPT hoặc Kimi AI, có checkpoint và chia chương tự động.",
   "main": "./out/main/index.js",
   "author": "Local",
   "license": "UNLICENSED",

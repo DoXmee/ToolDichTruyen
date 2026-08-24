@@ -7,6 +7,7 @@ import type {
   StorySourceProgress,
   TranslationJobSnapshot,
   TranslationAutoExportBinding,
+  AiProvider,
 } from '../shared';
 
 export interface TranslationEvent {
@@ -20,6 +21,7 @@ export interface TranslationRequest {
   source: string;
   promptMode: string;
   customPrompt?: string;
+  aiProvider?: AiProvider;
   autoExport?: TranslationAutoExportBinding;
   settings?: {
     maxChunkChars?: number;
@@ -39,9 +41,15 @@ export interface StoryToolApi {
   getDraft(): Promise<unknown | null>;
   saveDraft(draft: unknown): Promise<void>;
   connectChatGPT(): Promise<{ status: string; message?: string }>;
+  getAiProvider?(): Promise<AiProvider>;
+  setAiProvider?(provider: AiProvider): Promise<{ provider: AiProvider; status: string; message?: string }>;
+  connectAi?(): Promise<{ provider: AiProvider; status: string; message?: string }>;
+  getAiStatus?(): Promise<{ provider: AiProvider; status: string; message?: string }>;
+  disconnectAi?(): Promise<void>;
   getChatGPTStatus?(): Promise<{ status: string; message?: string }>;
   cleanupToolChat?(): Promise<void>;
   onChatGPTStatus?(callback: (status: { status: string; message?: string }) => void): () => void;
+  onAiStatus?(callback: (status: { provider: AiProvider; status: string; message?: string }) => void): () => void;
   analyzeStoryUrl(url: string): Promise<StorySourceAnalysis>;
   /**
    * Starts a local helper pairing flow in the user's default browser. The
@@ -94,6 +102,8 @@ export interface StoryToolApi {
     sourceEndChapter: number;
     outputStartChapter: number;
     outputEndChapter: number;
+    splitOutputStartChapter?: number;
+    splitOutputEndChapter?: number;
     chapters: FinalChapterExportInput[];
     recoveryOnConflict?: boolean;
   }): Promise<CombinedChapterExportResult>;

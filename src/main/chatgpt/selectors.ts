@@ -2,7 +2,23 @@
  * ChatGPT Web is not a public DOM API. Keep every selector in one module so a
  * website update can be repaired without touching the translation runner.
  */
-export const CHATGPT_SELECTORS = Object.freeze({
+export interface ChatWebSelectors {
+  composer: readonly string[];
+  sendButton: readonly string[];
+  stopButton: readonly string[];
+  assistantMessages: readonly string[];
+  assistantTurnContainerFromMessage: readonly string[];
+  assistantTurnCompletionAction: readonly string[];
+  toolConversationUserMessages: readonly string[];
+  newChat: readonly string[];
+  currentConversationMenu: readonly string[];
+  deleteCurrentConversation: readonly string[];
+  confirmDeleteConversation: readonly string[];
+  retryButton: readonly string[];
+  loginLink: readonly string[];
+}
+
+export const CHATGPT_SELECTORS: ChatWebSelectors = Object.freeze({
   composer: [
     "#prompt-textarea",
     '[data-testid="prompt-textarea"]',
@@ -87,3 +103,85 @@ export const CHATGPT_SELECTORS = Object.freeze({
   ] as const,
 });
 
+/**
+ * Kimi's DOM is intentionally kept separate from ChatGPT's selectors.  The
+ * translation runner only sees the common adapter contract, while a website
+ * markup change can be repaired here without touching checkpoint logic.
+ */
+export const KIMI_SELECTORS: ChatWebSelectors = Object.freeze({
+  composer: [
+    'div.chat-input-editor[contenteditable="true"][data-lexical-editor="true"]',
+    'div.chat-input-editor[contenteditable="true"]',
+    'div[contenteditable="true"][role="textbox"]',
+    'textarea[placeholder*="Ask"]',
+    'textarea[placeholder*="Message"]',
+  ],
+  sendButton: [
+    'div.send-button-container:not(.disabled)',
+    'button.send-button:not([disabled])',
+    'button[aria-label="Send"]',
+    'button[aria-label*="send" i]',
+  ],
+  stopButton: [
+    'div.send-button-container.stop',
+    'button.task-bar-stop',
+    'div.send-button-container:has(.stop-icon)',
+    'button[aria-label="Stop"]',
+    'button[aria-label*="stop" i]',
+  ],
+  assistantMessages: [
+    '.assistant-content',
+    '.segment-assistant',
+    '.chat-content-item-assistant',
+    '[data-role="assistant"]',
+    '[data-message-author-role="assistant"]',
+    '.chat-message.assistant',
+  ],
+  assistantTurnContainerFromMessage: [
+    'xpath=ancestor-or-self::*[contains(@class, "chat-content-item")][1]',
+    'xpath=ancestor-or-self::*[contains(@class, "segment")][1]',
+    'xpath=ancestor-or-self::article[1]',
+  ],
+  assistantTurnCompletionAction: [
+    'button[aria-label*="Copy" i]',
+    '.segment-assistant-actions button',
+    '.message-actions button',
+  ],
+  toolConversationUserMessages: [
+    '[data-role="user"]',
+    '[data-message-author-role="user"]',
+    '.chat-content-item-user',
+    '.user-content',
+    '.segment-user',
+    '.chat-message.user',
+  ],
+  newChat: [
+    'a[href*="chat_enter_method=new_chat"]',
+    'a:has-text("New Chat")',
+    'button:has-text("New Chat")',
+  ],
+  currentConversationMenu: [
+    'button[aria-label*="More" i]',
+    'button[aria-label*="options" i]',
+    '.chat-header button:has(.more-icon)',
+  ],
+  deleteCurrentConversation: [
+    '[role="menuitem"]:has-text("Delete")',
+    '[role="menuitem"]:has-text("Xóa")',
+    'button:has-text("Delete chat")',
+  ],
+  confirmDeleteConversation: [
+    '[role="dialog"] button:has-text("Delete")',
+    '[role="dialog"] button:has-text("Xóa")',
+  ],
+  retryButton: [
+    'button:has-text("Retry")',
+    'button:has-text("Regenerate")',
+    'button:has-text("Try again")',
+  ],
+  loginLink: [
+    'button:has-text("Log in to sync chat history")',
+    'button:has-text("Log in")',
+    'a:has-text("Log in")',
+  ],
+});

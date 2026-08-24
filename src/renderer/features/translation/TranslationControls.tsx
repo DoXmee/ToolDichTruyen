@@ -11,6 +11,7 @@ export interface SegmentError {
 }
 
 interface TranslationControlsProps {
+  providerLabel?: string;
   state: TranslationState;
   connected: boolean;
   completedSegments: number;
@@ -28,7 +29,7 @@ interface TranslationControlsProps {
 
 const stateLabels: Record<TranslationState, string> = {
   idle: 'Sẵn sàng dịch',
-  running: 'ChatGPT đang dịch',
+  running: 'AI đang dịch',
   paused: 'Đã tạm dừng',
   cancelling: 'Đang hủy…',
   cancelled: 'Đã hủy',
@@ -37,6 +38,7 @@ const stateLabels: Record<TranslationState, string> = {
 };
 
 export function TranslationControls({
+  providerLabel = 'ChatGPT',
   state,
   connected,
   completedSegments,
@@ -58,7 +60,9 @@ export function TranslationControls({
   return (
     <section className="translation-controls" aria-label="Điều khiển dịch">
       <div className="translation-controls__topline">
-        <StatusPill tone={tone} pulse={state === 'running'}>{stateLabels[state]}</StatusPill>
+        <StatusPill tone={tone} pulse={state === 'running'}>
+          {state === 'running' ? `${providerLabel} đang dịch` : stateLabels[state]}
+        </StatusPill>
         {totalSegments > 0 && (
           <span className="progress-label">{completedSegments}/{totalSegments} đoạn · {percent}%</span>
         )}
@@ -114,7 +118,7 @@ export function TranslationControls({
           </button>
         )}
         <span className={`action-hint${connected ? ' action-hint--connected' : ''}`}>
-          {connected ? 'ChatGPT đang kết nối.' : 'Kết nối ChatGPT trước khi bắt đầu.'}
+          {connected ? `${providerLabel} đang kết nối.` : `Kết nối ${providerLabel} trước khi bắt đầu.`}
         </span>
       </div>
 

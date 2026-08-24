@@ -35,12 +35,35 @@ try {
   if (!bridge.hasBridge) throw new Error('Preload bridge window.storyTool không tồn tại.')
   for (const method of [
     'loadPrompts', 'connectChatGPT', 'cleanupToolChat', 'startTranslation',
+    'getAiProvider', 'setAiProvider', 'connectAi', 'getAiStatus', 'onAiStatus',
     'analyzeStoryUrl', 'openManualStoryVerification', 'revealHuliBrowserHelper',
     'fetchStoryChapters', 'cancelStoryFetch',
     'discoverTranslations', 'discardTranslation', 'chooseChapterDirectory', 'exportChapters', 'exportCombinedSourceChapters', 'exportText', 'generateTitles',
   ]) {
     if (!bridge.methods.includes(method)) throw new Error(`Preload bridge thiếu ${method}.`)
   }
+
+  const kimiChoice = page.getByRole('radio', { name: 'Kimi AI' })
+  const chatGptChoice = page.getByRole('radio', { name: 'ChatGPT' })
+  await page.waitForFunction(() => {
+    const button = [...document.querySelectorAll('[role="radio"]')]
+      .find((candidate) => candidate.textContent?.trim() === 'Kimi AI')
+    return button instanceof HTMLButtonElement && !button.disabled
+  }, { timeout: 10_000 })
+  await page.evaluate(() => window.storyTool?.setAiProvider?.('kimi'))
+  await page.waitForFunction(() => window.storyTool?.getAiProvider?.().then((provider) => provider === 'kimi'))
+  await page.waitForFunction(() => document.querySelector('[role="radio"][aria-checked="true"]')?.textContent?.trim() === 'Kimi AI')
+  if (await kimiChoice.getAttribute('aria-checked') !== 'true') {
+    throw new Error('Ô chọn Kimi AI không cập nhật trạng thái giao diện.')
+  }
+  await page.waitForFunction(() => {
+    const button = [...document.querySelectorAll('[role="radio"]')]
+      .find((candidate) => candidate.textContent?.trim() === 'ChatGPT')
+    return button instanceof HTMLButtonElement && !button.disabled
+  }, { timeout: 10_000 })
+  await page.evaluate(() => window.storyTool?.setAiProvider?.('chatgpt'))
+  await page.waitForFunction(() => window.storyTool?.getAiProvider?.().then((provider) => provider === 'chatgpt'))
+  await page.waitForFunction(() => document.querySelector('[role="radio"][aria-checked="true"]')?.textContent?.trim() === 'ChatGPT')
 
   const sourceEditor = page.getByLabel('Nội dung tiếng Trung cần dịch')
   const outputEditor = page.getByLabel('Nội dung truyện đã dịch')
@@ -263,29 +286,119 @@ try {
     const importer = document.querySelector('.story-link-importer')
     if (!(importer instanceof HTMLElement)) throw new Error('Missing importer for catalog fit test.')
     const rows = Array.from({ length: 208 }, (_, index) => `<label><input type="checkbox" />Chương ${index + 1}</label>`).join('')
-    importer.innerHTML = `<div class="story-url-row"><label class="story-url-field"><input value="https://ixdzs8.com/read/646454/" /></label><button class="button">Phân tích</button></div><div class="story-chapter-list">${rows}</div>`
+    importer.innerHTML = `<div class="story-url-row"><label class="story-url-field"><input value="https://ixdzs8.com/read/646454/" /></label><button class="button">Phân tích</button></div><div class="story-catalog"><div class="story-catalog__toolbar"><span><strong>258</strong> chương đã chọn</span><button class="button-link">Chọn tất cả</button><button class="button-link">Bỏ chọn</button><form class="story-range"><input aria-label="Từ chương" value="1" type="number" /><span>–</span><input aria-label="Đến chương" value="258" type="number" /><button class="button-link" type="button">Áp dụng</button></form></div><div class="story-chapter-list">${rows}</div></div>`
   })
   await page.waitForTimeout(500)
   const populatedCatalogLayout = await page.evaluate(() => {
     const drawer = document.querySelector('details.chapter-drawer')
     const summary = drawer?.querySelector('summary')
     const list = document.querySelector('.story-chapter-list')
-    if (!(summary instanceof HTMLElement) || !(list instanceof HTMLElement)) throw new Error('Missing catalog fit elements.')
+    const panel = document.querySelector('.source-panel')
+    const toolbar = document.querySelector('.story-catalog__toolbar')
+    const apply = document.querySelector('.story-range .button-link')
+    if (
+      !(summary instanceof HTMLElement)
+      || !(list instanceof HTMLElement)
+      || !(panel instanceof HTMLElement)
+      || !(toolbar instanceof HTMLElement)
+      || !(apply instanceof HTMLElement)
+    ) throw new Error('Missing catalog fit elements.')
     const rect = summary.getBoundingClientRect()
+    const panelRect = panel.getBoundingClientRect()
+    const applyRect = apply.getBoundingClientRect()
+    const toolbarFirstItem = toolbar.firstElementChild
+    const firstItemRect = toolbarFirstItem instanceof HTMLElement
+      ? toolbarFirstItem.getBoundingClientRect()
+      : undefined
     return {
       scrollHeight: document.documentElement.scrollHeight,
       clientHeight: document.documentElement.clientHeight,
       drawerVisible: rect.top >= 0 && rect.bottom <= window.innerHeight,
       listOverflow: getComputedStyle(list).overflowY,
+      toolbarFitsPanel: toolbar.scrollWidth <= toolbar.clientWidth + 1,
+      applyVisible: applyRect.left >= panelRect.left && applyRect.right <= panelRect.right,
+      rangeSharesToolbarRow: firstItemRect ? Math.abs(applyRect.top - firstItemRect.top) <= 2 : false,
     }
   })
   if (
     populatedCatalogLayout.scrollHeight > populatedCatalogLayout.clientHeight + 2 ||
     !populatedCatalogLayout.drawerVisible ||
-    !['auto', 'scroll'].includes(populatedCatalogLayout.listOverflow)
+    !['auto', 'scroll'].includes(populatedCatalogLayout.listOverflow) ||
+    !populatedCatalogLayout.toolbarFitsPanel ||
+    !populatedCatalogLayout.applyVisible ||
+    !populatedCatalogLayout.rangeSharesToolbarRow
   ) {
     throw new Error(`Danh mục đông chương làm mất Công cụ chia chương: ${JSON.stringify(populatedCatalogLayout)}`)
   }
+
+  // Exercise the real Chromium layout engine across common desktop, laptop,
+  // scaled-display and minimum-window sizes. Large/normal screens must retain
+  // the one-frame workspace; very small windows may use document scrolling,
+  // but no control may be clipped horizontally or hidden inside a panel.
+  const responsiveCatalogMatrix = []
+  for (const size of [
+    { width: 1920, height: 1040, oneFrame: true },
+    { width: 1600, height: 860, oneFrame: true },
+    { width: 1366, height: 768, oneFrame: true },
+    { width: 1366, height: 720, oneFrame: true },
+    { width: 1280, height: 680, oneFrame: true },
+    { width: 1024, height: 700, oneFrame: true },
+    { width: 800, height: 600, oneFrame: false },
+    { width: 720, height: 560, oneFrame: false },
+  ]) {
+    await application.evaluate(({ BrowserWindow }, target) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(target.width, target.height)
+    }, size)
+    await page.waitForTimeout(180)
+    const metrics = await page.evaluate(() => {
+      const sourcePanel = document.querySelector('.source-panel')
+      const toolbar = document.querySelector('.story-catalog__toolbar')
+      const range = document.querySelector('.story-range')
+      const apply = range?.querySelector('.button-link')
+      if (
+        !(sourcePanel instanceof HTMLElement)
+        || !(toolbar instanceof HTMLElement)
+        || !(range instanceof HTMLElement)
+        || !(apply instanceof HTMLElement)
+      ) throw new Error('Missing responsive catalog controls.')
+      const panelRect = sourcePanel.getBoundingClientRect()
+      const rangeRect = range.getBoundingClientRect()
+      const applyRect = apply.getBoundingClientRect()
+      const offscreenControls = Array.from(document.querySelectorAll('button, input, select, textarea, summary'))
+        .filter((element) => {
+          if (!(element instanceof HTMLElement)) return false
+          const style = getComputedStyle(element)
+          const rect = element.getBoundingClientRect()
+          if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0 || rect.height === 0) return false
+          return rect.left < -1 || rect.right > window.innerWidth + 1
+        })
+        .map((element) => element.getAttribute('aria-label') || element.textContent?.trim().slice(0, 40) || element.tagName)
+      return {
+        clientHeight: document.documentElement.clientHeight,
+        clientWidth: document.documentElement.clientWidth,
+        scrollHeight: document.documentElement.scrollHeight,
+        scrollWidth: document.documentElement.scrollWidth,
+        toolbarFits: toolbar.scrollWidth <= toolbar.clientWidth + 1,
+        rangeFitsPanel: rangeRect.left >= panelRect.left - 1 && rangeRect.right <= panelRect.right + 1,
+        applyFitsPanel: applyRect.left >= panelRect.left - 1 && applyRect.right <= panelRect.right + 1,
+        offscreenControls,
+      }
+    })
+    responsiveCatalogMatrix.push({ ...size, ...metrics })
+    if (
+      metrics.scrollWidth > metrics.clientWidth + 1
+      || !metrics.toolbarFits
+      || !metrics.rangeFitsPanel
+      || !metrics.applyFitsPanel
+      || metrics.offscreenControls.length > 0
+      || (size.oneFrame && metrics.scrollHeight > metrics.clientHeight + 2)
+    ) {
+      throw new Error(`Responsive catalog layout failed: ${JSON.stringify({ size, metrics })}`)
+    }
+  }
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1366, 720))
+  await page.waitForTimeout(180)
+  await page.screenshot({ path: path.join(artifacts, 'electron-populated-catalog.png') })
 
   // A short laptop screen with a Huliwang connection notice is the densest
   // normal desktop state. It must stay in one view without turning Bước 1 or
@@ -346,16 +459,29 @@ try {
   await page.waitForTimeout(150)
   const shortViewportLayout = await page.evaluate(() => ({
     clientHeight: document.documentElement.clientHeight,
+    clientWidth: document.documentElement.clientWidth,
     scrollHeight: document.documentElement.scrollHeight,
+    scrollWidth: document.documentElement.scrollWidth,
     pageOverflow: getComputedStyle(document.documentElement).overflowY,
     sourceOverflow: getComputedStyle(document.querySelector('.source-panel')).overflowY,
     promptOverflow: getComputedStyle(document.querySelector('.prompt-panel')).overflowY,
+    offscreenControls: Array.from(document.querySelectorAll('button, input, select, textarea, summary'))
+      .filter((element) => {
+        if (!(element instanceof HTMLElement) || element.closest('.chapter-nav__list')) return false
+        const style = getComputedStyle(element)
+        const rect = element.getBoundingClientRect()
+        if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0 || rect.height === 0) return false
+        return rect.left < -1 || rect.right > window.innerWidth + 1
+      })
+      .map((element) => element.getAttribute('aria-label') || element.textContent?.trim().slice(0, 40) || element.tagName),
   }))
   if (
     shortViewportLayout.scrollHeight <= shortViewportLayout.clientHeight ||
+    shortViewportLayout.scrollWidth > shortViewportLayout.clientWidth + 1 ||
     !['auto', 'scroll'].includes(shortViewportLayout.pageOverflow) ||
     ['auto', 'scroll'].includes(shortViewportLayout.sourceOverflow) ||
-    ['auto', 'scroll'].includes(shortViewportLayout.promptOverflow)
+    ['auto', 'scroll'].includes(shortViewportLayout.promptOverflow) ||
+    shortViewportLayout.offscreenControls.length > 0
   ) {
     throw new Error(`Màn hình thấp không chuyển sang cuộn trang an toàn: ${JSON.stringify(shortViewportLayout)}`)
   }
@@ -374,6 +500,7 @@ try {
     screenshots: [
       path.join(artifacts, 'electron-desktop.png'),
       path.join(artifacts, 'electron-story-link.png'),
+      path.join(artifacts, 'electron-populated-catalog.png'),
       path.join(artifacts, 'electron-compact-notice.png'),
       path.join(artifacts, 'electron-dark.png'),
       path.join(artifacts, 'electron-chapter-expanded.png'),

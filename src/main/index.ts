@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage } from "electron";
 import path from "node:path";
+import { AiProviderManager } from "./ai/AiProviderManager.js";
 import { ChatGptWebAdapter } from "./chatgpt/ChatGptWebAdapter.js";
 import { GeminiTitleService } from "./gemini/GeminiTitleService.js";
 import { registerIpcHandlers } from "./ipc.js";
@@ -17,7 +18,7 @@ const isDevelopment = Boolean(devServerUrl);
 let mainWindow: BrowserWindow | undefined;
 let disposeIpc: (() => void) | undefined;
 let translator: TranslationJobRunner | undefined;
-let chatGpt: ChatGptWebAdapter | undefined;
+let chatGpt: AiProviderManager | undefined;
 let storySources: StorySourceService | undefined;
 let persistence: PersistenceService | undefined;
 let shutdownStarted = false;
@@ -41,14 +42,33 @@ async function bootstrap(): Promise<void> {
   const dataDirectory = app.getPath("userData");
   persistence = new PersistenceService(dataDirectory, safeStorage);
   const prompts = new PromptLoader(promptRoots());
-  chatGpt = new ChatGptWebAdapter({
+  const chatGptAdapter = new ChatGptWebAdapter({
     profileDirectory: path.join(dataDirectory, "chatgpt-browser-profile"),
     baseUrl: process.env.CHATGPT_BASE_URL?.trim() || "https://chatgpt.com/",
     headless: false,
     executablePath: process.env.CHATGPT_BROWSER_EXECUTABLE?.trim() || undefined,
   });
+  const kimiAdapter = new ChatGptWebAdapter({
+    provider: "kimi",
+    profileDirectory: path.join(dataDirectory, "kimi-browser-profile"),
+    baseUrl: process.env.KIMI_BASE_URL?.trim() || "https://www.kimi.ai/",
+    headless: false,
+    executablePath:
+      process.env.KIMI_BROWSER_EXECUTABLE?.trim()
+      || process.env.CHATGPT_BROWSER_EXECUTABLE?.trim()
+      || undefined,
+  });
+  chatGpt = new AiProviderManager({
+    initialProvider: await persistence.getAiProvider(),
+    chatgpt: chatGptAdapter,
+    kimi: kimiAdapter,
+    persistProvider: (provider) => persistence!.setAiProvider(provider),
+  });
   translator = new TranslationJobRunner({ chatGpt, persistence });
-  await translator.restorePersistedJobs();
+  // Restoring years of large checkpoints must not delay the first window.
+  // Start it in parallel; the runner coalesces any renderer discovery call
+  // with this same promise and full checkpoints remain available on demand.
+  const restoreJobs = translator.restorePersistedJobs();
   storySources = new StorySourceService({
     profileDirectory: path.join(dataDirectory, "story-source-browser-profile"),
     headless: false,
@@ -81,6 +101,7 @@ async function bootstrap(): Promise<void> {
   mainWindow.on("closed", () => {
     mainWindow = undefined;
   });
+  void restoreJobs.catch(() => undefined);
 }
 
 async function shutdown(): Promise<void> {
@@ -143,4 +164,3 @@ app.on("before-quit", (event) => {
     app.quit();
   });
 });
-

@@ -157,6 +157,9 @@ export function buildLocalizedHanRepairPrompt(
   const hanSample = input.hanSample?.trim()
     ? `\nKÝ TỰ HÁN CẦN LOẠI BỎ: ${input.hanSample.trim()}`
     : '';
+  const stillFaultyNotice = attempt > 1
+    ? '\nVẪN LỖI: Phản hồi trước chưa sửa đúng câu được gửi hoặc vẫn còn ký tự Hán. Hãy sửa lại chính xác các câu dưới đây.'
+    : '';
 
   const targetBlocks = targets
     .map((target) => `<CAU_CAN_SUA id="${target.targetId}">\n${target.sentence}\n</CAU_CAN_SUA>`)
@@ -165,7 +168,7 @@ export function buildLocalizedHanRepairPrompt(
     .map((target) => `<CAU_DA_SUA id="${target.targetId}">câu tiếng Việt đã sửa</CAU_DA_SUA>`)
     .join('\n');
 
-  return `${promptPrefix}\n\n---\nSỬA CỤC BỘ ${targets.length} CÂU LỖI (LẦN ${attempt})${hanSample}\n\nMỗi câu trong các thẻ CAU_CAN_SUA dưới đây có chữ Hán còn sót.\n- Sửa tất cả các câu, giữ nguyên ý nghĩa, giọng văn, tên riêng và dấu câu của từng câu.\n- Không viết lại bất kỳ nội dung nào ngoài các câu đã đưa.\n- Không thêm lời dẫn, giải thích, ghi chú, đánh số hoặc văn bản ngoài các thẻ trả lời.\n- Mỗi thẻ trả lời phải chứa đúng MỘT câu tiếng Việt đã sửa, không có chữ Hán.\n- Trả về đủ ${targets.length} thẻ CAU_DA_SUA, đúng mã id tương ứng, mỗi mã chỉ một lần, theo mẫu:\n${responseBlocks}\n\n${targetBlocks}\n\nChỉ trả về các thẻ CAU_DA_SUA đã sửa.`;
+  return `${promptPrefix}\n\n---\nSỬA CỤC BỘ ${targets.length} CÂU LỖI (LẦN ${attempt})${hanSample}${stillFaultyNotice}\n\nMỗi câu trong các thẻ CAU_CAN_SUA dưới đây có chữ Hán còn sót.\n- Sửa tất cả các câu, giữ nguyên ý nghĩa, giọng văn, tên riêng và dấu câu của từng câu.\n- Không viết lại bất kỳ nội dung nào ngoài các câu đã đưa.\n- Không thêm lời dẫn, giải thích, ghi chú, đánh số hoặc văn bản ngoài các thẻ trả lời.\n- Mỗi thẻ trả lời phải chứa đúng MỘT câu tiếng Việt đã sửa, không có chữ Hán.\n- Trả về đủ ${targets.length} thẻ CAU_DA_SUA, đúng mã id tương ứng, mỗi mã chỉ một lần, theo mẫu:\n${responseBlocks}\n\n${targetBlocks}\n\nChỉ trả về các thẻ CAU_DA_SUA đã sửa.`;
 }
 
 export const buildRepairPrompt = buildRetryPrompt;

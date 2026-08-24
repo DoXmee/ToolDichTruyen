@@ -2,7 +2,8 @@ import { EventEmitter } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
 import { access } from "node:fs/promises";
 import path from "node:path";
-import type { BrowserContext, Locator, Page } from "playwright-core";
+import type { BrowserContext, Locator, Page, Response } from "playwright-core";
+import type { AiProvider } from "../../shared/types.js";
 import {
   FileConversationStateStore,
   VolatileConversationStateStore,
@@ -16,7 +17,7 @@ import {
   createOwnershipMarker,
   ownershipMarkerHash,
 } from "./ownershipMarker.js";
-import { CHATGPT_SELECTORS } from "./selectors.js";
+import { CHATGPT_SELECTORS, KIMI_SELECTORS, type ChatWebSelectors } from "./selectors.js";
 
 export type ChatGptWebStatus =
   | "closed"
@@ -116,6 +117,32 @@ export class ChatGptConversationCleanupUnavailableError extends Error {
  * never replays a translation prompt.
  */
 const MAX_TOOL_CONVERSATION_CLEANUP_ATTEMPTS = 2;
+// Kimi renders the anonymous composer before its login controls finish
+// hydrating. Without this short confirmation window, a signed-out page can be
+// reported as ready and fail only when the runner creates its first chat.
+const KIMI_AUTHENTICATION_STABILIZATION_MS = 1_500;
+const KIMI_CAPACITY_RETRY_INTERVAL_MS = 15_000;
+const KIMI_CONCURRENCY_DIALOG_SELECTORS = [
+  '[role="dialog"]:has-text("already have several chats open")',
+  '[role="dialog"]:has-text("Please wait for them to finish")',
+  '.n-modal:has-text("already have several chats open")',
+] as const;
+const KIMI_CONCURRENCY_DISMISS_SELECTORS = [
+  '[role="dialog"] button:has-text("Got it")',
+  '.n-modal button:has-text("Got it")',
+] as const;
+const KIMI_INSTANT_HIGH_SELECTORS = [
+  'text=Instant High',
+  ':text-is("Instant High")',
+] as const;
+const KIMI_THINKING_EFFORT_SELECTORS = [
+  'text=Thinking effort',
+  ':text-is("Thinking effort")',
+] as const;
+const KIMI_STANDARD_EFFORT_SELECTORS = [
+  ':text-is("Standard")',
+  'text=Standard',
+] as const;
 
 interface BrowserFactoryOptions {
   profileDirectory: string;
@@ -139,6 +166,7 @@ export type ManualLoginFactory = (options: {
 
 export interface ChatGptWebAdapterOptions {
   profileDirectory: string;
+  provider?: AiProvider;
   baseUrl?: string;
   headless?: boolean;
   executablePath?: string;
@@ -174,7 +202,11 @@ function isAuthenticationUrl(url: string): boolean {
   return /\/(?:auth|login|signup)(?:\/|\?|$)/iu.test(url);
 }
 
-function conversationFromUrl(candidate: string, baseUrl: string): ToolCreatedConversation | undefined {
+function conversationFromUrl(
+  candidate: string,
+  baseUrl: string,
+  provider: AiProvider = "chatgpt",
+): ToolCreatedConversation | undefined {
   let parsed: URL;
   let base: URL;
   try {
@@ -184,12 +216,15 @@ function conversationFromUrl(candidate: string, baseUrl: string): ToolCreatedCon
     return undefined;
   }
   if (parsed.origin !== base.origin || parsed.username || parsed.password) return undefined;
-  const match = /^\/c\/([a-zA-Z0-9_-]{8,128})\/?$/u.exec(parsed.pathname);
+  const pattern = provider === "kimi"
+    ? /^\/(?:chat|c)\/([a-zA-Z0-9_-]{8,128})\/?$/u
+    : /^\/c\/([a-zA-Z0-9_-]{8,128})\/?$/u;
+  const match = pattern.exec(parsed.pathname);
   const id = match?.[1];
   if (!id) return undefined;
   return {
     id,
-    url: new URL(`/c/${id}`, base.origin).toString(),
+    url: new URL(parsed.pathname.replace(/\/+$/u, ""), base.origin).toString(),
     recordedAt: new Date().toISOString(),
     ownershipHashes: [],
   };
@@ -199,8 +234,9 @@ function isSameConversationUrl(
   candidate: string,
   expected: ToolCreatedConversation,
   baseUrl: string,
+  provider: AiProvider = "chatgpt",
 ): boolean {
-  const parsed = conversationFromUrl(candidate, baseUrl);
+  const parsed = conversationFromUrl(candidate, baseUrl, provider);
   return parsed?.id === expected.id && parsed.url === expected.url;
 }
 
@@ -356,6 +392,10 @@ async function defaultManualLoginFactory(options: {
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-default-apps",
+      // Edge may otherwise keep the profile process alive after its last
+      // visible login window closes. The adapter used to mistake that
+      // background process for an unfinished login forever.
+      "--disable-background-mode",
       options.url,
     ],
     {
@@ -437,6 +477,8 @@ export class ChatGptWebAdapter {
   private readonly browserFactory: BrowserFactory;
   private readonly manualLoginFactory?: ManualLoginFactory;
   private readonly baseUrl: string;
+  private readonly provider: AiProvider;
+  private readonly selectors: ChatWebSelectors;
   private readonly conversationState: ConversationStateStore;
   private readonly conversationUrlTimeoutMs: number;
   private context?: BrowserContext;
@@ -461,13 +503,18 @@ export class ChatGptWebAdapter {
       ? undefined
       : options.manualLoginFactory ?? (options.browserFactory ? undefined : defaultManualLoginFactory);
     this.baseUrl = options.baseUrl ?? "https://chatgpt.com/";
+    this.provider = options.provider === "kimi" ? "kimi" : "chatgpt";
+    this.selectors = this.provider === "kimi" ? KIMI_SELECTORS : CHATGPT_SELECTORS;
     this.conversationState = options.conversationStateStore === false || (
       options.conversationStateStore === undefined && options.browserFactory !== undefined
     )
       ? new VolatileConversationStateStore()
       : options.conversationStateStore
         ?? new FileConversationStateStore(
-          path.join(path.dirname(options.profileDirectory), "chatgpt-tool-conversation.json"),
+          path.join(
+            path.dirname(options.profileDirectory),
+            this.provider === "kimi" ? "kimi-tool-conversation.json" : "chatgpt-tool-conversation.json",
+          ),
         );
     this.conversationUrlTimeoutMs = Math.min(
       30_000,
@@ -486,11 +533,28 @@ export class ChatGptWebAdapter {
 
   public async openLogin(): Promise<ChatGptStatusSnapshot> {
     if (this.manualLogin?.isRunning()) {
-      this.setStatus(
-        "login-required",
-        "Hãy đăng nhập ChatGPT trong cửa sổ Edge bình thường, sau đó ĐÓNG cửa sổ Edge và bấm Kiểm tra kết nối.",
-      );
-      return this.status();
+      // This method is also the explicit "Kiểm tra kết nối" action.
+      // Once the user has finished in the normal Edge window, its root process
+      // may remain alive in background mode even though the window was closed.
+      // Merely checking `isRunning()` trapped the UI in login-required and
+      // never gave the controlled browser a chance to verify the saved cookie.
+      // Close only this tool-owned manual process, then hand the same persistent
+      // profile back to Playwright for an actual authenticated DOM check.
+      const manualLogin = this.manualLogin;
+      this.manualLogin = undefined;
+      this.setStatus("opening", "Đang xác minh phiên ChatGPT đã đăng nhập.");
+      await manualLogin.close().catch(() => undefined);
+      if (manualLogin.isRunning()) {
+        this.manualLogin = manualLogin;
+        this.setStatus(
+          "login-required",
+          "Edge đăng nhập do tool mở vẫn chưa đóng hoàn toàn. Hãy đóng cửa sổ rồi bấm Kiểm tra kết nối lại.",
+        );
+        return this.status();
+      }
+      // Let Edge release its profile lock before launching a persistent
+      // automation context against the exact same directory.
+      await delay(250);
     }
     this.manualLogin = undefined;
 
@@ -541,7 +605,7 @@ export class ChatGptWebAdapter {
     do {
       if (
         isAuthenticationUrl(this.page.url()) ||
-        (await firstVisible(this.page, CHATGPT_SELECTORS.loginLink))
+        (await firstVisible(this.page, this.selectors.loginLink))
       ) {
         this.setStatus("login-required", "Hãy đăng nhập ChatGPT trong cửa sổ trình duyệt vừa mở.");
         return this.status();
@@ -550,7 +614,17 @@ export class ChatGptWebAdapter {
       // landing page as well. Authentication indicators must therefore win
       // over composer detection, otherwise an anonymous page is reported as a
       // connected account and the persisted session is never actually proven.
-      if (await firstVisible(this.page, CHATGPT_SELECTORS.composer)) {
+      if (await firstVisible(this.page, this.selectors.composer)) {
+        if (this.provider === "kimi") {
+          await delay(KIMI_AUTHENTICATION_STABILIZATION_MS);
+          if (
+            isAuthenticationUrl(this.page.url())
+            || (await firstVisible(this.page, this.selectors.loginLink))
+          ) {
+            this.setStatus("login-required", "Hãy đăng nhập ChatGPT trong cửa sổ trình duyệt vừa mở.");
+            return this.status();
+          }
+        }
         this.setStatus(this.operationInProgress ? "busy" : "ready");
         return this.status();
       }
@@ -581,7 +655,14 @@ export class ChatGptWebAdapter {
     // "New chat" link, causing Playwright's click action to time out even
     // though the element is present. Navigating to the root URL is ChatGPT's
     // stable new-conversation route and avoids layout-specific pointer events.
-    await this.resetToFreshConversationRoot(page);
+    await this.resetToFreshConversationRoot(page, {
+      // Deleting a previous chat may leave its virtualized turns in the DOM
+      // briefly even after ChatGPT redirects to `/`. Reload once in that case
+      // so the first response of the new chat cannot be confused with stale
+      // content. A checkpoint with no previous chat keeps its already-ready
+      // root and avoids the account-chooser regression.
+      forceNavigation: Boolean(previousConversation),
+    });
     // Only this explicit lifecycle operation may authorize one recovery from a
     // surprise /c navigation before the first prompt. A direct send opened on
     // a personal chat remains fail-closed and never navigates or adopts it.
@@ -670,6 +751,7 @@ export class ChatGptWebAdapter {
     throwIfAborted(options.signal);
     const page = this.requirePage();
     const activeConversation = await this.prepareToolConversationForSend(page);
+    if (this.provider === "kimi") await this.ensureKimiStandardThinkingEffort(page);
     const ownershipMarker = createOwnershipMarker();
     const submittedMessage = appendOwnershipMetadata(message, ownershipMarker);
     if (submittedMessage.length > 200_000) {
@@ -689,13 +771,25 @@ export class ChatGptWebAdapter {
     };
     options.signal?.addEventListener("abort", onAbort, { once: true });
     let messageSubmitted = false;
+    const failedKimiResponses: string[] = [];
+    const onKimiResponse = (response: Response): void => {
+      if (this.provider !== "kimi" || response.status() < 400) return;
+      try {
+        const url = new URL(response.url());
+        if (!url.hostname.endsWith("kimi.ai")) return;
+        failedKimiResponses.push(`${response.status()} ${url.pathname}`);
+      } catch {
+        failedKimiResponses.push(String(response.status()));
+      }
+    };
+    if (this.provider === "kimi") page.on("response", onKimiResponse);
 
     try {
       throwIfAborted(options.signal);
       const baseline = await this.captureAssistantTurnBaseline(page);
       throwIfAborted(options.signal);
       this.assertSafeSendDestination(page, activeConversation);
-      const composer = await firstVisible(page, CHATGPT_SELECTORS.composer);
+      const composer = await firstVisible(page, this.selectors.composer);
       if (!composer) throw new Error("Không tìm thấy ô nhập ChatGPT. Giao diện web có thể đã thay đổi.");
       // A transient sidebar, tooltip or onboarding layer can intercept pointer
       // events while the editor itself remains fillable. Clicking is only a
@@ -712,7 +806,7 @@ export class ChatGptWebAdapter {
 
       throwIfAborted(options.signal);
       this.assertSafeSendDestination(page, activeConversation);
-      const sendButton = await firstVisible(page, CHATGPT_SELECTORS.sendButton);
+      const sendButton = await firstVisible(page, this.selectors.sendButton);
       if (sendButton && (await sendButton.isEnabled().catch(() => false))) {
         messageSubmitted = await this.clickAtSafeSendDestination(sendButton, activeConversation)
           .then(() => true, () => false);
@@ -723,12 +817,26 @@ export class ChatGptWebAdapter {
         await composer.press("Enter");
         messageSubmitted = true;
       }
+      if (messageSubmitted && this.provider === "kimi") {
+        messageSubmitted = await this.waitForKimiSubmissionCapacity(
+          page,
+          composer,
+          activeConversation,
+          timeoutMs,
+          options.signal,
+        );
+      }
       if (messageSubmitted) this.freshConversationRecoveryArmed = false;
       // ChatGPT assigns the conversation ID only after the first prompt is
       // submitted. Persist only a verified /c/{id} URL, before waiting for the
       // assistant, so a response timeout still leaves the chat deletable.
+      let submittedConversation: ToolCreatedConversation;
       try {
-        await this.rememberSubmittedConversation(page, activeConversation, ownershipMarker);
+        submittedConversation = await this.rememberSubmittedConversation(
+          page,
+          activeConversation,
+          ownershipMarker,
+        );
       } catch (error) {
         throw new ChatGptConversationVerificationError(
           "Tin nhắn đã được gửi nhưng tool không xác minh được ID và quyền sở hữu chat mới. " +
@@ -736,7 +844,15 @@ export class ChatGptWebAdapter {
           { cause: error },
         );
       }
-      return await this.waitForLatestResponse(page, baseline, timeoutMs, options.signal);
+      return await this.waitForLatestResponse(
+        page,
+        baseline,
+        timeoutMs,
+        options.signal,
+        failedKimiResponses,
+        submittedConversation,
+        ownershipMarkerHash(ownershipMarker),
+      );
     } catch (error) {
       // A timeout or DOM failure after submission may leave ChatGPT streaming.
       // Stop it before the runner retries, otherwise the next prompt can race
@@ -750,6 +866,9 @@ export class ChatGptWebAdapter {
       }
       throw error;
     } finally {
+      if (this.provider === "kimi" && typeof page.off === "function") {
+        page.off("response", onKimiResponse);
+      }
       options.signal?.removeEventListener("abort", onAbort);
       this.operationInProgress = false;
       if (this.context && this.page && !this.page.isClosed()) {
@@ -774,10 +893,74 @@ export class ChatGptWebAdapter {
     }
   }
 
+  /**
+   * Kimi accepts the click before showing its concurrent-task limit dialog.
+   * At that point the source is still in the composer and no message exists.
+   * Dismiss and retry the same filled composer without consuming a translation
+   * retry or creating duplicate chats.
+   */
+  private async waitForKimiSubmissionCapacity(
+    page: Page,
+    composer: Locator,
+    conversation: ToolCreatedConversation | undefined,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      await delay(750, signal);
+      const capacityDialog = await firstVisible(page, KIMI_CONCURRENCY_DIALOG_SELECTORS);
+      if (!capacityDialog) return true;
+
+      const dismiss = await firstVisible(page, KIMI_CONCURRENCY_DISMISS_SELECTORS);
+      if (dismiss) await dismiss.click().catch(() => undefined);
+      if (Date.now() >= deadline) break;
+      await delay(
+        Math.min(KIMI_CAPACITY_RETRY_INTERVAL_MS, Math.max(0, deadline - Date.now())),
+        signal,
+      );
+      throwIfAborted(signal);
+      this.assertSafeSendDestination(page, conversation);
+      const sendButton = await firstVisible(page, this.selectors.sendButton);
+      if (sendButton && (await sendButton.isEnabled().catch(() => false))) {
+        await this.clickAtSafeSendDestination(sendButton, conversation);
+      } else {
+        await composer.press("Enter");
+      }
+    } while (Date.now() < deadline);
+    throw new Error(
+      `Kimi AI đang xử lý quá nhiều chat đồng thời và chưa nhận nội dung sau ${Math.round(timeoutMs / 1000)} giây.`,
+    );
+  }
+
+  /**
+   * Kimi persists its reasoning effort in the browser profile.  High effort
+   * can turn a normal translation into a multi-minute background task.  The
+   * Standard option is available in the same Instant mode and is the closest
+   * equivalent to ChatGPT's ordinary translation flow.
+   */
+  private async ensureKimiStandardThinkingEffort(page: Page): Promise<void> {
+    const highMode = await firstVisible(page, KIMI_INSTANT_HIGH_SELECTORS);
+    if (!highMode) return;
+    await highMode.click({ timeout: 5_000 });
+    await delay(750);
+    const effort = await firstVisible(page, KIMI_THINKING_EFFORT_SELECTORS);
+    if (!effort) throw new Error("Không mở được mục Thinking effort của Kimi AI.");
+    await effort.click({ timeout: 5_000 });
+    await delay(750);
+    const standard = await firstVisible(page, KIMI_STANDARD_EFFORT_SELECTORS);
+    if (!standard) throw new Error("Không tìm thấy chế độ Standard của Kimi AI.");
+    await standard.click({ timeout: 5_000 });
+    await delay(500);
+    if (await firstVisible(page, KIMI_INSTANT_HIGH_SELECTORS)) {
+      throw new Error("Kimi AI chưa chuyển từ High sang Standard.");
+    }
+  }
+
   private async stopActiveGeneration(): Promise<void> {
     const page = this.page;
     if (!page || page.isClosed()) return;
-    const stop = await firstVisible(page, CHATGPT_SELECTORS.stopButton);
+    const stop = await firstVisible(page, this.selectors.stopButton);
     // No visible Stop is the normal already-settled state.
     if (!stop) return;
     try {
@@ -792,7 +975,7 @@ export class ChatGptWebAdapter {
     const deadline = Date.now() + 3_000;
     do {
       if (page.isClosed()) return;
-      if (!await firstVisible(page, CHATGPT_SELECTORS.stopButton)) return;
+      if (!await firstVisible(page, this.selectors.stopButton)) return;
       if (Date.now() < deadline) await delay(150);
     } while (Date.now() < deadline);
     throw new ChatGptGenerationStopError(
@@ -1060,9 +1243,19 @@ export class ChatGptWebAdapter {
   private async prepareToolConversationForSend(
     page: Page,
   ): Promise<ToolCreatedConversation | undefined> {
-    const stored = await this.loadVerifiedToolConversation();
+    let stored = await this.loadVerifiedToolConversation();
+    if (stored && this.provider === "kimi") {
+      // Kimi's current web client can return to the landing page after a
+      // completed background answer and rejects a second submission to that
+      // saved chat.  Every Kimi segment already carries the complete base
+      // prompt, so start it in a fresh root and forget only the local pointer;
+      // the finished remote chat remains untouched.
+      await this.clearActiveToolConversationPointer();
+      stored = undefined;
+      await this.resetToFreshConversationRoot(page, { forceNavigation: true });
+    }
     if (stored) {
-      if (!isSameConversationUrl(page.url(), stored, this.baseUrl)) {
+      if (!isSameConversationUrl(page.url(), stored, this.baseUrl, this.provider)) {
         // The user may have opened a personal chat while a multi-segment job
         // was running. Return to the exact tool-owned chat; never adopt the
         // currently visible /c/{id} as tool-owned.
@@ -1116,8 +1309,24 @@ export class ChatGptWebAdapter {
     }
   }
 
-  private async resetToFreshConversationRoot(page: Page): Promise<void> {
-    await page.goto(this.baseUrl, { waitUntil: "domcontentloaded", timeout: 45_000 });
+  private async resetToFreshConversationRoot(
+    page: Page,
+    options: { forceNavigation?: boolean } = {},
+  ): Promise<void> {
+    // `ensureReady()` has just authenticated the current page. Reloading an
+    // already-clean root is both redundant and harmful: ChatGPT's current
+    // account flow can show its "welcome back / choose an account" overlay on
+    // that reload even though the existing page was fully signed in. This was
+    // especially visible when resuming a checkpoint: connection verification
+    // succeeded, then the unconditional navigation immediately turned the
+    // same session into `login-required`.
+    //
+    // Keep the verified root in place. Navigation remains mandatory when the
+    // page is a conversation (owned, abandoned, or personal), so the existing
+    // fail-closed destination checks are unchanged.
+    if (options.forceNavigation || !isBaseLandingUrl(page.url(), this.baseUrl)) {
+      await page.goto(this.baseUrl, { waitUntil: "domcontentloaded", timeout: 45_000 });
+    }
     if (!isBaseLandingUrl(page.url(), this.baseUrl)) {
       throw new ChatGptNonRetryableSafetyError(
         "ChatGPT không ở lại trang chat mới sau khi tool mở lại trang gốc. " +
@@ -1154,7 +1363,7 @@ export class ChatGptWebAdapter {
       );
     }
     if (!stored) return undefined;
-    const verified = conversationFromUrl(stored.url, this.baseUrl);
+    const verified = conversationFromUrl(stored.url, this.baseUrl, this.provider);
     if (
       !verified ||
       verified.id !== stored.id ||
@@ -1175,7 +1384,7 @@ export class ChatGptWebAdapter {
     page: Page,
     conversation: ToolCreatedConversation,
   ): void {
-    if (!isSameConversationUrl(page.url(), conversation, this.baseUrl)) {
+    if (!isSameConversationUrl(page.url(), conversation, this.baseUrl, this.provider)) {
       throw new Error(
         "Trang ChatGPT đã rời khỏi đúng cuộc chat do tool tạo. Đã dừng để không xóa nhầm cuộc chat khác.",
       );
@@ -1232,7 +1441,7 @@ export class ChatGptWebAdapter {
     const deadline = Date.now() + 15_000;
     do {
       this.assertExactToolConversation(page, conversation);
-      for (const selector of CHATGPT_SELECTORS.toolConversationUserMessages) {
+      for (const selector of this.selectors.toolConversationUserMessages) {
         const messages = page.locator(selector);
         for (let index = 0; index < await messages.count(); index += 1) {
           const text = await messages.nth(index).innerText().catch(() => "");
@@ -1253,11 +1462,25 @@ export class ChatGptWebAdapter {
     submittedOwnershipHash: string,
   ): Promise<void> {
     const deadline = Date.now() + this.conversationUrlTimeoutMs;
-    const selector = CHATGPT_SELECTORS.toolConversationUserMessages.join(", ");
     const expectedHashes = new Set([submittedOwnershipHash]);
     do {
       this.assertExactToolConversation(page, conversation);
-      const messages = page.locator(selector);
+      // Kimi exposes one logical user turn through several nested aliases
+      // (`.chat-content-item-user`, `.user-content`, `.segment-user`). A
+      // combined selector therefore returns the same turn three times. Use
+      // the first populated canonical selector for Kimi; ChatGPT keeps its
+      // historical combined-selector check because those selectors are
+      // mutually exclusive in its DOM.
+      let messages = page.locator(this.selectors.toolConversationUserMessages.join(", "));
+      if (this.provider === "kimi") {
+        for (const candidateSelector of this.selectors.toolConversationUserMessages) {
+          const candidate = page.locator(candidateSelector);
+          if (await candidate.count() > 0) {
+            messages = candidate;
+            break;
+          }
+        }
+      }
       const count = await messages.count();
       if (count > 1) {
         throw new Error(
@@ -1283,7 +1506,7 @@ export class ChatGptWebAdapter {
   ): Promise<void> {
     const deadline = Date.now() + this.conversationUrlTimeoutMs;
     const expectedHashes = new Set([submittedOwnershipHash]);
-    const messages = page.locator(CHATGPT_SELECTORS.toolConversationUserMessages.join(", "));
+    const messages = page.locator(this.selectors.toolConversationUserMessages.join(", "));
     do {
       this.assertExactToolConversation(page, conversation);
       for (let index = 0; index < await messages.count(); index += 1) {
@@ -1302,7 +1525,7 @@ export class ChatGptWebAdapter {
     conversation: ToolCreatedConversation,
   ): Promise<void> {
     await page.goto(conversation.url, { waitUntil: "domcontentloaded", timeout: 45_000 });
-    if (!isSameConversationUrl(page.url(), conversation, this.baseUrl)) {
+    if (!isSameConversationUrl(page.url(), conversation, this.baseUrl, this.provider)) {
       const status = await this.refreshStatus(5_000);
       if (status.status === "ready" && isBaseLandingUrl(page.url(), this.baseUrl)) {
         // Recovery for a crash after ChatGPT deleted the target but before the
@@ -1323,7 +1546,7 @@ export class ChatGptWebAdapter {
       this.sessionVerifiedToolConversationId = conversation.id;
     }
 
-    const menu = await waitForUniqueVisible(page, CHATGPT_SELECTORS.currentConversationMenu, 15_000);
+    const menu = await waitForUniqueVisible(page, this.selectors.currentConversationMenu, 15_000);
     if (!menu) {
       throw new ChatGptConversationCleanupUnavailableError(
         "menu",
@@ -1342,7 +1565,7 @@ export class ChatGptWebAdapter {
 
     const deleteAction = await waitForUniqueVisible(
       page,
-      CHATGPT_SELECTORS.deleteCurrentConversation,
+      this.selectors.deleteCurrentConversation,
       5_000,
     );
     if (!deleteAction) {
@@ -1361,7 +1584,7 @@ export class ChatGptWebAdapter {
 
     const confirm = await waitForUniqueVisible(
       page,
-      CHATGPT_SELECTORS.confirmDeleteConversation,
+      this.selectors.confirmDeleteConversation,
       5_000,
     );
     if (!confirm) {
@@ -1381,7 +1604,7 @@ export class ChatGptWebAdapter {
 
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
-      if (!isSameConversationUrl(page.url(), conversation, this.baseUrl)) {
+      if (!isSameConversationUrl(page.url(), conversation, this.baseUrl, this.provider)) {
         const status = await this.refreshStatus(5_000);
         if (status.status === "ready" && isBaseLandingUrl(page.url(), this.baseUrl)) return;
         throw new Error(
@@ -1400,12 +1623,20 @@ export class ChatGptWebAdapter {
     page: Page,
     expected: ToolCreatedConversation | undefined,
     submittedOwnershipMarker: string,
-  ): Promise<void> {
+  ): Promise<ToolCreatedConversation> {
     const deadline = Date.now() + this.conversationUrlTimeoutMs;
     const submittedOwnershipHash = ownershipMarkerHash(submittedOwnershipMarker);
-    do {
-      const conversation = conversationFromUrl(page.url(), this.baseUrl);
-      if (conversation) {
+    let kimiCandidate: ToolCreatedConversation | undefined;
+    let observerPage: Page | undefined;
+    try {
+      do {
+        const currentConversation = conversationFromUrl(page.url(), this.baseUrl, this.provider);
+        if (currentConversation && this.provider === "kimi") kimiCandidate = currentConversation;
+        const conversation = currentConversation ?? kimiCandidate;
+        if (!conversation) {
+          if (Date.now() < deadline) await delay(200);
+          continue;
+        }
         if (expected && conversation.id !== expected.id) {
           throw new Error(
             "ChatGPT đã chuyển sang ID khác sau khi gửi. Tool không ghi đè bản ghi để tránh nhận nhầm chat cá nhân.",
@@ -1417,47 +1648,75 @@ export class ChatGptWebAdapter {
             "ID chat vừa gửi không khớp ID do tool đã lưu. Tool đã giữ nguyên bản ghi cũ để tránh xóa nhầm.",
           );
         }
-        if (!expected && !persisted) {
-          await this.verifyFirstSubmittedConversation(page, conversation, submittedOwnershipHash);
-        } else {
-          const verifiedOwner = persisted ?? expected;
-          if (!verifiedOwner) {
-            throw new Error("Không còn state sở hữu chat để xác minh tin nhắn vừa gửi.");
+        let verificationPage = page;
+        if (!isSameConversationUrl(page.url(), conversation, this.baseUrl, this.provider)) {
+          if (this.provider !== "kimi") this.assertExactToolConversation(page, conversation);
+          observerPage ??= await page.context().newPage();
+          await observerPage.goto(conversation.url, {
+            waitUntil: "domcontentloaded",
+            timeout: 45_000,
+          }).catch(() => undefined);
+          verificationPage = observerPage;
+        }
+        try {
+          if (!expected && !persisted) {
+            await this.verifyFirstSubmittedConversation(
+              verificationPage,
+              conversation,
+              submittedOwnershipHash,
+            );
+          } else {
+            const verifiedOwner = persisted ?? expected;
+            if (!verifiedOwner) {
+              throw new Error("Không còn state sở hữu chat để xác minh tin nhắn vừa gửi.");
+            }
+            if (this.sessionVerifiedToolConversationId !== verifiedOwner.id) {
+              await this.verifyToolConversationOwnership(verificationPage, verifiedOwner);
+              this.sessionVerifiedToolConversationId = verifiedOwner.id;
+            }
+            await this.verifySubmittedOwnershipMarker(
+              verificationPage,
+              conversation,
+              submittedOwnershipHash,
+            );
           }
-          if (this.sessionVerifiedToolConversationId !== verifiedOwner.id) {
-            await this.verifyToolConversationOwnership(page, verifiedOwner);
-            this.sessionVerifiedToolConversationId = verifiedOwner.id;
+        } catch (error) {
+          if (this.provider === "kimi" && Date.now() < deadline) {
+            await delay(300);
+            continue;
           }
-          await this.verifySubmittedOwnershipMarker(page, conversation, submittedOwnershipHash);
+          throw error;
         }
         const priorOwnershipHashes = persisted?.ownershipHashes ?? expected?.ownershipHashes ?? [];
         const ownershipHashes = [
           ...priorOwnershipHashes.filter((hash) => hash !== submittedOwnershipHash),
           submittedOwnershipHash,
         ].slice(-MAX_CONVERSATION_OWNERSHIP_HASHES);
-        await this.conversationState.save({
+        const savedConversation = {
           ...conversation,
           recordedAt: persisted?.recordedAt ?? expected?.recordedAt ?? conversation.recordedAt,
           ownershipHashes,
-        });
+        };
+        await this.conversationState.save(savedConversation);
         // The just-submitted marker was found in the current DOM and the
         // resulting /c/{id} matched the expected URL. Keep that proof only in
         // memory: a later app/browser restart deliberately has to re-verify
         // from the page before it can use or delete this conversation.
         this.sessionVerifiedToolConversationId = conversation.id;
-        return;
-      }
-      if (Date.now() < deadline) await delay(200);
-    } while (Date.now() < deadline);
-    throw new Error(
-      "Tin nhắn đã được gửi nhưng ChatGPT không cấp URL /c/{id} hợp lệ. " +
-      "Tool đã dừng vì không thể ghi nhớ an toàn cuộc chat để xóa ở lần sau.",
-    );
+        return savedConversation;
+      } while (Date.now() < deadline);
+      throw new Error(
+        "Tin nhắn đã được gửi nhưng ChatGPT không cấp URL /c/{id} hợp lệ. " +
+        "Tool đã dừng vì không thể ghi nhớ an toàn cuộc chat để xóa ở lần sau.",
+      );
+    } finally {
+      await observerPage?.close().catch(() => undefined);
+    }
   }
 
   private async captureAssistantTurnBaseline(page: Page): Promise<AssistantTurnBaseline> {
     const messages = new Map<string, { count: number; latestTurnOrdinal?: number }>();
-    for (const selector of CHATGPT_SELECTORS.assistantMessages) {
+    for (const selector of this.selectors.assistantMessages) {
       const locator = page.locator(selector);
       const count = await locator.count();
       const latestTurnOrdinal = count > 0
@@ -1485,8 +1744,10 @@ export class ChatGptWebAdapter {
         throw new Error("ChatGPT đã rời trang chat mới trước khi tool gửi nội dung.");
       }
       const [userCount, assistantCount] = await Promise.all([
-        page.locator('[data-message-author-role="user"]').count().catch(() => Number.POSITIVE_INFINITY),
-        page.locator('[data-message-author-role="assistant"]').count().catch(() => Number.POSITIVE_INFINITY),
+        page.locator(this.selectors.toolConversationUserMessages.join(", ")).count()
+          .catch(() => Number.POSITIVE_INFINITY),
+        page.locator(this.selectors.assistantMessages.join(", ")).count()
+          .catch(() => Number.POSITIVE_INFINITY),
       ]);
       if (userCount === 0 && assistantCount === 0) return;
       if (Date.now() < deadline) await delay(200);
@@ -1498,7 +1759,7 @@ export class ChatGptWebAdapter {
 
   private async assistantTurnOrdinal(messageLocator: Locator): Promise<number | undefined> {
     const turns = messageLocator.locator(
-      CHATGPT_SELECTORS.assistantTurnContainerFromMessage[0],
+      this.selectors.assistantTurnContainerFromMessage[0]!,
     );
     for (let index = 0; index < await turns.count(); index += 1) {
       const testId = await turns.nth(index).getAttribute("data-testid").catch(() => null);
@@ -1511,11 +1772,11 @@ export class ChatGptWebAdapter {
   private async responseTurnHasVisibleCompletionAction(
     responseLocator: Locator,
   ): Promise<boolean> {
-    for (const turnSelector of CHATGPT_SELECTORS.assistantTurnContainerFromMessage) {
+    for (const turnSelector of this.selectors.assistantTurnContainerFromMessage) {
       const turns = responseLocator.locator(turnSelector);
       for (let turnIndex = 0; turnIndex < await turns.count(); turnIndex += 1) {
         const turn = turns.nth(turnIndex);
-        for (const actionSelector of CHATGPT_SELECTORS.assistantTurnCompletionAction) {
+        for (const actionSelector of this.selectors.assistantTurnCompletionAction) {
           const actions = turn.locator(actionSelector);
           for (let actionIndex = 0; actionIndex < await actions.count(); actionIndex += 1) {
             if (await actions.nth(actionIndex).isVisible().catch(() => false)) return true;
@@ -1531,48 +1792,174 @@ export class ChatGptWebAdapter {
     baseline: AssistantTurnBaseline,
     timeoutMs: number,
     signal?: AbortSignal,
+    failedKimiResponses: readonly string[] = [],
+    submittedConversation?: ToolCreatedConversation,
+    submittedOwnershipHash?: string,
   ): Promise<string> {
     const deadline = Date.now() + timeoutMs;
     let responseLocator: Locator | undefined;
+    let responsePage = page;
+    let selectedResponseSelector = "";
     let previousText = "";
     let stableChecks = 0;
+    let observerPage: Page | undefined;
+    let observerVerified = false;
+    let nextObserverRefreshAt = Date.now() + 30_000;
 
-    while (Date.now() < deadline) {
-      if (signal?.aborted) throw signal.reason ?? new Error("Đã hủy thao tác.");
-      for (const selector of CHATGPT_SELECTORS.assistantMessages) {
-        const locator = page.locator(selector);
-        const count = await locator.count();
-        if (count === 0) continue;
-        const prior = baseline.messages.get(selector) ?? { count: 0 };
-        const candidate = locator.last();
-        const latestTurnOrdinal = await this.assistantTurnOrdinal(candidate);
-        const ordinalAdvanced = latestTurnOrdinal !== undefined
-          && prior.latestTurnOrdinal !== undefined
-          && latestTurnOrdinal > prior.latestTurnOrdinal;
-        if (count > prior.count || ordinalAdvanced) {
-          responseLocator = candidate;
-          break;
+    try {
+      while (Date.now() < deadline) {
+        if (signal?.aborted) throw signal.reason ?? new Error("Đã hủy thao tác.");
+
+        if (
+          this.provider === "kimi"
+          && submittedConversation
+          && submittedOwnershipHash
+          && Date.now() >= nextObserverRefreshAt
+        ) {
+          observerPage ??= await page.context().newPage();
+          await observerPage.goto(submittedConversation.url, {
+            waitUntil: "domcontentloaded",
+            timeout: 45_000,
+          }).catch(() => undefined);
+          observerVerified = false;
+          if (isSameConversationUrl(
+            observerPage.url(),
+            submittedConversation,
+            this.baseUrl,
+            this.provider,
+          )) {
+            observerVerified = await this.verifySubmittedOwnershipMarker(
+              observerPage,
+              submittedConversation,
+              submittedOwnershipHash,
+            ).then(() => true, () => false);
+          }
+          nextObserverRefreshAt = Date.now() + 10_000;
         }
-      }
 
-      if (responseLocator) {
-        const text = (await responseLocator.innerText().catch(() => "")).trim();
-        const stopButtonVisible = Boolean(await firstVisible(page, CHATGPT_SELECTORS.stopButton));
-        const responseComplete = !stopButtonVisible || (
-          await this.responseTurnHasVisibleCompletionAction(responseLocator)
-        );
-        if (text && text === previousText && responseComplete) stableChecks += 1;
-        else stableChecks = 0;
-        previousText = text;
-        if (text && stableChecks >= 3) return text;
-
-        if (responseComplete && (await firstVisible(page, CHATGPT_SELECTORS.retryButton))) {
-          throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
+        const candidatePages = observerPage && observerVerified ? [page, observerPage] : [page];
+        for (const candidatePage of candidatePages) {
+          const candidates: Array<{ locator: Locator; selector: string; textLength: number }> = [];
+          for (const selector of this.selectors.assistantMessages) {
+            const locator = candidatePage.locator(selector);
+            const count = await locator.count();
+            if (count === 0) continue;
+            const prior = baseline.messages.get(selector) ?? { count: 0 };
+            const candidate = locator.last();
+            const latestTurnOrdinal = await this.assistantTurnOrdinal(candidate);
+            const ordinalAdvanced = latestTurnOrdinal !== undefined
+              && prior.latestTurnOrdinal !== undefined
+              && latestTurnOrdinal > prior.latestTurnOrdinal;
+            if (count > prior.count || ordinalAdvanced) {
+              const textLength = (await candidate.innerText().catch(() => "")).trim().length;
+              candidates.push({ locator: candidate, selector, textLength });
+              break;
+            }
+          }
+          if (candidates.length > 0) {
+            // Kimi's selector list is ordered from its final answer segment to
+            // broader turn shells.  Taking the first populated canonical
+            // selector excludes both the hidden reasoning trace and tiny UI
+            // labels that live beside the final answer.
+            const selected = candidates[0];
+            responseLocator = selected?.locator;
+            selectedResponseSelector = selected?.selector ?? "";
+            responsePage = candidatePage;
+            if (responseLocator) break;
+          }
         }
+
+        if (responseLocator) {
+          const text = (await responseLocator.innerText().catch(() => "")).trim();
+          const stopButtonVisible = Boolean(await firstVisible(responsePage, this.selectors.stopButton));
+          // Kimi renders Copy/action controls on intermediate thinking
+          // segments.  Those controls are not a completion signal; only the
+          // disappearance of its Stop control proves the final answer ended.
+          const responseComplete = this.provider === "kimi"
+            ? !stopButtonVisible
+            : !stopButtonVisible || (
+              await this.responseTurnHasVisibleCompletionAction(responseLocator)
+            );
+          if (text && text === previousText && responseComplete) stableChecks += 1;
+          else stableChecks = 0;
+          previousText = text;
+          if (text && stableChecks >= 3) {
+            if (this.provider === "kimi") {
+              console.warn(
+                `[Kimi] Đã chọn phản hồi bằng ${selectedResponseSelector || "selector không rõ"}; độ dài ${text.length}.`,
+              );
+            }
+            return text;
+          }
+
+          if (responseComplete && (await firstVisible(responsePage, this.selectors.retryButton))) {
+            throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
+          }
+        }
+        await delay(500, signal);
       }
-      await delay(500, signal);
+    } finally {
+      await observerPage?.close().catch(() => undefined);
     }
-    throw new Error(`ChatGPT không hoàn tất phản hồi trong ${Math.round(timeoutMs / 1000)} giây.`);
+    const kimiDiagnostic = this.provider === "kimi"
+      ? await this.kimiResponseDomDiagnostic(page)
+      : "";
+    const failedNetwork = [...new Set(failedKimiResponses)].slice(0, 8).join(", ");
+    throw new Error(
+      `ChatGPT không hoàn tất phản hồi trong ${Math.round(timeoutMs / 1000)} giây.`
+      + (kimiDiagnostic ? ` Kimi DOM: ${kimiDiagnostic}` : "")
+      + (failedNetwork ? ` Kimi HTTP: ${failedNetwork}` : ""),
+    );
+  }
+
+  /**
+   * Kimi does not publish a stable DOM contract.  Keep timeout diagnostics to
+   * structure only (never response/source text) so selector regressions can be
+   * repaired without leaking a user's novel into logs.
+   */
+  private async kimiResponseDomDiagnostic(page: Page): Promise<string> {
+    try {
+      return await page.evaluate(() => {
+        const interesting = /(assistant|answer|chat|content|markdown|message|segment)/iu;
+        const exceptional = /(alert|button|error|failed|notice|retry|toast|warning)/iu;
+        const rows = Array.from(document.querySelectorAll<HTMLElement>(
+          'body [class], body [data-role], body [data-testid]',
+        ))
+          .map((element) => {
+            const className = typeof element.className === "string" ? element.className : "";
+            const dataRole = element.getAttribute("data-role") ?? "";
+            const testId = element.getAttribute("data-testid") ?? "";
+            const role = element.getAttribute("role") ?? "";
+            const identity = [className, dataRole, testId, role].filter(Boolean).join("|");
+            const rect = element.getBoundingClientRect();
+            const visible = rect.width > 0 && rect.height > 0;
+            return {
+              identity: `${element.tagName.toLowerCase()}:${identity}`.slice(0, 180),
+              textLength: (element.innerText ?? "").trim().length,
+              visible,
+            };
+          })
+          .filter((row) => row.visible && row.textLength > 0)
+          .filter((row) => interesting.test(row.identity) || exceptional.test(row.identity) || row.textLength >= 120);
+        const unique = new Map<string, { identity: string; textLength: number; visible: boolean }>();
+        for (const row of rows) {
+          const existing = unique.get(row.identity);
+          if (!existing || row.textLength > existing.textLength) unique.set(row.identity, row);
+        }
+        const all = Array.from(unique.values());
+        const largest = all
+          .sort((left, right) => right.textLength - left.textLength)
+          .slice(0, 12);
+        const exceptionalRows = all
+          .filter((row) => exceptional.test(row.identity))
+          .slice(0, 8);
+        return [...new Map(
+          [...largest, ...exceptionalRows].map((row) => [row.identity, row]),
+        ).values()].map((row) => `${row.identity}#${row.textLength}`).join(", ");
+      });
+    } catch {
+      return "không đọc được cấu trúc trang";
+    }
   }
 
   private setStatus(status: ChatGptWebStatus, message?: string): void {

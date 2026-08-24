@@ -1,7 +1,7 @@
 import { nativeTheme, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent } from "electron";
 import { access } from "node:fs/promises";
 import path from "node:path";
-import type { FinalChapterExportInput, PromptMode } from "../shared/types.js";
+import type { AiProvider, FinalChapterExportInput, PromptMode } from "../shared/types.js";
 import { IPC_CHANNELS } from "../preload/channels.js";
 import {
   chooseChapterDirectory,
@@ -11,7 +11,7 @@ import {
   exportCombinedSourceChapterFile,
   exportOriginalChapterFiles,
 } from "./chapterExport.js";
-import type { ChatGptWebAdapter } from "./chatgpt/ChatGptWebAdapter.js";
+import type { AiProviderManager } from "./ai/AiProviderManager.js";
 import { exportTextFile } from "./exportText.js";
 import type { GeminiTitleService } from "./gemini/GeminiTitleService.js";
 import type { PersistenceService } from "./persistence/PersistenceService.js";
@@ -27,7 +27,7 @@ export interface IpcDependencies {
   devServerUrl?: string;
   prompts: PromptLoader;
   persistence: PersistenceService;
-  chatGpt: ChatGptWebAdapter;
+  chatGpt: AiProviderManager;
   translator: TranslationJobRunner;
   storySources: StorySourceServiceApi;
   gemini: GeminiTitleService;
@@ -223,7 +223,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     if (window && !window.isDestroyed()) window.close();
   });
   handle(IPC_CHANNELS.promptsLoadAll, async () => dependencies.prompts.loadCatalog());
-  handle(IPC_CHANNELS.draftLoad, () => dependencies.persistence.loadDraft());
+  handle(IPC_CHANNELS.draftLoad, () => dependencies.persistence.loadRendererDraft());
   handle(IPC_CHANNELS.draftSave, async (_event, payload) => {
     await dependencies.persistence.saveDraft(payload ?? null);
   });
@@ -238,12 +238,24 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   handle(IPC_CHANNELS.chatGptCleanupToolChat, async () => {
     await dependencies.chatGpt.startNewConversation();
   });
+  handle(IPC_CHANNELS.aiProviderGet, () => dependencies.chatGpt.activeProvider());
+  handle(IPC_CHANNELS.aiProviderSet, async (_event, payload) => {
+    if (payload !== "chatgpt" && payload !== "kimi") {
+      throw new TypeError("Nhà cung cấp AI không hợp lệ.");
+    }
+    await dependencies.chatGpt.selectProvider(payload);
+    return dependencies.chatGpt.status();
+  });
+  handle(IPC_CHANNELS.aiConnect, () => dependencies.chatGpt.openLogin());
+  handle(IPC_CHANNELS.aiStatus, () => dependencies.chatGpt.refreshStatus());
+  handle(IPC_CHANNELS.aiClose, async () => dependencies.chatGpt.close());
 
   handle(IPC_CHANNELS.translationStart, async (_event, rawPayload) => {
     const payload = objectPayload(rawPayload, "Yêu cầu dịch");
     const source = stringField(payload, "source", { required: true })!;
     const mode = promptMode(payload.promptMode);
     const customPrompt = stringField(payload, "customPrompt", { max: 100_000 });
+    const aiProvider: AiProvider = payload.aiProvider === "kimi" ? "kimi" : "chatgpt";
     const resolvedPrompt = await dependencies.prompts.resolve(mode, customPrompt);
     const rawSettings = payload.settings;
     if (rawSettings !== undefined && (!rawSettings || typeof rawSettings !== "object" || Array.isArray(rawSettings))) {
@@ -313,6 +325,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
       promptMode: mode,
       ...(customPrompt ? { customPrompt } : {}),
       resolvedPrompt,
+      aiProvider,
       ...(autoExport ? { autoExport } : {}),
       settings: {
         maxChunkChars: numberSetting("maxChunkChars"),
@@ -459,6 +472,12 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     const sourceEndChapter = boundedPositiveInteger(payload.sourceEndChapter, 'sourceEndChapter');
     const outputStartChapter = boundedPositiveInteger(payload.outputStartChapter, 'outputStartChapter');
     const outputEndChapter = boundedPositiveInteger(payload.outputEndChapter, 'outputEndChapter');
+    const splitOutputStartChapter = payload.splitOutputStartChapter === undefined
+      ? undefined
+      : boundedPositiveInteger(payload.splitOutputStartChapter, 'splitOutputStartChapter');
+    const splitOutputEndChapter = payload.splitOutputEndChapter === undefined
+      ? undefined
+      : boundedPositiveInteger(payload.splitOutputEndChapter, 'splitOutputEndChapter');
     const chapters = chapterExportInputs(payload);
     return exportCombinedSourceChapterFile({
       directory,
@@ -467,6 +486,8 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
       sourceEndChapter,
       outputStartChapter,
       outputEndChapter,
+      splitOutputStartChapter,
+      splitOutputEndChapter,
       chapters,
       recoveryOnConflict: payload.recoveryOnConflict === true,
     });
@@ -503,7 +524,10 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     broadcast(IPC_CHANNELS.translationEvent, event),
   );
   const unsubscribeChatGpt = dependencies.chatGpt.onStatus((status) =>
-    broadcast(IPC_CHANNELS.chatGptStatusEvent, status),
+    {
+      broadcast(IPC_CHANNELS.chatGptStatusEvent, status);
+      broadcast(IPC_CHANNELS.aiStatusEvent, status);
+    },
   );
   const unsubscribeStorySources = dependencies.storySources.onProgress((progress) =>
     broadcast(IPC_CHANNELS.storyProgressEvent, progress),

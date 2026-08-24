@@ -300,6 +300,8 @@ describe('chapter TXT export', () => {
       sourceEndChapter: 41,
       outputStartChapter: 101,
       outputEndChapter: 102,
+      splitOutputStartChapter: 101,
+      splitOutputEndChapter: 103,
       chapters: [
         chapter({ index: 101, sourceChapterNumber: 40, title: 'Chương 101: 原题甲', content: '第一段原文。', wordCount: 1 }),
         chapter({ index: 102, sourceChapterNumber: 41, title: 'Chương 102: 原题乙', content: '第二段原文。', wordCount: 1 }),
@@ -311,7 +313,7 @@ describe('chapter TXT export', () => {
 
     const result = await exportCombinedSourceChapterFile(request);
     expect(result).toMatchObject({
-      fileName: 'File tổng c.gốc (40-41)_c.mới (101-102).txt',
+      fileName: 'File tổng c.gốc (40-41)_c.mới (101-103).txt',
       startChapter: 101,
       endChapter: 102,
       chapterCount: 2,

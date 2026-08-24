@@ -13,6 +13,7 @@ import {
 import {
   assertPlausibleStoryText,
   cleanIxdzsStoryText,
+  cleanXbanxiaChapterTitle,
   cleanXbanxiaStoryText,
   assertCleanXbanxiaStoryText,
   mergeTextParts,
@@ -1018,6 +1019,7 @@ class XbanxiaAdapter implements Adapter {
     const parts: string[] = [];
     const sourceUrls: string[] = [];
     const warnings: string[] = [];
+    let resolvedTitle: string | undefined;
     for (const url of chapter.partUrls) {
       const parsed = parseStoryUrl(url);
       const snapshot = await runtime.visit(url);
@@ -1036,7 +1038,23 @@ class XbanxiaAdapter implements Adapter {
       if (chapter.number !== undefined && headingLabel.number !== chapter.number) {
         throw new StorySourceError("SOURCE_CHANGED", "Số chương Xbanxia trong nội dung không khớp mục lục.");
       }
-      const text = removeRepeatedHeading(cleanXbanxiaStoryText(raw), heading);
+      const chapterNumber = chapter.number;
+      const pageTitle = chapterNumber === undefined
+        ? chapter.title
+        : [
+            cleanXbanxiaChapterTitle(heading, chapterNumber),
+            cleanXbanxiaChapterTitle(`第${chapterNumber}章 ${chapter.title}`, chapterNumber),
+            ...normalizeText(raw).split("\n").slice(0, 3)
+              .map((line) => cleanXbanxiaChapterTitle(line, chapterNumber)),
+          ].find((title): title is string => Boolean(title));
+      if (!pageTitle) {
+        throw new StorySourceError("SOURCE_CHANGED", `Không thể xác định tên sạch của chương Xbanxia ${chapterNumber ?? chapter.order + 1}.`);
+      }
+      if (resolvedTitle && resolvedTitle !== pageTitle) {
+        throw new StorySourceError("SOURCE_CHANGED", "Tên chương Xbanxia thay đổi giữa các phần của cùng một chương.");
+      }
+      resolvedTitle = pageTitle;
+      const text = removeRepeatedHeading(cleanXbanxiaStoryText(raw, chapterNumber), heading);
       assertCleanXbanxiaStoryText(text);
       assertPlausibleStoryText(text, "Xbanxia");
       parts.push(text);
@@ -1044,7 +1062,7 @@ class XbanxiaAdapter implements Adapter {
     }
     const merged = mergeTextParts(parts);
     if (merged.overlapsRemoved) warnings.push(`Đã loại ${merged.overlapsRemoved} ký tự trùng giữa các phần.`);
-    return chapterContent(chapter, merged.text, sourceUrls, warnings);
+    return chapterContent({ ...chapter, title: resolvedTitle ?? chapter.title }, merged.text, sourceUrls, warnings);
   }
 }
 

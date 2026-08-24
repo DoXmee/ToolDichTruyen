@@ -53,6 +53,18 @@ function installStoryTool(options: {
     cultivation: 'Prompt tu tiên mặc định',
   }));
   const connectChatGPT = vi.fn(async () => ({ status: options.connectionStatus ?? 'ready' }));
+  let aiProvider: 'chatgpt' | 'kimi' = 'chatgpt';
+  const setAiProvider = vi.fn(async (provider: 'chatgpt' | 'kimi') => {
+    aiProvider = provider;
+    return { provider, status: 'closed' };
+  });
+  const connectAi = vi.fn(async () => {
+    if (aiProvider === 'chatgpt') {
+      const result = await connectChatGPT();
+      return { provider: aiProvider, ...result };
+    }
+    return { provider: aiProvider, status: 'login-required', message: 'Hãy đăng nhập Kimi AI.' };
+  });
   const startTranslation = vi.fn(async (_request: TranslationRequest) => ({ jobId: 'job-1' }));
   const cancelTranslation = vi.fn(async () => undefined);
   const discardTranslation = vi.fn(async () => undefined);
@@ -118,14 +130,16 @@ function installStoryTool(options: {
     sourceEndChapter,
     outputStartChapter,
     outputEndChapter,
+    splitOutputStartChapter,
+    splitOutputEndChapter,
     chapters,
   }) => ({
     directory,
     exportDirectory: directory,
     exportJobId,
     contentHash: combinedChapterContentFingerprint(outputStartChapter, outputEndChapter, chapters),
-    fileName: `File tổng c.gốc (${sourceStartChapter}-${sourceEndChapter})_c.mới (${outputStartChapter}-${outputEndChapter}).txt`,
-    filePath: `${directory}\\File tổng c.gốc (${sourceStartChapter}-${sourceEndChapter})_c.mới (${outputStartChapter}-${outputEndChapter}).txt`,
+    fileName: `File tổng c.gốc (${sourceStartChapter}-${sourceEndChapter})_c.mới (${splitOutputStartChapter ?? outputStartChapter}-${splitOutputEndChapter ?? outputEndChapter}).txt`,
+    filePath: `${directory}\\File tổng c.gốc (${sourceStartChapter}-${sourceEndChapter})_c.mới (${splitOutputStartChapter ?? outputStartChapter}-${splitOutputEndChapter ?? outputEndChapter}).txt`,
     startChapter: outputStartChapter,
     endChapter: outputEndChapter,
     chapterCount: chapters.length,
@@ -137,6 +151,10 @@ function installStoryTool(options: {
     getDraft: vi.fn(async () => options.draft ?? null),
     saveDraft: vi.fn(async () => undefined),
     connectChatGPT,
+    getAiProvider: vi.fn(async () => aiProvider),
+    setAiProvider,
+    connectAi,
+    getAiStatus: vi.fn(async () => ({ provider: aiProvider, status: 'closed' })),
     startTranslation,
     pauseTranslation: vi.fn(async () => undefined),
     resumeTranslation: vi.fn(async () => undefined),
@@ -209,6 +227,58 @@ afterEach(() => {
 });
 
 describe('App renderer', () => {
+  it('đổi sang Kimi AI thì mở ngay phiên đăng nhập riêng và cập nhật nhãn', async () => {
+    const harness = installStoryTool();
+    render(<App />);
+
+    const kimi = await screen.findByRole('radio', { name: 'Kimi AI' });
+    await waitFor(() => expect(kimi).toBeEnabled());
+    fireEvent.click(kimi);
+
+    await waitFor(() => {
+      expect(harness.api.setAiProvider).toHaveBeenCalledWith('kimi');
+      expect(harness.api.connectAi).toHaveBeenCalledOnce();
+      expect(kimi).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByText('Chờ đăng nhập Kimi AI')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('radio', { name: 'ChatGPT' }));
+    await waitFor(() => {
+      expect(harness.api.setAiProvider).toHaveBeenLastCalledWith('chatgpt');
+      expect(screen.getByRole('radio', { name: 'ChatGPT' })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByText('ChatGPT đã kết nối')).toBeInTheDocument();
+    });
+  });
+
+  it('cho phép đổi AI khi checkpoint chỉ đang tạm dừng', async () => {
+    const pausedJob: TranslationJobSnapshot = {
+      id: 'job-paused-provider-switch',
+      updatedAt: '2026-08-25T00:00:00.000Z',
+      status: 'paused',
+      totalSegments: 2,
+      completedSegments: 1,
+      currentSegmentIndex: 1,
+      segments: [
+        { id: 'segment-done', index: 0, status: 'completed' },
+        { id: 'segment-waiting', index: 1, status: 'queued' },
+      ],
+    };
+    const harness = installStoryTool({
+      activeTranslations: [pausedJob],
+      translationJob: pausedJob,
+    });
+    render(<App />);
+
+    const kimi = await screen.findByRole('radio', { name: 'Kimi AI' });
+    await waitFor(() => expect(kimi).toBeEnabled());
+    fireEvent.click(kimi);
+
+    await waitFor(() => {
+      expect(harness.api.setAiProvider).toHaveBeenCalledWith('kimi');
+      expect(kimi).toHaveAttribute('aria-checked', 'true');
+    });
+  });
+
   it('giữ công cụ chia chương thu gọn mặc định và mở được bằng bàn phím hoặc chuột', async () => {
     installStoryTool();
     render(<App />);
@@ -220,10 +290,12 @@ describe('App renderer', () => {
     expect(drawer).toBeInstanceOf(HTMLDetailsElement);
     expect(summary).toHaveTextContent('Chia chương tự động');
     expect((drawer as HTMLDetailsElement).open).toBe(false);
+    expect(screen.queryByRole('heading', { name: 'Chia chương tự động' })).not.toBeInTheDocument();
 
     fireEvent.click(summary as HTMLElement);
+    fireEvent(drawer as HTMLElement, new Event('toggle'));
     expect((drawer as HTMLDetailsElement).open).toBe(true);
-    expect(screen.getByRole('heading', { name: 'Chia chương tự động' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Chia chương tự động' })).toBeInTheDocument();
   });
 
   it('nạp nguyên vẹn prompts và draft UTF-8', async () => {
@@ -258,6 +330,41 @@ describe('App renderer', () => {
     expect(screen.getByRole('radio', { name: /Truyện niên đại/i }).closest('label')).not.toHaveTextContent('ký tự');
     expect(screen.getByRole('radio', { name: /Truyện hiện đại/i }).closest('label')).not.toHaveTextContent('ký tự');
     expect(harness.loadPrompts).toHaveBeenCalledOnce();
+  });
+
+  it('cho phép đặt số chương khi catalog chỉ có nhãn hoặc thứ tự đọc', async () => {
+    installStoryTool({
+      storyAnalysis: {
+        analysisId: 'label-only',
+        site: 'xszj',
+        inputKind: 'book',
+        inputUrl: 'https://ixdzs8.com/read/label-only/',
+        bookId: 'label-only',
+        bookTitle: 'Catalog không có trường number',
+        bookUrl: 'https://ixdzs8.com/read/label-only/',
+        catalogUrl: 'https://ixdzs8.com/read/label-only/',
+        chapters: [
+          { id: 'intro', order: 0, numberLabel: '', title: 'Giới thiệu', url: 'https://x/intro', partUrls: ['https://x/intro'], isIntroduction: true, selectedByDefault: false },
+          { id: 'label-40', order: 1, numberLabel: '第40章', title: 'Chương có nhãn', url: 'https://x/40', partUrls: ['https://x/40'], isIntroduction: false, selectedByDefault: true },
+        ],
+        defaultSelectedChapterIds: ['label-40'],
+        verification: 'not-needed',
+        notices: [],
+      },
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
+    fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), {
+      target: { value: 'https://ixdzs8.com/read/label-only/' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
+
+    const field = await screen.findByLabelText('Số chương xuất bắt đầu');
+    expect(field).toBeEnabled();
+    expect(field).toHaveValue(40);
+    fireEvent.change(field, { target: { value: '101' } });
+    expect(field).toHaveValue(101);
   });
 
   it('chuyển giao diện tối rõ ràng và ghi nhớ lựa chọn trên máy', async () => {
@@ -387,6 +494,10 @@ describe('App renderer', () => {
   it('chia checkpoint đã dịch song song và giữ nút tiếp tục đúng đoạn khi phần sau lỗi', async () => {
     const harness = installStoryTool({ connectionStatus: 'ready' });
     render(<App />);
+
+    const drawer = document.querySelector('details.chapter-drawer') as HTMLDetailsElement;
+    fireEvent.click(drawer.querySelector('summary') as HTMLElement);
+    fireEvent(drawer, new Event('toggle'));
 
     fireEvent.change(await screen.findByLabelText('Nội dung tiếng Trung cần dịch'), {
       target: { value: '第一段。第二段。' },
@@ -747,7 +858,7 @@ describe('App renderer', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
     await screen.findByText(storyAnalysis.bookTitle);
-    fireEvent.click(screen.getByRole('button', { name: /Chọn thư mục lưu/u }));
+    fireEvent.click(screen.getByRole('button', { name: /(?:Chọn|Đổi) thư mục lưu/u }));
     await waitFor(() => expect(harness.chooseChapterDirectory).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /^Kết nối$/u }));
     await screen.findByText('ChatGPT đã kết nối');
@@ -1292,6 +1403,152 @@ describe('App renderer', () => {
     });
   });
 
+  it('không nạp checkpoint hoàn tất dung lượng lớn khi thư mục xuất cũ đã mất', async () => {
+    const harness = installStoryTool({
+      draft: {
+        source: '原文',
+        output: 'Chương 1: Đã dịch\nNội dung.',
+        promptMode: 'period',
+        customPrompt: '',
+        sourceMode: 'link',
+        storyUrl: 'https://www.timotxt.com/1/',
+        exportDirectory: 'D:\\Thu-muc-da-mat',
+        autoExportResolvedDirectory: 'D:\\Thu-muc-da-mat',
+        autoExportJobId: 'job-stale-completed',
+        exportedRecords: [],
+      },
+      translationJob: {
+        id: 'job-stale-completed',
+        updatedAt: '2026-08-24T00:00:00.000Z',
+        status: 'completed',
+        totalSegments: 1,
+        completedSegments: 1,
+        segments: [{ id: 's1', index: 0, status: 'completed' }],
+        translatedText: 'Chương 1: Đã dịch\nNội dung.',
+      },
+    });
+    harness.validateChapterDirectory.mockRejectedValueOnce(new Error('Thư mục xuất không tồn tại.'));
+
+    render(<App />);
+
+    expect(await screen.findByText(/Thư mục bạn chọn sau đó chỉ áp dụng cho lượt dịch mới/u)).toBeInTheDocument();
+    expect(harness.getTranslation).not.toHaveBeenCalled();
+  });
+
+  it('không dùng thư mục vừa chọn cho truyện mới để phát lại checkpoint hoàn tất cũ', async () => {
+    const oldDirectory = 'D:\\Checkpoint cũ';
+    const newDirectory = 'D:\\Truyện đã dịch';
+    const newStoryUrl = 'https://www.timotxt.com/1509589610/';
+    const storyAnalysis = {
+      analysisId: 'new-story-after-stale-checkpoint', site: 'timotxt' as const, inputKind: 'book' as const,
+      inputUrl: newStoryUrl, bookId: '1509589610', bookTitle: 'Truyện mới',
+      bookUrl: newStoryUrl, catalogUrl: `${newStoryUrl}dir`,
+      chapters: [{
+        id: 'new-c1', order: 0, number: 1, numberLabel: 'Chương 1', title: 'Mở đầu',
+        url: `${newStoryUrl}1.html`, partUrls: [`${newStoryUrl}1.html`], isIntroduction: false, selectedByDefault: true,
+      }],
+      defaultSelectedChapterIds: ['new-c1'], verification: 'not-needed' as const, notices: [],
+    };
+    const harness = installStoryTool({
+      storyAnalysis,
+      draft: {
+        source: '旧原文', output: 'Chương 1: Bản dịch cũ\nNội dung cũ.', promptMode: 'period', customPrompt: '',
+        sourceMode: 'link', storyUrl: 'https://www.xbanxia.cc/books/old.html',
+        exportDirectory: oldDirectory, autoExportResolvedDirectory: oldDirectory,
+        autoExportJobId: 'job-old-completed', exportedRecords: [], originalExportedRecords: [],
+      },
+      translationJob: {
+        id: 'job-old-completed', updatedAt: '2026-08-24T00:00:00.000Z', status: 'completed',
+        totalSegments: 1, completedSegments: 1,
+        segments: [{ id: 'old-s1', index: 0, status: 'completed' }],
+        translatedText: 'Chương 1: Bản dịch cũ\nNội dung cũ.',
+      },
+    });
+    harness.validateChapterDirectory.mockImplementation(async (directory: string) => {
+      if (directory === oldDirectory) throw new Error('Thư mục checkpoint cũ không tồn tại.');
+      return { directory };
+    });
+
+    render(<App />);
+    expect(await screen.findByText(/Thư mục bạn chọn sau đó chỉ áp dụng cho lượt dịch mới/u)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Nhập link truyện' }));
+    fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), { target: { value: newStoryUrl } });
+    fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
+    await screen.findByText('Truyện mới');
+    fireEvent.click(screen.getByRole('button', { name: /(?:Chọn|Đổi) thư mục lưu/u }));
+
+    await waitFor(() => expect(harness.chooseChapterDirectory).toHaveBeenCalledOnce());
+    expect(screen.getByText(newDirectory)).toBeInTheDocument();
+    expect(harness.getTranslation).not.toHaveBeenCalled();
+    expect(harness.exportChapters).not.toHaveBeenCalled();
+
+    await waitFor(() => {
+      const savedDrafts = vi.mocked(harness.api.saveDraft).mock.calls.map(([draft]) => draft as {
+        exportDirectory?: string;
+        autoExportResolvedDirectory?: string;
+      });
+      expect(savedDrafts).toContainEqual(expect.objectContaining({
+        exportDirectory: newDirectory,
+        autoExportResolvedDirectory: oldDirectory,
+      }));
+    });
+  });
+
+  it('giữ thư mục mới trên biểu mẫu khi checkpoint cũ hoàn tất khôi phục đồng thời', async () => {
+    const oldDirectory = 'D:\\Checkpoint đang hoàn tất';
+    const newDirectory = 'D:\\Truyện đã dịch';
+    const words = Array.from({ length: 800 }, (_, index) => `tu${index + 1}`).join(' ');
+    let releaseValidation!: () => void;
+    const validationBarrier = new Promise<void>((resolve) => { releaseValidation = resolve; });
+    const storyAnalysis = {
+      analysisId: 'new-story-during-recovery', site: 'timotxt' as const, inputKind: 'book' as const,
+      inputUrl: 'https://www.timotxt.com/new/', bookId: 'new', bookTitle: 'Truyện kế tiếp',
+      bookUrl: 'https://www.timotxt.com/new/', catalogUrl: 'https://www.timotxt.com/new/dir',
+      chapters: [{ id: 'next-c1', order: 0, number: 1, numberLabel: 'Chương 1', title: 'Mới', url: 'https://www.timotxt.com/new/1.html', partUrls: ['https://www.timotxt.com/new/1.html'], isIntroduction: false, selectedByDefault: true }],
+      defaultSelectedChapterIds: ['next-c1'], verification: 'not-needed' as const, notices: [],
+    };
+    const harness = installStoryTool({
+      storyAnalysis,
+      draft: {
+        source: 'Chương 1: Cũ\n原文', output: '', promptMode: 'period', customPrompt: '', sourceMode: 'link',
+        storyUrl: 'https://www.timotxt.com/old/', exportDirectory: oldDirectory,
+        autoExportResolvedDirectory: oldDirectory, autoExportJobId: 'job-recovery-race',
+        exportOriginalChapters: false, exportCombinedChapters: false,
+        exportedRecords: [], originalExportedRecords: [],
+      },
+      translationJob: {
+        id: 'job-recovery-race', createdAt: '2026-08-24T00:00:00.000Z', updatedAt: '2026-08-24T00:01:00.000Z',
+        status: 'completed', totalSegments: 1, completedSegments: 1,
+        sourceText: 'Chương 1: Cũ\n原文', translatedText: `Chương 1: Cũ\n${words}`,
+        segments: [{ id: 's1', index: 0, status: 'completed' }],
+        autoExport: {
+          directory: oldDirectory, startChapter: 1, endChapter: 1, sourceChapterNumbers: [1],
+          exportOriginalChapters: false, exportCombinedChapters: false,
+          omitOutputChapterTitles: false,
+        },
+      },
+    });
+    harness.validateChapterDirectory.mockImplementation(async (directory: string) => {
+      if (directory === oldDirectory) await validationBarrier;
+      return { directory };
+    });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Nội dung tiếng Trung' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Nhập link truyện' }));
+    fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), { target: { value: storyAnalysis.inputUrl } });
+    fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
+    await screen.findByText('Truyện kế tiếp');
+    fireEvent.click(screen.getByRole('button', { name: /(?:Chọn|Đổi) thư mục lưu/u }));
+    await waitFor(() => expect(screen.getByText(newDirectory)).toBeInTheDocument());
+
+    releaseValidation();
+    await waitFor(() => expect(harness.exportChapters).toHaveBeenCalledOnce());
+    expect(harness.exportChapters).toHaveBeenCalledWith(expect.objectContaining({ directory: oldDirectory }));
+    expect(screen.getByText(newDirectory)).toBeInTheDocument();
+  });
+
   it('dò checkpoint khi app đóng trước lúc renderer nhận jobId', async () => {
     const startedAt = Date.parse('2026-08-12T02:00:00.000Z');
     const translatedText = `Chương 1: Khôi phục\n${Array.from({ length: 750 }, (_, i) => `tu${i}`).join(' ')}`;
@@ -1757,6 +2014,8 @@ describe('App renderer', () => {
       sourceEndChapter: 41,
       outputStartChapter: 101,
       outputEndChapter: 102,
+      splitOutputStartChapter: 101,
+      splitOutputEndChapter: 103,
       chapters: [
         expect.objectContaining({
           index: 101,

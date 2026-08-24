@@ -508,6 +508,45 @@ textarea:focus-visible {
   font-size: 11px;
 }
 
+.connection-box__status-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.ai-provider-switch {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-soft);
+}
+
+.ai-provider-switch button {
+  min-width: 58px;
+  padding: 3px 8px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.ai-provider-switch button.is-active {
+  color: var(--amber);
+  background: var(--amber-soft);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.ai-provider-switch button:disabled {
+  cursor: not-allowed;
+  opacity: .62;
+}
+
 main {
   padding: 14px 0 8px;
 }
@@ -588,6 +627,12 @@ main {
   grid-template-columns: minmax(0, 1.08fr) minmax(285px, .82fr) minmax(0, 1.1fr);
   gap: 12px;
   align-items: stretch;
+}
+
+.translation-grid > *,
+.story-link-importer > *,
+.story-catalog > * {
+  min-width: 0;
 }
 
 .panel {
@@ -739,6 +784,8 @@ main {
 
 .story-link-importer {
   display: grid;
+  width: 100%;
+  min-width: 0;
   min-height: 250px;
   align-content: start;
   gap: 8px;
@@ -882,8 +929,11 @@ main {
 
 .story-catalog {
   display: grid;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
   gap: 7px;
+  container-type: inline-size;
 }
 
 .story-catalog__summary {
@@ -922,25 +972,48 @@ main {
 }
 
 .story-catalog__toolbar {
+  display: grid;
+  width: 100%;
+  min-width: 0;
   min-height: 26px;
+  grid-template-columns: max-content max-content max-content minmax(0, 1fr);
   gap: 7px;
-  flex-wrap: wrap;
+  align-items: center;
 }
 
 .story-range {
-  display: flex;
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-column: 4;
+  grid-template-columns: minmax(36px, 49px) max-content minmax(36px, 49px) max-content;
   align-items: center;
+  justify-content: flex-end;
   gap: 3px;
-  margin-left: auto;
 }
 
 .story-range input {
-  width: 49px;
+  width: 100%;
+  min-width: 0;
+  max-width: 49px;
   height: 25px;
   padding: 3px 5px;
   border: 1px solid var(--line);
   border-radius: 6px;
   font-size: 10px;
+}
+
+/* The normal desktop/laptop source card keeps the complete selector on one
+ * line. Only a genuinely narrow card falls back to a second row; the fallback
+ * is based on the card itself instead of the whole window or renderer zoom. */
+@container (max-width: 420px) {
+  .story-catalog__toolbar {
+    grid-template-columns: max-content max-content max-content minmax(0, 1fr);
+  }
+
+  .story-range {
+    grid-column: 1 / -1;
+  }
 }
 
 .story-chapter-list {
@@ -956,6 +1029,8 @@ main {
 }
 
 .story-chapter-list label {
+  content-visibility: auto;
+  contain-intrinsic-size: 31px;
   display: grid;
   grid-template-columns: 15px minmax(0, 1fr) auto;
   gap: 6px;
@@ -2583,6 +2658,20 @@ main {
 
   .connection-box > div {
     display: none;
+  }
+
+  .connection-box > .connection-box__identity {
+    display: grid;
+  }
+
+  .connection-box__identity > small,
+  .connection-box__status-row > .status-pill {
+    display: none;
+  }
+
+  .ai-provider-switch button {
+    min-width: 48px;
+    padding-inline: 6px;
   }
 
   .connection-box .button {

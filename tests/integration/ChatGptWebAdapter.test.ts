@@ -49,6 +49,7 @@ interface FakePageOptions {
   deleteRedirects?: boolean;
   redirectConversationGotoToRoot?: boolean;
   rootGotoRedirectTo?: string;
+  rootGotoCausesLogin?: boolean;
   sidebarPersonalConversationMenu?: boolean;
   userMessages?: string[];
   navigateOnSendClickTo?: string;
@@ -107,14 +108,35 @@ function createFakeBrowser(options: FakePageOptions = {}) {
   type LocatorScope = 'page' | 'latest-assistant-turn'
   const locatorFor = (selector: string, elementIndex = 0, scope: LocatorScope = 'page') => {
     const isComposer = selector.includes('prompt-textarea') || selector.includes('contenteditable')
-    const isSend = selector.includes('send-button') || selector.includes('Send') || selector.includes('Gửi')
+    const isSend = !selector.includes('stop-icon')
+      && !selector.includes('send-button-container.stop')
+      && !selector.includes('task-bar-stop')
+      && (selector.includes('send-button') || selector.includes('Send') || selector.includes('Gửi'))
     const isCompletionAction = selector.includes('copy-turn-action-button')
     const isAssistantTurnContainer = selector.includes('ancestor-or-self')
     const isAssistant = !isCompletionAction
       && !isAssistantTurnContainer
-      && selector.includes('message-author-role="assistant"')
-    const isStop = selector.includes('stop-button') || selector.includes('Stop streaming') || selector.includes('Stop generating')
+      && (
+        selector.includes('message-author-role="assistant"')
+        || selector.includes('data-role="assistant"')
+        || selector.includes('chat-content-item-assistant')
+        || selector.includes('assistant-content')
+        || selector.includes('segment-assistant')
+        || selector.includes('chat-message.assistant')
+      )
+    const isStop = selector.includes('stop-button')
+      || selector.includes('stop-icon')
+      || selector.includes('send-button-container.stop')
+      || selector.includes('task-bar-stop')
+      || selector.includes('aria-label="Stop"')
+      || selector.includes('Stop streaming')
+      || selector.includes('Stop generating')
     const isUserMessage = selector.includes('message-author-role="user"')
+      || selector.includes('data-role="user"')
+      || selector.includes('chat-content-item-user')
+      || selector.includes('user-content')
+      || selector.includes('segment-user')
+      || selector.includes('chat-message.user')
     const isLogin = selector.includes('auth/login') || selector.includes('Log in') || selector.includes('Đăng nhập')
     const isConversationMenu = selector.includes('conversation-options') || selector.includes('tùy chọn cuộc trò chuyện') || selector.includes('Tùy chọn cuộc trò chuyện')
     const isMainScopedMenu = selector.startsWith('main ')
@@ -277,16 +299,17 @@ function createFakeBrowser(options: FakePageOptions = {}) {
     url: () => currentUrl,
     goto: async (url: string) => {
       gotoCount += 1
+      const navigatingToRoot = new URL(url).pathname === '/'
       currentUrl = options.redirectConversationGotoToRoot && url.includes('/c/')
         ? 'https://chatgpt.com/'
-        : new URL(url).pathname === '/' && options.rootGotoRedirectTo
+        : navigatingToRoot && options.rootGotoRedirectTo
           ? options.rootGotoRedirectTo
           : url
       if (new URL(currentUrl).pathname === '/') {
         userMessages.splice(0)
         sendCount = 0
       }
-      options.login = false
+      options.login = navigatingToRoot && options.rootGotoCausesLogin === true
     },
     bringToFront: async () => undefined,
     locator: (selector: string) => locatorFor(selector),
@@ -918,6 +941,59 @@ describe('ChatGptWebAdapter', () => {
     await adapter.close()
   })
 
+  it('Kimi không nhận nhầm composer ẩn danh là một phiên đã đăng nhập', async () => {
+    vi.useFakeTimers()
+    const fake = createFakeBrowser({
+      composer: true,
+      login: true,
+      loggedOutComposer: true,
+      initialUrl: 'https://www.kimi.ai/',
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'kimi',
+      profileDirectory: 'fake-kimi-profile',
+      baseUrl: 'https://www.kimi.ai/',
+      browserFactory: async () => fake.context,
+    })
+
+    const opening = adapter.openLogin()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await expect(opening).resolves.toMatchObject({
+      status: 'login-required',
+      message: expect.stringContaining('đăng nhập'),
+    })
+    await adapter.close()
+  })
+
+  it('Kimi xác minh một tin nhắn qua các selector lồng nhau mà không đếm trùng', async () => {
+    vi.useFakeTimers()
+    const fake = createFakeBrowser({
+      composer: true,
+      initialUrl: 'https://www.kimi.ai/',
+      conversationUrlAfterSend: 'https://www.kimi.ai/chat/tool-created-kimi-0001',
+      response: 'Bản dịch Kimi hoàn chỉnh.',
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'kimi',
+      profileDirectory: 'fake-kimi-profile',
+      baseUrl: 'https://www.kimi.ai/',
+      browserFactory: async () => fake.context,
+    })
+
+    const opening = adapter.openLogin()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await expect(opening).resolves.toMatchObject({ status: 'ready' })
+    const freshConversation = adapter.startNewConversation()
+    await vi.advanceTimersByTimeAsync(4_000)
+    await freshConversation
+    const response = adapter.sendAndWait('Hãy dịch đoạn này.', { timeoutMs: 30_000 })
+    await vi.advanceTimersByTimeAsync(3_000)
+    await vi.waitFor(() => expect(fake.sent).toBe(true))
+    await vi.advanceTimersByTimeAsync(10_000)
+    await expect(response).resolves.toBe('Bản dịch Kimi hoàn chỉnh.')
+    await adapter.close()
+  })
+
   it('báo rõ khi phiên cần đăng nhập', async () => {
     const fake = createFakeBrowser({ composer: false, login: true })
     const adapter = new ChatGptWebAdapter({
@@ -948,16 +1024,32 @@ describe('ChatGptWebAdapter', () => {
     await adapter.close()
   })
 
-  it('tạo chat mới bằng điều hướng gốc thay vì click sidebar', async () => {
+  it('giữ nguyên trang chat mới đã sẵn sàng thay vì tải lại làm bật màn hình đăng nhập', async () => {
+    const fake = createFakeBrowser({ composer: true, rootGotoCausesLogin: true })
+    const adapter = new ChatGptWebAdapter({
+      profileDirectory: 'fake-profile',
+      browserFactory: async () => fake.context,
+    })
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
+
+    await expect(adapter.startNewConversation()).resolves.toBeUndefined()
+    expect(fake.gotoCount).toBe(0)
+    expect(fake.currentUrl).toBe('https://chatgpt.com/')
+    expect(adapter.status().status).toBe('ready')
+    await adapter.close()
+  })
+
+  it('đang ở chat cũ thì vẫn điều hướng về root sạch thay vì click sidebar', async () => {
     const fake = createFakeBrowser({ composer: true })
     const adapter = new ChatGptWebAdapter({
       profileDirectory: 'fake-profile',
       browserFactory: async () => fake.context,
     })
     await adapter.openLogin()
+    await fake.page.goto('https://chatgpt.com/c/unowned-stale-chat')
 
     await expect(adapter.startNewConversation()).resolves.toBeUndefined()
-    expect(fake.gotoCount).toBe(1)
+    expect(fake.gotoCount).toBe(2)
     expect(fake.currentUrl).toBe('https://chatgpt.com/')
     expect(fake.deleteMenuClickCount).toBe(0)
     expect(fake.deleteConfirmClickCount).toBe(0)
@@ -1051,7 +1143,7 @@ describe('ChatGptWebAdapter', () => {
 
     await expect(adapter.sendAndWait('Không được gửi vào chat này.'))
       .rejects.toMatchObject({ name: 'ChatGptNonRetryableSafetyError' })
-    expect(fake.gotoCount).toBe(3)
+    expect(fake.gotoCount).toBe(2)
     expect(fake.fillCount).toBe(0)
     expect(fake.sent).toBe(false)
     expect(fake.sendDestinationUrls).toEqual([])
@@ -1834,6 +1926,66 @@ describe('ChatGptWebAdapter', () => {
     await vi.waitFor(() => expect(adapter.status().message).toContain('Kiểm tra kết nối'))
     await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
     expect(browserFactory).toHaveBeenCalledTimes(2)
+    await adapter.close()
+  })
+
+  it('Kiểm tra kết nối đóng manual Edge còn chạy nền rồi xác minh lại cùng profile', async () => {
+    const loginBrowser = createFakeBrowser({ composer: false, login: true })
+    const readyBrowser = createFakeBrowser({ composer: true })
+    const browserFactory = vi
+      .fn()
+      .mockResolvedValueOnce(loginBrowser.context)
+      .mockResolvedValueOnce(readyBrowser.context)
+    let running = true
+    let resolveClosed!: () => void
+    const closed = new Promise<void>((resolve) => { resolveClosed = resolve })
+    const close = vi.fn(async () => {
+      running = false
+      resolveClosed()
+    })
+    const manualLoginFactory = vi.fn(async () => ({
+      closed,
+      isRunning: () => running,
+      close,
+    }))
+    const adapter = new ChatGptWebAdapter({
+      profileDirectory: 'fake-profile',
+      browserFactory,
+      manualLoginFactory,
+    })
+
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'login-required' })
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
+
+    expect(close).toHaveBeenCalledOnce()
+    expect(manualLoginFactory).toHaveBeenCalledOnce()
+    expect(browserFactory).toHaveBeenCalledTimes(2)
+    await adapter.close()
+  })
+
+  it('không mở browser tự động chồng profile nếu manual Edge thật sự chưa dừng', async () => {
+    const loginBrowser = createFakeBrowser({ composer: false, login: true })
+    const browserFactory = vi.fn(async () => loginBrowser.context)
+    const close = vi.fn(async () => undefined)
+    const manualLoginFactory = vi.fn(async () => ({
+      closed: new Promise<void>(() => undefined),
+      isRunning: () => true,
+      close,
+    }))
+    const adapter = new ChatGptWebAdapter({
+      profileDirectory: 'fake-profile',
+      browserFactory,
+      manualLoginFactory,
+    })
+
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'login-required' })
+    await expect(adapter.openLogin()).resolves.toMatchObject({
+      status: 'login-required',
+      message: expect.stringContaining('chưa đóng hoàn toàn'),
+    })
+
+    expect(close).toHaveBeenCalledOnce()
+    expect(browserFactory).toHaveBeenCalledOnce()
     await adapter.close()
   })
 })

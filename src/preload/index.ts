@@ -8,6 +8,7 @@ import type {
   StorySourceProgress,
   TranslationJobSnapshot,
   TranslationAutoExportBinding,
+  AiProvider,
 } from "../shared/types.js";
 import { IPC_CHANNELS } from "./channels.js";
 
@@ -22,6 +23,7 @@ export interface TranslationRequest {
   source: string;
   promptMode: string;
   customPrompt?: string;
+  aiProvider?: AiProvider;
   autoExport?: TranslationAutoExportBinding;
   settings?: {
     maxChunkChars?: number;
@@ -46,6 +48,11 @@ export interface StoryToolApi {
   getChatGPTStatus(): Promise<{ status: string; message?: string }>;
   disconnectChatGPT(): Promise<void>;
   cleanupToolChat(): Promise<void>;
+  getAiProvider(): Promise<AiProvider>;
+  setAiProvider(provider: AiProvider): Promise<{ provider: AiProvider; status: string; message?: string }>;
+  connectAi(): Promise<{ provider: AiProvider; status: string; message?: string }>;
+  getAiStatus(): Promise<{ provider: AiProvider; status: string; message?: string }>;
+  disconnectAi(): Promise<void>;
   startTranslation(request: TranslationRequest): Promise<{ jobId: string }>;
   pauseTranslation(jobId: string): Promise<void>;
   resumeTranslation(jobId: string): Promise<void>;
@@ -58,6 +65,7 @@ export interface StoryToolApi {
   discoverTranslations(): Promise<TranslationJobSnapshot[]>;
   onTranslationEvent(callback: (event: TranslationEvent) => void): () => void;
   onChatGPTStatus(callback: (status: { status: string; message?: string }) => void): () => void;
+  onAiStatus(callback: (status: { provider: AiProvider; status: string; message?: string }) => void): () => void;
   analyzeStoryUrl(url: string): Promise<StorySourceAnalysis>;
   openManualStoryVerification(url: string): Promise<void>;
   revealHuliBrowserHelper(): Promise<{ directory: string }>;
@@ -98,6 +106,8 @@ export interface StoryToolApi {
     sourceEndChapter: number;
     outputStartChapter: number;
     outputEndChapter: number;
+    splitOutputStartChapter?: number;
+    splitOutputEndChapter?: number;
     chapters: FinalChapterExportInput[];
     recoveryOnConflict?: boolean;
   }): Promise<CombinedChapterExportResult>;
@@ -138,6 +148,14 @@ const storyTool: StoryToolApi = Object.freeze({
   disconnectChatGPT: () => ipcRenderer.invoke(IPC_CHANNELS.chatGptClose) as Promise<void>,
   cleanupToolChat: () =>
     ipcRenderer.invoke(IPC_CHANNELS.chatGptCleanupToolChat) as Promise<void>,
+  getAiProvider: () => ipcRenderer.invoke(IPC_CHANNELS.aiProviderGet) as Promise<AiProvider>,
+  setAiProvider: (provider: AiProvider) =>
+    ipcRenderer.invoke(IPC_CHANNELS.aiProviderSet, provider) as Promise<{ provider: AiProvider; status: string; message?: string }>,
+  connectAi: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.aiConnect) as Promise<{ provider: AiProvider; status: string; message?: string }>,
+  getAiStatus: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.aiStatus) as Promise<{ provider: AiProvider; status: string; message?: string }>,
+  disconnectAi: () => ipcRenderer.invoke(IPC_CHANNELS.aiClose) as Promise<void>,
   startTranslation: (request: TranslationRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.translationStart, request) as Promise<{ jobId: string }>,
   pauseTranslation: (jobId: string) =>
@@ -162,6 +180,8 @@ const storyTool: StoryToolApi = Object.freeze({
     subscribe(IPC_CHANNELS.translationEvent, callback),
   onChatGPTStatus: (callback: (status: { status: string; message?: string }) => void) =>
     subscribe(IPC_CHANNELS.chatGptStatusEvent, callback),
+  onAiStatus: (callback: (status: { provider: AiProvider; status: string; message?: string }) => void) =>
+    subscribe(IPC_CHANNELS.aiStatusEvent, callback),
   analyzeStoryUrl: (url: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.storyAnalyze, { url }) as Promise<StorySourceAnalysis>,
   openManualStoryVerification: (url: string) =>
@@ -206,6 +226,8 @@ const storyTool: StoryToolApi = Object.freeze({
     sourceEndChapter: number;
     outputStartChapter: number;
     outputEndChapter: number;
+    splitOutputStartChapter?: number;
+    splitOutputEndChapter?: number;
     chapters: FinalChapterExportInput[];
     recoveryOnConflict?: boolean;
   }) => ipcRenderer.invoke(IPC_CHANNELS.exportCombinedSourceChapters, request) as Promise<CombinedChapterExportResult>,

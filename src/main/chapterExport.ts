@@ -52,6 +52,10 @@ export interface ExportCombinedSourceChapterFileRequest {
   sourceEndChapter: number;
   outputStartChapter: number;
   outputEndChapter: number;
+  /** Final visible range after long translated chapters have been split.
+   * The source document itself still contains one item per website chapter. */
+  splitOutputStartChapter?: number;
+  splitOutputEndChapter?: number;
   chapters: FinalChapterExportInput[];
   recoveryOnConflict?: boolean;
 }
@@ -462,6 +466,18 @@ export async function exportCombinedSourceChapterFile(
   const exportJobId = validateExportJobId(request.exportJobId);
   const sourceRange = validateCombinedRange(request.sourceStartChapter, request.sourceEndChapter);
   const outputRange = validateCombinedRange(request.outputStartChapter, request.outputEndChapter);
+  if ((request.splitOutputStartChapter === undefined) !== (request.splitOutputEndChapter === undefined)) {
+    throw new RangeError('Dải chương mới sau chia phải có đủ số đầu và số cuối.');
+  }
+  const splitOutputRange = request.splitOutputStartChapter === undefined
+    ? outputRange
+    : validateCombinedRange(request.splitOutputStartChapter, request.splitOutputEndChapter!);
+  if (
+    splitOutputRange.startChapter !== outputRange.startChapter
+    || splitOutputRange.endChapter < outputRange.endChapter
+  ) {
+    throw new RangeError('Dải chương mới sau chia không bao phủ đầy đủ các chương gốc.');
+  }
   validateChapterList(request.chapters);
   const expectedChapterCount = sourceRange.endChapter - sourceRange.startChapter + 1;
   if (
@@ -486,8 +502,8 @@ export async function exportCombinedSourceChapterFile(
   const fileName = combinedSourceChapterFileName(
     sourceRange.startChapter,
     sourceRange.endChapter,
-    outputRange.startChapter,
-    outputRange.endChapter,
+    splitOutputRange.startChapter,
+    splitOutputRange.endChapter,
   );
   const content = request.chapters.map(chapterDocument).join('\r\n\r\n---\r\n\r\n');
   if (Buffer.byteLength(content, 'utf8') > MAX_TOTAL_BYTES) {

@@ -11,6 +11,9 @@ const INLINE_NOISE = [
   /\s*(?:本站所收录|本站所收錄|所有内容均来自互联网)[\s\S]*$/iu,
 ];
 
+const INVISIBLE_CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu;
+const XBANXIA_TERMINAL_AUTHOR_NOTE = /(?:^|\n)\s*(?:作者有[話话](?:要)?[說说]|p\.?\s*s\.?)\s*(?:[：:]\s*)?[^\n]*/iu;
+
 // These labels belong to Xbanxia's reader chrome. They are deliberately
 // line-anchored: prose that merely mentions a similar phrase stays untouched.
 const XBANXIA_EDGE_NOISE = /^(?:半夏小說\s*[，,]\s*快樂很多|每日推[薦荐](?:\s*[：:].*)?|錯誤提交|错误提交|問題類型|问题类型|章節錯誤|章节错误|閱讀全文|阅读全文|上一章(?:\s*[：:].*)?|下一章(?:\s*[：:].*)?|返回目錄|返回目录|加入書籤|加入书签)\s*$/iu;
@@ -30,12 +33,25 @@ function trimXbanxiaEdgeNoise(text: string): string {
 export function assertCleanXbanxiaStoryText(text: string): void {
   const leaked = text.split('\n').find((line) => XBANXIA_EDGE_NOISE.test(line.trim()));
   if (leaked) throw new Error(`Nội dung Xbanxia còn phần giao diện: ${leaked.slice(0, 80)}`);
+  if (INVISIBLE_CONTROL_CHARACTERS.test(text)) {
+    INVISIBLE_CONTROL_CHARACTERS.lastIndex = 0;
+    throw new Error("Nội dung Xbanxia còn ký tự điều khiển vô hình.");
+  }
+  INVISIBLE_CONTROL_CHARACTERS.lastIndex = 0;
+  if (/\?{5,}/u.test(text) || /(?:^|\n)\s*【\s*第\s*\d+\s*章/iu.test(text) || /cx\d+/iu.test(text)) {
+    throw new Error("Nội dung Xbanxia còn tiêu đề hoặc chuỗi rác của trang nguồn.");
+  }
+  const authorNote = XBANXIA_TERMINAL_AUTHOR_NOTE.exec(text);
+  if (authorNote?.index !== undefined && authorNote.index >= Math.floor(text.length / 2)) {
+    throw new Error("Nội dung Xbanxia còn ghi chú tác giả ở cuối chương.");
+  }
 }
 
 export function normalizeText(raw: string): string {
   let text = raw.normalize("NFC")
     .replace(/\u00a0/gu, " ")
     .replace(/\r\n?/gu, "\n")
+    .replace(INVISIBLE_CONTROL_CHARACTERS, "")
     .replace(/[\t\f\v]+/gu, " ")
     .replace(/[ ]+\n/gu, "\n")
     .replace(/\n[ ]+/gu, "\n");
@@ -61,13 +77,59 @@ export function removeRepeatedHeading(text: string, title: string): string {
  * inside the story container. Only exact line-boundary tails are removed so
  * an occurrence inside the actual narrative is preserved.
  */
-export function cleanXbanxiaStoryText(raw: string): string {
+export function cleanXbanxiaStoryText(raw: string, expectedChapterNumber?: number): string {
   let text = trimXbanxiaEdgeNoise(normalizeText(raw));
-  const authorNote = /(?:^|\n)\s*作者有[話话](?:要)?[說说](?:\s*[：:]\s*[^\n]*)?/iu.exec(text);
+  const authorNote = XBANXIA_TERMINAL_AUTHOR_NOTE.exec(text);
   if (authorNote?.index !== undefined && authorNote.index >= Math.floor(text.length / 2)) {
     text = text.slice(0, authorNote.index).trim();
   }
+  if (expectedChapterNumber !== undefined) {
+    const lines = text.split("\n");
+    while (lines[0] && parseChapterLabel(lines[0]).number === expectedChapterNumber) lines.shift();
+    text = lines.join("\n").trim();
+  }
   return trimXbanxiaEdgeNoise(text);
+}
+
+/**
+ * Returns only a trustworthy Xbanxia title for the expected chapter. Some
+ * mirrors inject a book marker such as `「書名cx129」` before the real title;
+ * that marker is reader chrome, not novel content.
+ */
+export function cleanXbanxiaChapterTitle(raw: string, expectedChapterNumber: number): string | undefined {
+  const parsed = parseChapterLabel(normalizeText(raw));
+  if (parsed.number !== expectedChapterNumber) return undefined;
+  const title = parsed.title
+    .replace(/^\s*[「『《][^」』》]*cx\d+[^」』》]*[」』》]\s*/iu, "")
+    .trim();
+  if (!title || title === parsed.numberLabel || /\?{5,}|cx\d+/iu.test(title) || INVISIBLE_CONTROL_CHARACTERS.test(title)) {
+    INVISIBLE_CONTROL_CHARACTERS.lastIndex = 0;
+    return undefined;
+  }
+  INVISIBLE_CONTROL_CHARACTERS.lastIndex = 0;
+  return title;
+}
+
+/** Repairs only the legacy Xbanxia artifacts already persisted in a durable
+ * checkpoint. Narrative text and paragraph order are otherwise untouched. */
+export function repairLegacyXbanxiaCheckpointSegment(raw: string): string {
+  const normalized = raw.normalize("NFC").replace(/\r\n?/gu, "\n").trim();
+  const heading = /^(?:Chương)\s+(\d+)(?:\s*:\s*([^\n]*))?\n+/iu.exec(normalized);
+  if (!heading?.[1]) return cleanXbanxiaStoryText(normalized);
+
+  const chapterNumber = Number.parseInt(heading[1], 10);
+  const body = normalized.slice(heading[0].length);
+  const originalTitle = cleanXbanxiaChapterTitle(`第${chapterNumber}章 ${heading[2] ?? ""}`, chapterNumber);
+  const embeddedTitle = body.split("\n").slice(0, 3)
+    .map((line) => cleanXbanxiaChapterTitle(line, chapterNumber))
+    .find((title): title is string => Boolean(title));
+  const title = originalTitle ?? embeddedTitle;
+  if (!title) throw new Error(`Không thể khôi phục tiêu đề sạch cho chương Xbanxia ${chapterNumber}.`);
+
+  const cleanedBody = cleanXbanxiaStoryText(body, chapterNumber);
+  assertCleanXbanxiaStoryText(cleanedBody);
+  assertPlausibleStoryText(cleanedBody, `Xbanxia chương ${chapterNumber}`);
+  return `Chương ${chapterNumber}: ${title}\n\n${cleanedBody}`;
 }
 
 /** Removes only an explicit terminal Ixdzs author/new-book note. */
@@ -125,7 +187,18 @@ export function parseChapterLabel(label: string): {
   title: string;
   isIntroduction: boolean;
 } {
-  const clean = label.normalize("NFC").replace(/^\s*\d+\s*[.\u3001]\s*/u, "").trim();
+  const listed = label.normalize("NFC").replace(/^\s*\d+\s*[.\u3001]\s*/u, "").trim();
+  // Xbanxia and several mirror catalogs wrap the *entire* real heading in
+  // decorative brackets, for example `【第3章 換房子】`. Treating that wrapper
+  // as part of the title hides the source number and later creates malformed
+  // headers such as `Chương 1: 【Chương 3: ...】`.
+  const wrapperPairs: ReadonlyArray<readonly [string, string]> = [
+    ["【", "】"],
+    ["[", "]"],
+    ["［", "］"],
+  ];
+  const wrapper = wrapperPairs.find(([open, close]) => listed.startsWith(open) && listed.endsWith(close));
+  const clean = wrapper ? listed.slice(wrapper[0].length, -wrapper[1].length).trim() : listed;
   const introduction = /^(?:内容简介|內容簡介|作品相关|作品相關|序章|楔子|引子|前言|简介|簡介)$/iu.test(clean);
   const numbered = /^\s*第\s*(\d+|[零〇一二三四五六七八九十百千万萬两兩]+)\s*章\s*(.*)$/iu.exec(clean);
   if (numbered?.[1]) {

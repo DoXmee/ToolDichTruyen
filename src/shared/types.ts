@@ -218,11 +218,15 @@ export interface TranslationAutoExportBinding {
   omitOutputChapterTitles: boolean;
 }
 
+/** AI web service selected for a translation job. */
+export type AiProvider = 'chatgpt' | 'kimi';
+
 export interface TranslationJob {
   id: string;
   createdAt: string;
   updatedAt: string;
   status: TranslationJobStatus;
+  aiProvider: AiProvider;
   promptMode: PromptMode;
   customPrompt?: string;
   resolvedPrompt: string;
@@ -259,6 +263,7 @@ export interface TranslationJobSnapshot {
   createdAt?: string;
   updatedAt: string;
   status: TranslationJobStatus;
+  aiProvider: AiProvider;
   totalSegments: number;
   completedSegments: number;
   segments: TranslationSegmentSnapshot[];

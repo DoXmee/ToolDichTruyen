@@ -16,6 +16,7 @@ import type {
   StorySourceProgress,
   TranslationActivityEntry,
   TranslationJobSnapshot,
+  AiProvider,
 } from '../shared';
 import {
   chapterContentFingerprint,
@@ -279,13 +280,18 @@ function loadSplitConfig(value: unknown): SplitConfig {
   };
 }
 
-function connectionPresentation(state: ConnectionState) {
+function aiProviderLabel(provider: AiProvider): string {
+  return provider === 'kimi' ? 'Kimi AI' : 'ChatGPT';
+}
+
+function connectionPresentation(state: ConnectionState, provider: AiProvider) {
+  const label = aiProviderLabel(provider);
   switch (state) {
-    case 'connected': return { label: 'ChatGPT đã kết nối', tone: 'success' as const };
-    case 'connecting': return { label: 'Đang mở ChatGPT…', tone: 'info' as const };
-    case 'login-required': return { label: 'Chờ đăng nhập ChatGPT', tone: 'warning' as const };
+    case 'connected': return { label: `${label} đã kết nối`, tone: 'success' as const };
+    case 'connecting': return { label: `Đang mở ${label}…`, tone: 'info' as const };
+    case 'login-required': return { label: `Chờ đăng nhập ${label}`, tone: 'warning' as const };
     case 'error': return { label: 'Kết nối có lỗi', tone: 'danger' as const };
-    default: return { label: 'Chưa kết nối ChatGPT', tone: 'neutral' as const };
+    default: return { label: `Chưa kết nối ${label}`, tone: 'neutral' as const };
   }
 }
 
@@ -365,11 +371,13 @@ export default function App() {
   const [prompts, setPrompts] = useState(DEFAULT_PROMPTS);
   const [splitConfig, setSplitConfig] = useState<SplitConfig>(DEFAULT_SPLIT_CONFIG);
   const [connection, setConnection] = useState<ConnectionState>('disconnected');
+  const [aiProvider, setAiProvider] = useState<AiProvider>('chatgpt');
   const [translationState, setTranslationState] = useState<TranslationState>('idle');
   const [activeJobId, setActiveJobId] = useState('');
   const [translationHistory, setTranslationHistory] = useState<TranslationJobSnapshot[]>([]);
   const [activityLog, setActivityLog] = useState<TranslationActivityEntry[]>([]);
   const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
+  const [isChapterDrawerOpen, setIsChapterDrawerOpen] = useState(false);
   const [completedSegments, setCompletedSegments] = useState(0);
   const [totalSegments, setTotalSegments] = useState(0);
   const [segmentErrors, setSegmentErrors] = useState<SegmentError[]>([]);
@@ -412,11 +420,29 @@ export default function App() {
   }, [appAvailable]);
   const suggestedOutputChapterStart = useMemo(() => {
     if (!storyAnalysis) return undefined;
-    return storyAnalysis.chapters
-      .filter((chapter) => !chapter.isIntroduction && selectedChapterIds.has(chapter.id))
-      .sort((first, second) => first.order - second.order)
-      .map((chapter) => chapter.number)
-      .find((number): number is number => typeof number === 'number' && Number.isInteger(number) && number > 0);
+    const selectableChapters = storyAnalysis.chapters
+      .filter((chapter) => !chapter.isIntroduction)
+      .sort((first, second) => first.order - second.order);
+    const selectedPosition = selectableChapters.findIndex((chapter) => selectedChapterIds.has(chapter.id));
+    if (selectedPosition < 0) return undefined;
+
+    const firstSelected = selectableChapters[selectedPosition];
+    if (!firstSelected) return undefined;
+    if (
+      typeof firstSelected.number === 'number'
+      && Number.isInteger(firstSelected.number)
+      && firstSelected.number > 0
+    ) return firstSelected.number;
+
+    // Some catalogs expose only a display label (or no trustworthy numeric
+    // field at all). A valid selection must still unlock output numbering.
+    // Prefer an Arabic number visible in the label, then fall back to the
+    // chapter's one-based reading position after introductions are removed.
+    const labelNumber = firstSelected.numberLabel.match(/\d+/u)?.[0];
+    const parsedLabelNumber = labelNumber ? Number(labelNumber) : Number.NaN;
+    return Number.isInteger(parsedLabelNumber) && parsedLabelNumber > 0
+      ? parsedLabelNumber
+      : selectedPosition + 1;
   }, [selectedChapterIds, storyAnalysis]);
 
   useEffect(() => {
@@ -539,7 +565,12 @@ export default function App() {
         setAutoExportResolvedDirectory(
           typeof draft.autoExportResolvedDirectory === 'string' && draft.autoExportResolvedDirectory.trim()
             ? draft.autoExportResolvedDirectory
-            : undefined,
+            : restoredAutoExportJobId && typeof draft.exportDirectory === 'string' && draft.exportDirectory.trim()
+              // Migration for older drafts: once a job id exists, the folder
+              // saved beside it belongs to that checkpoint. It must never fall
+              // back to a folder the user later chooses for another story.
+              ? draft.exportDirectory
+              : undefined,
         );
         if (Array.isArray(draft.exportedRecords)) {
           setExportedRecords(draft.exportedRecords.filter(isChapterExportRecord));
@@ -561,10 +592,15 @@ export default function App() {
     if (!initialized || !appAvailable) return;
     setSaveState('saving');
     const timer = window.setTimeout(async () => {
+      // Once a real checkpoint id exists, the runner already owns the exact
+      // multi-megabyte source and validated output. Duplicating both strings
+      // (and output a second time) in draft.json made autosave and the next
+      // launch unnecessarily serialize tens of megabytes.
+      const contentBackedByCheckpoint = Boolean(autoExportJobId && autoExportJobId !== 'pending');
       const draft: RendererDraft = {
         version: 2,
-        source,
-        output,
+        source: contentBackedByCheckpoint ? '' : source,
+        output: contentBackedByCheckpoint ? '' : output,
         promptMode,
         customPrompt,
         splitConfig,
@@ -581,7 +617,7 @@ export default function App() {
         ...(autoExportRange ? { autoExportRange } : {}),
         ...(autoExportOutputChapterStart !== undefined ? { autoExportOutputChapterStart } : {}),
         ...(autoExportJobId ? { autoExportOmitOutputChapterTitles } : {}),
-        ...(autoExportOutput ? { autoExportOutput } : {}),
+        ...(!contentBackedByCheckpoint && autoExportOutput ? { autoExportOutput } : {}),
         ...(autoExportResolvedDirectory ? { autoExportResolvedDirectory } : {}),
         exportedRecords,
         originalExportedRecords,
@@ -723,7 +759,10 @@ export default function App() {
     if (status === 'failed') setTranslationState('error');
   }, []);
 
-  const bindAutoExportFromCheckpoint = useCallback((job: TranslationJobSnapshot): boolean => {
+  const bindAutoExportFromCheckpoint = useCallback((
+    job: TranslationJobSnapshot,
+    syncEditableDirectory = false,
+  ): boolean => {
     const binding = job.autoExport;
     if (!binding) return false;
     // This data belongs to the checkpoint, not to whatever the user has
@@ -732,16 +771,28 @@ export default function App() {
     autoExportJobRef.current = job.id;
     setAutoExportJobId(job.id);
     setAutoExportStartedAt(Date.parse(job.createdAt ?? '') || Date.now());
-    setExportDirectory(binding.directory);
+    // Automatic polling/recovery must not overwrite a folder the user has
+    // already selected for the next run. Only an explicit History action is
+    // allowed to bring the checkpoint folder back into the editable form.
+    if (syncEditableDirectory) setExportDirectory(binding.directory);
     setAutoExportResolvedDirectory(binding.directory);
     setExportOriginalChapters(binding.exportOriginalChapters);
     setExportCombinedChapters(binding.exportCombinedChapters);
     setExportCombinedSourceChapters(binding.exportCombinedSourceChapters === true);
-    setAutoExportRange({
+    const nextRange = {
       startChapter: binding.startChapter,
       endChapter: binding.endChapter,
       sourceChapterNumbers: [...binding.sourceChapterNumbers],
-    });
+    };
+    setAutoExportRange((current) => (
+      current
+      && current.startChapter === nextRange.startChapter
+      && current.endChapter === nextRange.endChapter
+      && current.sourceChapterNumbers.length === nextRange.sourceChapterNumbers.length
+      && current.sourceChapterNumbers.every((number, index) => number === nextRange.sourceChapterNumbers[index])
+        ? current
+        : nextRange
+    ));
     autoExportOutputChapterStartRef.current = binding.outputChapterStart;
     setAutoExportOutputChapterStart(binding.outputChapterStart);
     setAutoExportOmitOutputChapterTitles(binding.omitOutputChapterTitles);
@@ -760,14 +811,35 @@ export default function App() {
 
     setTotalSegments(job.totalSegments);
     setCompletedSegments(job.completedSegments);
-    setActivityLog(job.activityLog ?? []);
+    const nextActivityLog = job.activityLog ?? [];
+    setActivityLog((current) => {
+      if (current === nextActivityLog) return current;
+      if (current.length !== nextActivityLog.length) return nextActivityLog;
+      const currentFirst = current[0];
+      const nextFirst = nextActivityLog[0];
+      const currentLast = current.at(-1);
+      const nextLast = nextActivityLog.at(-1);
+      return currentFirst?.at === nextFirst?.at
+        && currentFirst?.message === nextFirst?.message
+        && currentLast?.at === nextLast?.at
+        && currentLast?.message === nextLast?.message
+        ? current
+        : nextActivityLog;
+    });
     if (job.translatedText !== undefined) {
       outputRef.current = job.translatedText;
-      setOutput(job.translatedText);
-      if (job.id === autoExportJobRef.current) setAutoExportOutput(job.translatedText);
+      setOutput((current) => current === job.translatedText ? current : job.translatedText!);
+      if (job.id === autoExportJobRef.current) {
+        setAutoExportOutput((current) => current === job.translatedText ? current : job.translatedText!);
+      }
     }
     if (job.sourceText !== undefined && job.id === autoExportJobRef.current) {
-      setAutoExportSource(job.sourceText);
+      setAutoExportSource((current) => current === job.sourceText ? current : job.sourceText!);
+      // A resumed checkpoint may have repaired source artifacts before the
+      // renderer reconnects. Keep the durable draft in sync as well, so a
+      // later app restart and the final combined-source export cannot fall
+      // back to the pre-repair text.
+      setSource((current) => current === job.sourceText ? current : job.sourceText!);
     }
 
     const failedSegments = job.segments
@@ -777,7 +849,16 @@ export default function App() {
         segmentId: segment.id,
         message: segment.error || `Đoạn ${segment.index + 1} chưa vượt qua kiểm tra chất lượng.`,
       }));
-    setSegmentErrors(failedSegments);
+    setSegmentErrors((current) => (
+      current.length === failedSegments.length
+      && current.every((error, index) => (
+        error.id === failedSegments[index]?.id
+        && error.segmentId === failedSegments[index]?.segmentId
+        && error.message === failedSegments[index]?.message
+      ))
+        ? current
+        : failedSegments
+    ));
     setCanContinueFromCheckpoint(
       (job.status === 'failed' || job.status === 'cancelled')
       && failedSegments.length === 0
@@ -832,14 +913,9 @@ export default function App() {
         if (disposed) return;
         const recoverable = latestRecoverableTranslation(jobs);
         if (!recoverable) return;
-        if (recoverable.autoExport) {
-          void getStoryTool().getTranslation(recoverable.id)
-            .then((checkpoint) => {
-              if (!disposed) reconcileTranslationJob(checkpoint);
-            })
-            .catch(() => reconcileTranslationJob(recoverable));
-          return;
-        }
+        // Startup uses the lightweight snapshot. Pulling a complete long book
+        // here blocks the renderer before the user can interact; full text is
+        // loaded only when resuming or reconciling a completed export.
         reconcileTranslationJob(recoverable);
       })
       .catch(() => undefined);
@@ -847,8 +923,25 @@ export default function App() {
   }, [appAvailable, reconcileTranslationJob]);
 
   useEffect(() => {
-    void refreshTranslationHistory().catch(() => undefined);
-  }, [refreshTranslationHistory]);
+    if (!appAvailable) return;
+    let disposed = false;
+    // Let the title bar and primary controls accept input before migrating or
+    // reading a large checkpoint archive. The runner coalesces restoration,
+    // so this does not duplicate disk work.
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        await refreshTranslationHistory();
+        if (disposed || activeJobRef.current) return;
+        const recoverable = latestRecoverableTranslation(await getStoryTool().getActiveTranslations());
+        if (!recoverable || disposed) return;
+        if (!disposed) reconcileTranslationJob(recoverable);
+      })().catch(() => undefined);
+    }, 400);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [appAvailable, reconcileTranslationJob, refreshTranslationHistory]);
 
   // A book translation may finish just before the window closes. Completed
   // jobs are intentionally absent from the active-job list, so recover the
@@ -858,8 +951,29 @@ export default function App() {
   useEffect(() => {
     if (!appAvailable || !initialized || !autoExportJobId || autoExportJobId === 'pending') return;
     let disposed = false;
-    void getStoryTool().getTranslation(autoExportJobId)
-      .then((job) => {
+    // This is the immutable directory captured by the job. `exportDirectory`
+    // is an editable choice for a future run and must never unlock/re-route an
+    // old completed checkpoint.
+    const pendingDirectory = autoExportResolvedDirectory;
+    if (!pendingDirectory) return;
+    void (async () => {
+      try {
+        // A renamed, moved or deleted destination must not make the renderer
+        // hydrate and repeatedly process a multi-megabyte completed job. Keep
+        // the durable association intact, but wait until the user selects a
+        // valid folder before resuming export reconciliation.
+        await getStoryTool().validateChapterDirectory(pendingDirectory);
+        const summaries = await getStoryTool().discoverTranslations();
+        const summary = summaries.find((candidate) => candidate.id === autoExportJobId);
+        if (summary && ['queued', 'running', 'paused'].includes(summary.status)) {
+          if (!disposed) {
+            activeJobRef.current = summary.id;
+            setActiveJobId(summary.id);
+            reconcileTranslationJob(summary);
+          }
+          return;
+        }
+        const job = await getStoryTool().getTranslation(autoExportJobId);
         if (disposed || job.id !== autoExportJobId) return;
         // A cancelled or failed checkpoint belongs to history.  Binding it as
         // the active job makes the UI look locked even though the runner no
@@ -879,15 +993,25 @@ export default function App() {
         activeJobRef.current = job.id;
         setActiveJobId(job.id);
         reconcileTranslationJob(job);
-      })
-      .catch((error) => {
+      } catch (error) {
         if (!disposed) {
           const message = error instanceof Error ? error.message : 'lỗi không xác định';
-          setAppNotice(`Không thể khôi phục tác vụ đang chờ lưu chương: ${message}`);
+          setAppNotice(
+            `Không thể tự khôi phục nơi xuất của checkpoint cũ: ${message} `
+            + 'Thư mục bạn chọn sau đó chỉ áp dụng cho lượt dịch mới; checkpoint cũ vẫn được giữ trong Lịch sử.',
+          );
         }
-      });
+      }
+    })();
     return () => { disposed = true; };
-  }, [appAvailable, autoExportJobId, initialized, reconcileTranslationJob, refreshTranslationHistory]);
+  }, [
+    appAvailable,
+    autoExportJobId,
+    autoExportResolvedDirectory,
+    initialized,
+    reconcileTranslationJob,
+    refreshTranslationHistory,
+  ]);
 
   useEffect(() => {
     if (!appAvailable || !initialized || autoExportJobId !== 'pending' || !autoExportStartedAt) return;
@@ -934,13 +1058,24 @@ export default function App() {
     if (jobIds.length !== 1) return;
     const recoveredJobId = jobIds[0];
     if (!recoveredJobId) return;
+    const recordDirectories = [...new Set(exportedRecords
+      .filter((record) => record.exportJobId === recoveredJobId)
+      .map((record) => record.exportDirectory)
+      .filter(Boolean))];
+    // A legacy recovery is safe only when its own persisted records prove one
+    // unambiguous destination. Never borrow the current folder field.
+    if (recordDirectories.length !== 1) return;
+    const recoveredDirectory = recordDirectories[0];
+    if (!recoveredDirectory) return;
     let disposed = false;
-    void getStoryTool().getTranslation(recoveredJobId)
+    void getStoryTool().validateChapterDirectory(recoveredDirectory)
+      .then(() => getStoryTool().getTranslation(recoveredJobId))
       .then((job) => {
         if (disposed || job.id !== recoveredJobId || job.status !== 'completed') return;
         autoExportJobRef.current = job.id;
         activeJobRef.current = job.id;
         setAutoExportJobId(job.id);
+        setAutoExportResolvedDirectory(recoveredDirectory);
         setActiveJobId(job.id);
         setTranslationState('complete');
         setAppNotice('Đang khôi phục lượt tạo file tổng hợp còn thiếu từ checkpoint đã hoàn tất.');
@@ -993,7 +1128,11 @@ export default function App() {
     };
 
     void synchronize();
-    const timer = window.setInterval(() => { void synchronize(); }, 1_500);
+    // Translation events are the primary real-time channel. This full
+    // checkpoint is only a recovery safety net and can contain several MB of
+    // source, output, segments and logs, so polling it every 1.5 seconds made
+    // long books repeatedly cross IPC and forced expensive renderer work.
+    const timer = window.setInterval(() => { void synchronize(); }, 10_000);
     return () => {
       disposed = true;
       window.clearInterval(timer);
@@ -1003,8 +1142,12 @@ export default function App() {
   useEffect(() => {
     if (!appAvailable) return;
     const api = getStoryTool();
-    if (!api.onChatGPTStatus) return;
-    return api.onChatGPTStatus((snapshot) => {
+    const subscribe = api.onAiStatus ?? api.onChatGPTStatus;
+    if (!subscribe) return;
+    return subscribe((snapshot) => {
+      if ('provider' in snapshot && (snapshot.provider === 'chatgpt' || snapshot.provider === 'kimi')) {
+        setAiProvider(snapshot.provider);
+      }
       const status = snapshot.status.toLowerCase();
       if (status === 'ready') setConnection('connected');
       else if (status === 'opening' || status === 'busy') setConnection('connecting');
@@ -1013,6 +1156,28 @@ export default function App() {
       else if (status === 'closed') setConnection('disconnected');
       if (snapshot.message) setAppNotice(snapshot.message);
     });
+  }, [appAvailable]);
+
+  useEffect(() => {
+    if (!appAvailable) return;
+    let alive = true;
+    const api = getStoryTool();
+    void (async () => {
+      try {
+        const provider = await api.getAiProvider?.();
+        if (!alive || !provider) return;
+        setAiProvider(provider);
+        const snapshot = await api.getAiStatus?.();
+        if (!alive || !snapshot) return;
+        if (snapshot.status === 'ready') setConnection('connected');
+        else if (snapshot.status === 'login-required') setConnection('login-required');
+        else if (snapshot.status === 'error') setConnection('error');
+        else setConnection('disconnected');
+      } catch {
+        // Older preload builds retain the ChatGPT-only compatibility path.
+      }
+    })();
+    return () => { alive = false; };
   }, [appAvailable]);
 
   useEffect(() => {
@@ -1028,22 +1193,49 @@ export default function App() {
     }
   }, [appAvailable]);
 
-  const connectChatGPT = async () => {
+  const connectAi = async () => {
     if (!appAvailable || connection === 'connecting') return;
     setConnection('connecting');
     setAppNotice('');
     try {
-      const result = await getStoryTool().connectChatGPT();
+      const api = getStoryTool();
+      const result = api.connectAi ? await api.connectAi() : await api.connectChatGPT();
       const status = result.status.toLowerCase();
       if (status.includes('connected') || status.includes('ready')) {
         setConnection('connected');
       } else {
         setConnection('login-required');
-        setAppNotice(result.message || 'Hãy hoàn tất đăng nhập trong cửa sổ ChatGPT, sau đó bấm “Kiểm tra kết nối”.');
+        setAppNotice(result.message || `Hãy hoàn tất đăng nhập trong cửa sổ ${aiProviderLabel(aiProvider)}, sau đó bấm “Kiểm tra kết nối”.`);
       }
     } catch (error) {
       setConnection('error');
-      setAppNotice(error instanceof Error ? error.message : 'Không thể mở phiên ChatGPT Web.');
+      setAppNotice(error instanceof Error ? error.message : `Không thể mở phiên ${aiProviderLabel(aiProvider)}.`);
+    }
+  };
+
+  const changeAiProvider = async (provider: AiProvider) => {
+    // A paused checkpoint owns its recorded provider and the runner restores
+    // that provider before resuming. Therefore changing the provider shown in
+    // the header while paused is safe. Only an actively running/cancelling job
+    // must lock the switch.
+    if (!appAvailable || provider === aiProvider || ['running', 'cancelling'].includes(translationState)) return;
+    setConnection('connecting');
+    setAppNotice('');
+    try {
+      const api = getStoryTool();
+      if (!api.setAiProvider) throw new Error('Bản ứng dụng này chưa hỗ trợ đổi AI.');
+      await api.setAiProvider(provider);
+      setAiProvider(provider);
+      const snapshot = api.connectAi ? await api.connectAi() : await api.connectChatGPT();
+      const status = snapshot.status.toLowerCase();
+      if (status.includes('ready') || status.includes('connected')) setConnection('connected');
+      else if (status === 'login-required') setConnection('login-required');
+      else if (status === 'error') setConnection('error');
+      else setConnection('connecting');
+      if (snapshot.message) setAppNotice(snapshot.message);
+    } catch (error) {
+      setConnection('error');
+      setAppNotice(error instanceof Error ? error.message : 'Không thể đổi AI.');
     }
   };
 
@@ -1066,7 +1258,7 @@ export default function App() {
     setCombinedSourceExport(undefined);
     setAutoExportOutput('');
     setAutoExportSource(automaticExportDirectory ? sourceText : '');
-    setAutoExportResolvedDirectory(undefined);
+    setAutoExportResolvedDirectory(automaticExportDirectory || undefined);
     outputRef.current = '';
     const nextExportRange = automaticExportDirectory
       ? sourceChapterRange(sourceText, splitConfig)
@@ -1120,13 +1312,14 @@ export default function App() {
       const result = await getStoryTool().startTranslation({
         source: sourceText,
         promptMode,
+        ...(aiProvider === 'kimi' ? { aiProvider } : {}),
         customPrompt: promptMode === 'custom' ? customPrompt.trim() : undefined,
         // Link imports preserve an ordinary source chapter in one request;
         // only unusually long chapters are split by the runner.
         settings: {
           maxRetries: 3,
           maxCharsPerSegment: 12_000,
-          responseTimeoutMs: 480_000,
+          responseTimeoutMs: aiProvider === 'kimi' ? 600_000 : 480_000,
         },
         ...(automaticExportDirectory && nextExportRange
           ? {
@@ -1171,6 +1364,7 @@ export default function App() {
         autoExportJobRef.current = '';
         setAutoExportJobId('');
         setAutoExportStartedAt(0);
+        setAutoExportResolvedDirectory(undefined);
         autoExportOutputChapterStartRef.current = undefined;
         setAutoExportOutputChapterStart(undefined);
         setAutoExportOmitOutputChapterTitles(false);
@@ -1306,7 +1500,7 @@ export default function App() {
   const fetchAndTranslateStory = async () => {
     if (!storyAnalysis || selectedChapterIds.size === 0 || !exportDirectory) return;
     if (connection !== 'connected') {
-      setAppNotice('Hãy kết nối ChatGPT trước khi tải và dịch bộ truyện.');
+      setAppNotice(`Hãy kết nối ${aiProviderLabel(aiProvider)} trước khi tải và dịch bộ truyện.`);
       return;
     }
     try {
@@ -1371,6 +1565,11 @@ export default function App() {
   const resumeTranslation = async () => {
     if (!activeJobRef.current) return;
     try {
+      // Startup intentionally restores only lightweight progress metadata.
+      // Hydrate the exact checkpoint once, at the user's explicit resume, so
+      // prior translated segments and automatic exports remain complete.
+      const checkpoint = await getStoryTool().getTranslation(activeJobRef.current);
+      reconcileTranslationJob(checkpoint);
       await getStoryTool().resumeTranslation(activeJobRef.current);
       setTranslationState('running');
     } catch (error) {
@@ -1394,7 +1593,7 @@ export default function App() {
   const bindTranslationHistoryJob = (job: TranslationJobSnapshot) => {
     activeJobRef.current = job.id;
     setActiveJobId(job.id);
-    bindAutoExportFromCheckpoint(job);
+    bindAutoExportFromCheckpoint(job, true);
     reconcileTranslationJob(job);
   };
 
@@ -1403,9 +1602,7 @@ export default function App() {
       // History entries are lightweight. Fetch the full checkpoint first so
       // its immutable export binding and already translated chapters are
       // restored before the runner produces the next segment.
-      const checkpoint = job.autoExport
-        ? await getStoryTool().getTranslation(job.id)
-        : job;
+      const checkpoint = await getStoryTool().getTranslation(job.id);
       bindTranslationHistoryJob(checkpoint);
       await getStoryTool().resumeTranslation(job.id);
       setTranslationState('running');
@@ -1422,9 +1619,7 @@ export default function App() {
     segmentId: string,
   ) => {
     try {
-      const checkpoint = job.autoExport
-        ? await getStoryTool().getTranslation(job.id)
-        : job;
+      const checkpoint = await getStoryTool().getTranslation(job.id);
       bindTranslationHistoryJob(checkpoint);
       setSegmentErrors((current) => current.filter((error) => error.segmentId !== segmentId));
       await getStoryTool().retrySegment({ jobId: job.id, segmentId });
@@ -1521,7 +1716,9 @@ export default function App() {
     // completed source chapter while later segments are still translating.
     autoDetectTitle: true,
   }), [splitConfig]);
-  const resolvedAutoExportDirectory = autoExportResolvedDirectory ?? exportDirectory;
+  // Export effects may only use the immutable job-owned directory. The
+  // editable folder is exclusively an input for the next start request.
+  const resolvedAutoExportDirectory = autoExportJobId ? autoExportResolvedDirectory : undefined;
 
   useEffect(() => {
     // A failed/cancelled job may be resumed. Its trailing source chapter is
@@ -1562,6 +1759,7 @@ export default function App() {
           chapters: chapters.map(exportInput),
           recoveryOnConflict: true,
         });
+        if (autoExportJobRef.current !== jobId) return;
         if (result.directory !== resolvedAutoExportDirectory) setAutoExportResolvedDirectory(result.directory);
         setExportedRecords((current) => {
           const records = new Map(current.map((record) => [exportRecordKey(record), record]));
@@ -1635,6 +1833,7 @@ export default function App() {
           chapters: chapters.map(exportInput),
           recoveryOnConflict: true,
         });
+        if (autoExportJobRef.current !== jobId) return;
         const parentDirectory = result.directory.endsWith('\\Chương dịch gốc chưa chia')
           ? result.directory.slice(0, -'\\Chương dịch gốc chưa chia'.length)
           : resolvedAutoExportDirectory;
@@ -1684,6 +1883,7 @@ export default function App() {
       || activeJobId !== autoExportJobId
       || !resolvedAutoExportDirectory
       || !autoExportSource.trim()
+      || !autoExportOutput.trim()
       || exportingCombinedSourceJobsRef.current.has(activeJobId)
     ) return;
 
@@ -1705,6 +1905,14 @@ export default function App() {
     const outputStartChapter = chapters[0]?.index;
     const outputEndChapter = chapters.at(-1)?.index;
     if (outputStartChapter === undefined || outputEndChapter === undefined) return;
+    const splitOutputChapters = renumberFinalExportChapters(
+      splitSealedChapters(autoExportOutput, splitForAutomaticExport, true),
+      autoExportOutputChapterStart,
+      autoExportOmitOutputChapterTitles,
+    );
+    const splitOutputStartChapter = splitOutputChapters[0]?.index;
+    const splitOutputEndChapter = splitOutputChapters.at(-1)?.index;
+    if (splitOutputStartChapter === undefined || splitOutputEndChapter === undefined) return;
     const combinedHash = combinedChapterContentFingerprint(outputStartChapter, outputEndChapter, chapters);
     const reconciliationKey = `combined-source\u0000${activeJobId}\u0000${resolvedAutoExportDirectory}\u0000${range.startChapter}-${range.endChapter}\u0000${combinedHash}`;
     if (
@@ -1729,9 +1937,12 @@ export default function App() {
           sourceEndChapter: range.endChapter,
           outputStartChapter,
           outputEndChapter,
+          splitOutputStartChapter,
+          splitOutputEndChapter,
           chapters: chapters.map(exportInput),
           recoveryOnConflict: true,
         });
+        if (autoExportJobRef.current !== jobId) return;
         setCombinedSourceExport(result);
         reconciledAutoExportsRef.current.add(reconciliationKey);
         if (result.directory !== resolvedAutoExportDirectory) setAutoExportResolvedDirectory(result.directory);
@@ -1756,6 +1967,7 @@ export default function App() {
     autoExportOutputChapterStart,
     autoExportRange,
     autoExportRetryTick,
+    autoExportOutput,
     autoExportSource,
     combinedSourceExport,
     exportCombinedSourceChapters,
@@ -1827,6 +2039,7 @@ export default function App() {
           chapters: chapters.map(exportInput),
           recoveryOnConflict: true,
         });
+        if (autoExportJobRef.current !== jobId) return;
         setCombinedExport(result);
         reconciledAutoExportsRef.current.add(reconciliationKey);
         if (result.directory !== resolvedAutoExportDirectory) setAutoExportResolvedDirectory(result.directory);
@@ -1870,6 +2083,7 @@ export default function App() {
       translationState !== 'complete'
       || !activeJobId
       || activeJobId !== autoExportJobId
+      || !resolvedAutoExportDirectory
       || !autoExportOutput.trim()
     ) return;
     const rawSplitChapters = splitSealedChapters(autoExportOutput, splitForAutomaticExport, true);
@@ -1975,7 +2189,8 @@ export default function App() {
     translationState,
   ]);
 
-  const connectionInfo = connectionPresentation(connection);
+  const connectionInfo = connectionPresentation(connection, aiProvider);
+  const providerLabel = aiProviderLabel(aiProvider);
   const outputHanCount = useMemo(() => (output.match(/\p{Script=Han}/gu) ?? []).length, [output]);
   const outputWords = useMemo(() => analyzeTextLanguage(output, 'vi').totalWords, [output]);
   const canStart = Boolean(source.trim()) && (promptMode !== 'custom' || Boolean(customPrompt.trim()));
@@ -2000,8 +2215,25 @@ export default function App() {
           </div>
         </div>
         <div className="connection-box">
-          <div>
-            <StatusPill tone={connectionInfo.tone} pulse={connection === 'connecting'}>{connectionInfo.label}</StatusPill>
+          <div className="connection-box__identity">
+            <div className="connection-box__status-row">
+              <StatusPill tone={connectionInfo.tone} pulse={connection === 'connecting'}>{connectionInfo.label}</StatusPill>
+              <div className="ai-provider-switch" aria-label="AI dùng để dịch" role="radiogroup">
+                {(['chatgpt', 'kimi'] as const).map((provider) => (
+                  <button
+                    aria-checked={aiProvider === provider}
+                    className={aiProvider === provider ? 'is-active' : ''}
+                    disabled={!appAvailable || ['running', 'cancelling'].includes(translationState)}
+                    key={provider}
+                    onClick={() => void changeAiProvider(provider)}
+                    role="radio"
+                    type="button"
+                  >
+                    {provider === 'kimi' ? 'Kimi AI' : 'ChatGPT'}
+                  </button>
+                ))}
+              </div>
+            </div>
             <small>Phiên đăng nhập được lưu cục bộ trên máy này.</small>
           </div>
           <button
@@ -2022,7 +2254,7 @@ export default function App() {
             <span aria-hidden="true">{colorTheme === 'dark' ? '☀' : '☾'}</span>
             {colorTheme === 'dark' ? 'Sáng' : 'Tối'}
           </button>
-          <button className="button button--secondary" disabled={!appAvailable || connection === 'connecting'} onClick={connectChatGPT} type="button">
+          <button className="button button--secondary" disabled={!appAvailable || connection === 'connecting'} onClick={connectAi} type="button">
             <Icon name="link" />
             {connection === 'connected' || connection === 'login-required'
               ? 'Kiểm tra kết nối'
@@ -2136,9 +2368,7 @@ export default function App() {
                 }}
               />
             )}
-            <div className="editor-footer">
-              {translationState === 'running' && <span className="editor-footer__note">Tác vụ đang dùng bản nguồn tại lúc bấm Dịch.</span>}
-            </div>
+            <div className="editor-footer" />
           </section>
 
           <PromptSelector
@@ -2199,6 +2429,7 @@ export default function App() {
         </div>
 
         <TranslationControls
+          providerLabel={providerLabel}
           canStart={canStart}
           completedSegments={completedSegments}
           connected={connection === 'connected'}
@@ -2275,7 +2506,10 @@ export default function App() {
           </details>
         )}
 
-        <details className="chapter-drawer">
+        <details
+          className="chapter-drawer"
+          onToggle={(event) => setIsChapterDrawerOpen(event.currentTarget.open)}
+        >
           <summary>
             <span><Icon name="split" /> Chia chương tự động</span>
             <small>
@@ -2286,31 +2520,33 @@ export default function App() {
                   : 'Tự chạy theo từng phần đã dịch'}
             </small>
           </summary>
-          <ChapterSplitter
-            config={splitConfig}
-            sourceText={output}
-            onConfigChange={setSplitConfig}
-            onDetectedChapterStart={(chapterNumber) => {
-              setSplitConfig((current) => (
-                current.startIndex === chapterNumber && !current.prefix && !current.suffix && current.autoDetectTitle
-                  ? current
-                  : {
-                    ...current,
-                    startIndex: chapterNumber,
-                    prefix: '',
-                    suffix: '',
-                    autoDetectTitle: true,
-                  }
-              ));
-            }}
-            onCheckpoint={setSplitCheckpoint}
-          />
+          {isChapterDrawerOpen && (
+            <ChapterSplitter
+              config={splitConfig}
+              sourceText={output}
+              onConfigChange={setSplitConfig}
+              onDetectedChapterStart={(chapterNumber) => {
+                setSplitConfig((current) => (
+                  current.startIndex === chapterNumber && !current.prefix && !current.suffix && current.autoDetectTitle
+                    ? current
+                    : {
+                      ...current,
+                      startIndex: chapterNumber,
+                      prefix: '',
+                      suffix: '',
+                      autoDetectTitle: true,
+                    }
+                ));
+              }}
+              onCheckpoint={setSplitCheckpoint}
+            />
+          )}
         </details>
       </main>
 
       <footer className="app-footer">
         <span>Dữ liệu bản thảo được lưu trên thiết bị của bạn.</span>
-        <span>ChatGPT Web chỉ nhận nội dung khi bạn bắt đầu dịch.</span>
+        <span>{providerLabel} chỉ nhận nội dung khi bạn bắt đầu dịch.</span>
       </footer>
     </div>
   );

@@ -85,6 +85,7 @@ describe('prompt builder', () => {
 
     expect(prompt).toContain(catalog.modern);
     expect(prompt).toContain('SỬA CỤC BỘ 2 CÂU LỖI (LẦN 2)');
+    expect(prompt).toContain('VẪN LỖI');
     expect(prompt).toContain('<CAU_CAN_SUA id="segment-1-han-12">');
     expect(prompt).toContain('<CAU_CAN_SUA id="segment-1-han-48">');
     expect(prompt).toContain('<CAU_DA_SUA id="segment-1-han-12">');

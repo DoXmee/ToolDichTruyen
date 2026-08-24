@@ -18,6 +18,7 @@ import { createPlaywrightStoryPageClient } from "./PlaywrightStoryPageClient.js"
 import { TimotxtF24092Decoder } from "./timotxtDecoder.js";
 import { parseStoryUrl } from "./urlRules.js";
 import { assignOutputChapterNumbers } from "./outputNumbering.js";
+import { parseChapterLabel } from "./text.js";
 import {
   StorySourceError,
   type FetchStoryChaptersRequest,
@@ -105,8 +106,26 @@ function cloneAnalysis(analysis: StorySourceAnalysis): StorySourceAnalysis {
 
 function chapterHeader(chapter: { title: string }, outputNumber: number): string {
   const prefix = `Chương ${outputNumber}`;
-  return chapter.title && !new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}$`, "iu").test(chapter.title)
-    ? `${prefix}: ${chapter.title}`
+  const nestedChinese = parseChapterLabel(chapter.title);
+  let title = chapter.title.trim();
+  if (nestedChinese.number !== undefined) {
+    if (nestedChinese.number !== outputNumber) {
+      throw new StorySourceError(
+        "SOURCE_CHANGED",
+        `Tên chương ${outputNumber} chứa số chương lồng ${nestedChinese.number}; đã dừng trước khi dịch để tránh đánh số sai.`,
+      );
+    }
+    title = nestedChinese.title === nestedChinese.numberLabel ? "" : nestedChinese.title;
+  }
+  const nestedVietnamese = /^\s*(?:【|\[|［)?\s*Chương\s+(\d+)(?:\s|[:：\-—]|$)/iu.exec(title);
+  if (nestedVietnamese?.[1]) {
+    throw new StorySourceError(
+      "SOURCE_CHANGED",
+      `Tên chương ${outputNumber} vẫn chứa một tiêu đề chương lồng bên trong; đã dừng trước khi dịch để tránh đánh số sai.`,
+    );
+  }
+  return title && !new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}$`, "iu").test(title)
+    ? `${prefix}: ${title}`
     : prefix;
 }
 

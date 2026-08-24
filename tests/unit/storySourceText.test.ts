@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { mergeContinuationEntries } from "../../src/main/storySources/adapters";
 import {
   cleanXbanxiaStoryText,
+  cleanXbanxiaChapterTitle,
   cleanIxdzsStoryText,
   assertCleanXbanxiaStoryText,
   assertPlausibleStoryText,
   mergeTextParts,
   normalizeText,
   parseChapterLabel,
+  repairLegacyXbanxiaCheckpointSegment,
 } from "../../src/main/storySources/text";
 import {
   TimotxtF24092Decoder,
@@ -36,12 +38,64 @@ describe("story source text safety", () => {
     });
   });
 
+  it.each([
+    ["【第3章 換房子】", 3, "換房子"],
+    ["[第4章 請假了]", 4, "請假了"],
+    ["［第5章 禦獸典］", 5, "禦獸典"],
+    ["【第887章 【清清妮】（二合一）】", 887, "【清清妮】（二合一）"],
+  ])("reads a real chapter number through a full decorative wrapper: %s", (label, number, title) => {
+    expect(parseChapterLabel(label)).toMatchObject({
+      number,
+      numberLabel: expect.stringMatching(/^第.+章$/u),
+      title,
+      isIntroduction: false,
+    });
+  });
+
   it("removes only the exact Xbanxia trailing watermark", () => {
     expect(cleanXbanxiaStoryText([
       "第一段正文仍在繼續。",
       "第二段正文在這裡結束。",
       "半夏小說，快樂很多",
     ].join("\n"))).toBe("第一段正文仍在繼續。\n第二段正文在這裡結束。");
+  });
+
+  it("removes Xbanxia control padding, embedded heading and terminal ps note", () => {
+    const raw = [
+      "【第507章「禦獸從零分開始cx129」 這種感覺......】",
+      "第一段正文完整保留，人物進入醫務室接受檢查。",
+      "第二段正文接續前文，對話和動作都沒有中斷。",
+      "第三段正文自然結束，情節已經交代完整。",
+      "\u000e\u000e\u000e\u000e",
+      "ps：下一章稍後更新，感謝大家支持。",
+    ].join("\n");
+    expect(cleanXbanxiaStoryText(raw, 507)).toBe([
+      "第一段正文完整保留，人物進入醫務室接受檢查。",
+      "第二段正文接續前文，對話和動作都沒有中斷。",
+      "第三段正文自然結束，情節已經交代完整。",
+    ].join("\n"));
+    expect(cleanXbanxiaChapterTitle(raw.split("\n")[0]!, 507)).toBe("這種感覺......");
+  });
+
+  it("repairs the malformed chapter 507 shape already stored in a checkpoint", () => {
+    const repaired = repairLegacyXbanxiaCheckpointSegment([
+      "Chương 507: 【第507章????????????????????",
+      "",
+      "【第507章「禦獸從零分開始cx129」 這種感覺......】",
+      "第一段正文完整保留，人物進入醫務室接受檢查。",
+      "第二段正文接續前文，對話和動作都沒有中斷。",
+      "第三段正文自然結束，情節已經交代完整。",
+      "\u000f\u000f\u000f",
+      "PS: 下一章稍後更新。",
+    ].join("\n"));
+    expect(repaired).toBe([
+      "Chương 507: 這種感覺......",
+      "",
+      "第一段正文完整保留，人物進入醫務室接受檢查。",
+      "第二段正文接續前文，對話和動作都沒有中斷。",
+      "第三段正文自然結束，情節已經交代完整。",
+    ].join("\n"));
+    expect(() => assertCleanXbanxiaStoryText(repaired)).not.toThrow();
   });
 
   it("removes a terminal Ixdzs author/new-book block without touching narrative", () => {

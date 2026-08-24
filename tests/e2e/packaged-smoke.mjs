@@ -41,19 +41,26 @@ try {
     return {
       version,
       methodCount: Object.keys(window.storyTool).length,
-      historicalPromptLength: prompts.historical.length,
+      periodPromptLength: prompts.period.length,
       modernPromptLength: prompts.modern.length,
+      ancientPromptLength: prompts.ancient.length,
+      cultivationPromptLength: prompts.cultivation.length,
     }
   })
 
-  if (result.historicalPromptLength < 1_000 || result.modernPromptLength < 1_000) {
+  if (
+    result.periodPromptLength < 1_000
+    || result.modernPromptLength < 1_000
+    || result.ancientPromptLength < 1_000
+    || result.cultivationPromptLength < 1_000
+  ) {
     throw new Error('Prompt UTF-8 đóng gói bị thiếu hoặc quá ngắn.')
   }
   if (result.version !== expectedVersion) {
     throw new Error(`Sai phiên bản đóng gói: cần ${expectedVersion}, nhận ${result.version}.`)
   }
-  if (result.methodCount !== 33) {
-    throw new Error(`Sai số phương thức preload: cần 33, nhận ${result.methodCount}.`)
+  if (result.methodCount !== 47) {
+    throw new Error(`Sai số phương thức preload: cần 47, nhận ${result.methodCount}.`)
   }
   if (pageErrors.length) throw new Error(`Renderer lỗi: ${pageErrors.join(' | ')}`)
 
