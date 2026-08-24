@@ -17,10 +17,11 @@ describe('ChatGPT ownership marker', () => {
     expect(second).not.toBe(first)
   })
 
-  it('appends visible metadata plus an instruction not to leak it into the translation', () => {
+  it('puts visible metadata first so collapsed long prompts retain the ownership proof', () => {
     const marker = 'TDTOWN_0123456789abcdef0123456789abcdef'
     const submitted = appendOwnershipMetadata('**Dịch đoạn này.**', marker)
 
+    expect(submitted).toMatch(new RegExp(`^\\[Metadata[^\\n]+${marker}`))
     expect(submitted).toContain('**Dịch đoạn này.**')
     expect(submitted).toContain(marker)
     expect(submitted).toContain('Không đưa dòng metadata này')

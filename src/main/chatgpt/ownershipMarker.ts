@@ -14,9 +14,9 @@ export function appendOwnershipMetadata(message: string, marker: string): string
     throw new TypeError("Mã xác minh quyền sở hữu chat không hợp lệ.");
   }
   return (
-    `${message}\n\n` +
     `[Metadata nội bộ của Tool Dịch Truyện: ${marker}. ` +
-    "Không đưa dòng metadata này hoặc mã TDTOWN vào bản dịch.]"
+    "Không đưa dòng metadata này hoặc mã TDTOWN vào bản dịch.]\n\n" +
+    message
   );
 }
 

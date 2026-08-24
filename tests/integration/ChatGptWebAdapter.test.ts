@@ -448,6 +448,37 @@ describe('ChatGptWebAdapter', () => {
     await adapter.close()
   }, 10_000)
 
+  it('xác minh được prompt dài khi ChatGPT chỉ render phần xem trước trước nút Xem thêm', async () => {
+    vi.useFakeTimers()
+    const statePath = await temporaryStatePath()
+    const store = new FileConversationStateStore(statePath)
+    const fake = createFakeBrowser({
+      composer: true,
+      response: 'Bản dịch hoàn chỉnh.',
+      renderUserMessage: (message) => message.slice(0, 500),
+    })
+    const adapter = new ChatGptWebAdapter({
+      profileDirectory: 'fake-profile',
+      browserFactory: async () => fake.context,
+      conversationStateStore: store,
+    })
+    await adapter.openLogin()
+
+    const longPrompt = `PROMPT GỐC\\n${'Đây là nội dung dài. '.repeat(500)}`
+    const responsePromise = adapter.sendAndWait(longPrompt, { timeoutMs: 10_000 })
+    await waitForFileCondition(statePath, (state) => state.conversation !== null)
+    await vi.advanceTimersByTimeAsync(2_500)
+
+    await expect(responsePromise).resolves.toBe('Bản dịch hoàn chỉnh.')
+    const marker = /\bTDTOWN_[a-f0-9]{32}\b/u.exec(fake.lastFilledMessage)?.[0]
+    expect(marker).toBeTruthy()
+    expect(fake.lastFilledMessage.indexOf(marker!)).toBeLessThan(120)
+    await expect(store.load()).resolves.toMatchObject({
+      ownershipHashes: [ownershipHash(marker!)],
+    })
+    await adapter.close()
+  }, 10_000)
+
   it('không coi Copy ẩn trong latest turn là tín hiệu hoàn tất', async () => {
     vi.useFakeTimers()
     const browserOptions: FakePageOptions = {
