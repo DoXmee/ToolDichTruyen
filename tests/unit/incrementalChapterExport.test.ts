@@ -76,6 +76,24 @@ describe('splitSealedOriginalChapters', () => {
     expect(split[0]?.content).toBe(first);
   });
 
+  it('does not attach ChatGPT writing-block chrome to adjacent original chapters', () => {
+    const first = words(800, 'first');
+    const second = words(800, 'second');
+    const content = [
+      'Bài viết',
+      'Chương 1: Mở đầu',
+      first,
+      'Bài viết',
+      '---',
+      'Chương 2: Tiếp theo',
+      second,
+    ].join('\n');
+
+    const originals = splitSealedOriginalChapters(content, config, true);
+    expect(originals.map((chapter) => chapter.index)).toEqual([1, 2]);
+    expect(originals.map((chapter) => chapter.content)).toEqual([first, second]);
+  });
+
   it('includes the trailing original region at terminal success or error and preserves paragraph boundaries', () => {
     const first = `${words(750, 'one')}\r\n\r\n${words(750, 'two')}`;
     const finalDialogue = `\u201c${words(1_100, 'final-dialogue')}\u201d`;

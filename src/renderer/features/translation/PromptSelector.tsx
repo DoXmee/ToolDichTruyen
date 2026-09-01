@@ -1,4 +1,4 @@
-import type { PromptMode } from '../../../shared';
+import type { AiProvider, PromptMode } from '../../../shared';
 import { Icon } from '../../components/Icon';
 
 interface PromptSelectorProps {
@@ -12,11 +12,14 @@ interface PromptSelectorProps {
   omitOutputChapterTitles: boolean;
   exportCombinedSourceChapters: boolean;
   loading?: boolean;
+  allowedAiProviders: AiProvider[];
+  providerSelectionLocked?: boolean;
   onModeChange: (mode: PromptMode) => void;
   onCustomPromptChange: (value: string) => void;
   onOutputChapterStartChange: (value: number | undefined) => void;
   onOmitOutputChapterTitlesChange: (value: boolean) => void;
   onExportCombinedSourceChaptersChange: (value: boolean) => void;
+  onToggleAiProvider: (provider: AiProvider) => void;
 }
 
 interface PromptCardProps {
@@ -53,11 +56,14 @@ export function PromptSelector({
   omitOutputChapterTitles,
   exportCombinedSourceChapters,
   loading = false,
+  allowedAiProviders,
+  providerSelectionLocked = false,
   onModeChange,
   onCustomPromptChange,
   onOutputChapterStartChange,
   onOmitOutputChapterTitlesChange,
   onExportCombinedSourceChaptersChange,
+  onToggleAiProvider,
 }: PromptSelectorProps) {
   const canRenumberLinkChapters = typeof suggestedChapterStart === 'number';
   const numberingHint = outputChapterStart === undefined
@@ -72,6 +78,22 @@ export function PromptSelector({
         <div>
           <span className="eyebrow">Bước 2</span>
           <h2 id="prompt-heading">Chọn phong cách dịch</h2>
+        </div>
+        <div aria-label="Chatbot dùng cho tiến trình" className="provider-pool" role="group">
+          <div className="provider-pool__options">
+            {(['chatgpt', 'kimi', 'deepseek'] as const).map((provider) => (
+              <label key={provider}>
+                <input
+                  aria-label={provider === 'chatgpt' ? 'ChatGPT' : provider === 'kimi' ? 'Kimi AI' : 'DeepSeek AI'}
+                  checked={allowedAiProviders.includes(provider)}
+                  disabled={providerSelectionLocked || (allowedAiProviders.length === 1 && allowedAiProviders[0] === provider)}
+                  onChange={() => onToggleAiProvider(provider)}
+                  type="checkbox"
+                />
+                <span>{provider === 'chatgpt' ? 'ChatGPT' : provider === 'kimi' ? 'Kimi' : 'DeepSeek'}</span>
+              </label>
+            ))}
+          </div>
         </div>
         <Icon name="wand" />
       </div>

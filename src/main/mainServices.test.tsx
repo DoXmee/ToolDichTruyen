@@ -163,23 +163,32 @@ describe("TranslationJobRunner", () => {
     expect(runner.activeJobs()).toEqual([]);
   });
 
-  it("continues the in-flight segment when paused and immediately resumed", async () => {
+  it("stops the in-flight AI before resuming the same checkpoint", async () => {
     const stored = new Map<string, unknown>();
     const persistence = {
       saveJob: vi.fn(async (job: { id: string }) => stored.set(job.id, structuredClone(job))),
       loadJob: vi.fn(async (id: string) => stored.get(id) ?? null),
     };
-    let resolveResponse!: (value: string) => void;
-    const response = new Promise<string>((resolve) => {
-      resolveResponse = resolve;
+    const sendAndWait = vi.fn((
+      _prompt: string,
+      options?: { signal?: AbortSignal },
+    ) => {
+      if (sendAndWait.mock.calls.length > 1) return Promise.resolve("Xin chào.");
+      return new Promise<string>((_resolve, reject) => {
+        const rejectForPause = () => reject(
+          options?.signal?.reason ?? new DOMException("Đã tạm dừng.", "AbortError"),
+        );
+        if (options?.signal?.aborted) rejectForPause();
+        else options?.signal?.addEventListener("abort", rejectForPause, { once: true });
+      });
     });
-    const sendAndWait = vi.fn(() => response);
+    const cancelGeneration = vi.fn(async () => undefined);
     const runner = new TranslationJobRunner({
       chatGpt: {
         ensureReady: vi.fn(async () => undefined),
         startNewConversation: vi.fn(async () => undefined),
         sendAndWait,
-        cancelGeneration: vi.fn(async () => undefined),
+        cancelGeneration,
       },
       persistence: persistence as never,
     });
@@ -199,13 +208,14 @@ describe("TranslationJobRunner", () => {
     await vi.waitFor(() => expect(sendAndWait).toHaveBeenCalledTimes(1));
 
     await runner.pause(jobId);
+    expect((stored.get(jobId) as { status: string }).status).toBe("paused");
+    expect(cancelGeneration).toHaveBeenCalledOnce();
     await runner.resume(jobId);
-    expect(runner.activeJobs()[0]?.status).toBe("running");
-    resolveResponse("Xin chào.");
+    await vi.waitFor(() => expect(sendAndWait).toHaveBeenCalledTimes(2));
     await completion;
 
     expect((stored.get(jobId) as { status: string }).status).toBe("completed");
-    expect(sendAndWait).toHaveBeenCalledTimes(1);
+    expect(sendAndWait).toHaveBeenCalledTimes(2);
   });
 
   it("does not revive a job cancelled while browser readiness is pending", async () => {

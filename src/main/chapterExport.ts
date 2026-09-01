@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { link, mkdir, open, readFile, rm, stat } from 'node:fs/promises';
+import { link, mkdir, open, readFile, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { BrowserWindow, Dialog } from 'electron';
 import type {
@@ -8,6 +8,7 @@ import type {
   CombinedChapterExportInput,
   CombinedChapterExportResult,
   FinalChapterExportInput,
+  StoryExportIdentity,
 } from '../shared/types.js';
 import {
   chapterContentFingerprint,
@@ -20,6 +21,7 @@ const MAX_TOTAL_BYTES = 128 * 1024 * 1024;
 const MAX_TITLE_LENGTH = 500;
 const MAX_CHAPTER_INDEX = 999_999;
 const MAX_FILENAME_STEM_LENGTH = 180;
+const STORY_EXPORT_IDENTITY_FILE = '.tool-dich-truyen-book.json';
 
 /**
  * This folder name is deliberately fixed instead of being derived from a
@@ -230,9 +232,84 @@ async function validateDirectory(directory: unknown): Promise<string> {
 /** Verify a previously chosen export folder before a long link translation
  * starts. This is intentionally separate from writing so the user never
  * spends time fetching/translating a book whose result has nowhere to go. */
-export async function validateChapterExportDirectory(directory: unknown): Promise<{ directory: string }> {
+function normalizedStoryExportIdentity(value: StoryExportIdentity): StoryExportIdentity {
+  if (
+    !value
+    || typeof value !== 'object'
+    || typeof value.site !== 'string'
+    || typeof value.bookId !== 'string'
+    || typeof value.bookTitle !== 'string'
+    || typeof value.bookUrl !== 'string'
+    || !value.site.trim()
+    || !value.bookId.trim()
+    || !value.bookTitle.trim()
+    || !value.bookUrl.trim()
+  ) {
+    throw new TypeError('Dấu nhận diện bộ truyện không hợp lệ.');
+  }
+  return {
+    site: value.site,
+    bookId: value.bookId.normalize('NFC').trim(),
+    bookTitle: value.bookTitle.normalize('NFC').trim(),
+    bookUrl: value.bookUrl.trim(),
+  };
+}
+
+function sameStoryExportIdentity(left: StoryExportIdentity, right: StoryExportIdentity): boolean {
+  return left.site === right.site
+    && left.bookId === right.bookId
+    && left.bookUrl === right.bookUrl;
+}
+
+async function claimStoryExportDirectory(
+  directory: string,
+  rawIdentity: StoryExportIdentity,
+): Promise<void> {
+  const identity = normalizedStoryExportIdentity(rawIdentity);
+  const markerPath = path.join(directory, STORY_EXPORT_IDENTITY_FILE);
+  const entries = await readdir(directory);
+  const markerExists = entries.includes(STORY_EXPORT_IDENTITY_FILE);
+
+  if (!markerExists && entries.length > 0) {
+    throw new Error(
+      `Thư mục đã có dữ liệu nhưng không có dấu nhận diện bộ truyện. Không thể xác minh đó là “${identity.bookTitle}”; hãy chọn thư mục trống hoặc đúng bộ truyện.`,
+    );
+  }
+
+  if (markerExists) {
+    let existing: StoryExportIdentity;
+    try {
+      existing = normalizedStoryExportIdentity(
+        JSON.parse(await readFile(markerPath, 'utf8')) as StoryExportIdentity,
+      );
+    } catch (error) {
+      throw new Error('Thư mục có dấu nhận diện truyện bị hỏng; không thể xuất an toàn.', { cause: error });
+    }
+    if (!sameStoryExportIdentity(existing, identity)) {
+      throw new Error(
+        `Thư mục này đã thuộc bộ “${existing.bookTitle}”, không phải “${identity.bookTitle}”. Tool đã dừng trước khi tải và dịch.`,
+      );
+    }
+    return;
+  }
+
+  const handle = await open(markerPath, 'wx', 0o600);
   try {
-    return { directory: await validateDirectory(directory) };
+    await handle.writeFile(`${JSON.stringify(identity, null, 2)}\n`, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function validateChapterExportDirectory(
+  directory: unknown,
+  identity?: StoryExportIdentity,
+): Promise<{ directory: string }> {
+  try {
+    const resolved = await validateDirectory(directory);
+    if (identity) await claimStoryExportDirectory(resolved, identity);
+    return { directory: resolved };
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'Đường dẫn không hợp lệ.';
     throw new Error(`Không tìm thấy thư mục xuất; không thể bắt đầu dịch. ${detail}`, { cause: error });

@@ -1,12 +1,12 @@
 <div align="center">
   <img src="docs/assets/tool-dich-truyen.png" width="112" alt="Logo Tool Dịch Truyện">
   <h1>Tool Dịch Truyện · Trung → Việt</h1>
-  <p><strong>Ứng dụng Windows hỗ trợ tải truyện, dịch bằng ChatGPT Web, kiểm tra kết quả, khôi phục checkpoint và xuất bản dịch theo chương.</strong></p>
+  <p><strong>Ứng dụng Windows hỗ trợ tải truyện, dịch bằng ChatGPT, Kimi hoặc DeepSeek Web, kiểm tra kết quả, khôi phục checkpoint và xuất bản dịch theo chương.</strong></p>
   <p>
     <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-2563eb?logo=windows11&logoColor=white">
     <img alt="Electron" src="https://img.shields.io/badge/Electron-43-47848f?logo=electron&logoColor=white">
     <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-7-3178c6?logo=typescript&logoColor=white">
-    <img alt="Tests" src="https://img.shields.io/badge/tests-469%20passed-1f883d">
+    <img alt="Tests" src="https://img.shields.io/badge/tests-597%20passed-1f883d">
     <img alt="License" src="https://img.shields.io/badge/license-UNLICENSED-6e7781">
   </p>
 </div>
@@ -14,7 +14,7 @@
 ![Giao diện Tool Dịch Truyện](docs/assets/app-overview.png)
 
 > [!IMPORTANT]
-> Tool điều khiển giao diện ChatGPT Web trong trình duyệt do ứng dụng mở; không gọi OpenAI API và không vượt CAPTCHA, đăng nhập hay giới hạn tài khoản. Người dùng cần tự đăng nhập và chịu trách nhiệm kiểm tra bản dịch trước khi sử dụng.
+> Tool điều khiển giao diện ChatGPT, Kimi hoặc DeepSeek Web trong trình duyệt do ứng dụng mở; không gọi API dịch và không vượt CAPTCHA, đăng nhập hay giới hạn tài khoản. Người dùng cần tự đăng nhập và chịu trách nhiệm kiểm tra bản dịch trước khi sử dụng.
 
 ## Tổng quan
 
@@ -25,11 +25,13 @@ Tool Dịch Truyện gom toàn bộ quy trình dịch truyện dài vào một �
 ## Tính năng chính
 
 - Nhập trực tiếp văn bản tiếng Trung hoặc phân tích link truyện theo danh sách chương.
-- Hỗ trợ các nguồn đã kiểm thử trong adapter: Huliwang, XSZJ/爱下电子书, TimoTXT, Qingrenyouxi và Xbanxia.
+- Hỗ trợ các nguồn đã kiểm thử trong adapter: Huliwang, XSZJ/爱下电子书, TimoTXT, Qingrenyouxi, Xbanxia và Novel543.
 - Ghép đủ các trang con của cùng một chương và loại bỏ footer/navigation đã nhận diện theo từng website.
 - Chọn bốn prompt đóng gói sẵn: `Truyện niên đại`, `Truyện hiện đại`, `Truyện cổ trang`, `Truyện tu tiên`; hoặc dùng prompt `Khác`.
-- Lưu checkpoint, nhật ký hoạt động và tiếp tục đúng đoạn lỗi sau khi app/trình duyệt bị gián đoạn.
-- Retry có kiểm tra chữ Hán còn sót, lặp nội dung, tiêu đề và phản hồi an toàn; thay chat hoặc khởi động lại trình duyệt khi lỗi giao diện ChatGPT yêu cầu.
+- Chọn nhóm cố định gồm một, hai hoặc cả ba chatbot ChatGPT/Kimi/DeepSeek; mặc định dùng cả ba.
+- Lưu checkpoint, nhóm chatbot, nhật ký hoạt động và tiếp tục đúng đoạn lỗi sau khi app/trình duyệt bị gián đoạn.
+- Retry có kiểm tra chữ Hán còn sót, lặp nội dung, tiêu đề và phản hồi an toàn; tự chuyển trong nhóm chatbot đã chọn theo loại lỗi.
+- Khi tiến trình lỗi, cho phép dùng một chatbot ngoài nhóm để cứu đúng một lượt; sau thành công hoặc thất bại đều quay lại nhóm cố định mà không lặp bot cứu.
 - Chia chương, tự nhận diện số chương, đánh lại số, tùy chọn bỏ tên chương và chỉnh riêng nội dung preview.
 - Xuất đầy đủ TXT chương lẻ, bản dịch gốc chưa chia, file tổng bản dịch và file tổng chương nguồn với cả dải số cũ/mới.
 - Giao diện sáng/tối, zoom thích nghi theo vùng làm việc Windows và nhật ký tiến trình dễ đọc.
@@ -54,13 +56,13 @@ CAPTCHA hoặc Turnstile.
 Chrome/Edge trên Windows không cho ứng dụng portable tự cài tiện ích cục bộ một cách im lặng, nên
 bước tải tiện ích đã giải nén cần được người dùng xác nhận một lần.
 
-## Lưu ý quan trọng về ChatGPT Web
+## Lưu ý quan trọng về chatbot Web
 
-Tool điều khiển giao diện `chatgpt.com` bằng trình duyệt, không gọi OpenAI API trực tiếp.
+Tool điều khiển giao diện web của ChatGPT, Kimi và DeepSeek bằng trình duyệt, không gọi API dịch trực tiếp.
 
-- Người dùng phải tự đăng nhập tài khoản ChatGPT trong cửa sổ trình duyệt được tool mở. Tool không tự điền, lưu hoặc vượt qua mật khẩu, CAPTCHA hay xác thực hai bước.
+- Người dùng phải tự đăng nhập chatbot đã chọn trong cửa sổ trình duyệt được tool mở. Tool không tự điền, lưu hoặc vượt qua mật khẩu, CAPTCHA hay xác thực hai bước.
 - Phiên đăng nhập được giữ trong một profile trình duyệt cục bộ dành riêng cho ứng dụng.
-- Giao diện, thuộc tính DOM và luồng phản hồi của ChatGPT có thể thay đổi bất kỳ lúc nào. Khi đó automation hoặc selector có thể ngừng hoạt động và cần được cập nhật.
+- Giao diện, thuộc tính DOM và luồng phản hồi của từng chatbot có thể thay đổi bất kỳ lúc nào. Khi đó automation hoặc selector có thể ngừng hoạt động và cần được cập nhật.
 - A/B test giao diện, CAPTCHA, giới hạn tài khoản, giới hạn tần suất, lỗi mạng hoặc thay đổi chính sách dịch vụ có thể làm tác vụ thất bại.
 - Hãy sử dụng tài khoản và nội dung phù hợp với điều khoản của dịch vụ liên quan.
 
@@ -72,7 +74,7 @@ Tool điều khiển giao diện `chatgpt.com` bằng trình duyệt, không g�
 - Node.js `>= 22`.
 - `pnpm` tương thích với lockfile của dự án.
 - Microsoft Edge hoặc Google Chrome đã cài trên máy.
-- Tài khoản ChatGPT có thể đăng nhập bằng trình duyệt.
+- Tài khoản của ít nhất một chatbot ChatGPT, Kimi hoặc DeepSeek có thể đăng nhập bằng trình duyệt.
 
 ### Để dùng tính năng đặt tên chương
 
@@ -102,13 +104,13 @@ Lệnh `start` chỉ phù hợp sau khi output cần thiết đã tồn tại.
 
 ## Cách sử dụng
 
-### 1. Kết nối ChatGPT
+### 1. Chọn và kết nối chatbot
 
-1. Mở ứng dụng và bấm `Kết nối`.
-2. Nếu trạng thái là `Chờ đăng nhập ChatGPT`, đăng nhập thủ công trong cửa sổ trình duyệt vừa mở.
+1. Chọn ChatGPT, Kimi AI hoặc DeepSeek AI trên thanh chatbot rồi bấm `Kết nối`.
+2. Nếu trạng thái yêu cầu đăng nhập, đăng nhập thủ công trong cửa sổ trình duyệt vừa mở.
 3. Hoàn tất CAPTCHA hoặc xác thực hai bước nếu dịch vụ yêu cầu.
 4. Quay lại ứng dụng và bấm `Kiểm tra kết nối` nếu trạng thái chưa tự cập nhật.
-5. Chỉ bắt đầu dịch khi trạng thái hiển thị `ChatGPT đã kết nối`.
+5. Chọn nhóm chatbot được phép dùng cho tiến trình (mặc định cả ba) và chỉ bắt đầu dịch khi chatbot hiện tại đã kết nối.
 
 Không mở đồng thời nhiều phiên Tool dịch truyện dùng chung profile trình duyệt.
 
@@ -133,6 +135,8 @@ Bốn prompt mặc định được đọc dưới dạng UTF-8 khi ứng dụng
 4. Sau mỗi đoạn hợp lệ, checkpoint được lưu ngay, phần đã dịch được ghép vào ô `Nội dung đã dịch` và preview chia chương cập nhật song song trong worker riêng.
 5. Khi một đoạn không vượt qua kiểm tra sau số lần thử cho phép, dùng nút `Tiếp tục từ đoạn lỗi` của đúng đoạn đó; các đoạn đã hoàn tất vẫn được giữ nguyên.
 6. Kết quả hợp lệ được ghép vào ô `Nội dung đã dịch`; người dùng có thể sửa trực tiếp trước khi xuất.
+
+Trong lúc tiến trình chạy, nhóm chatbot được khóa. Khi tiến trình lỗi, cả ba lựa chọn chatbot được mở để người dùng chọn bot cứu đoạn. Bot ngoài nhóm chỉ chạy một lượt cho đúng đoạn lỗi, không tự retry, rồi tiến trình quay về nhóm chatbot ban đầu.
 
 Việc sửa nội dung nguồn sau khi tác vụ đã bắt đầu không thay đổi snapshot nguồn của tác vụ đang chạy.
 
@@ -224,7 +228,7 @@ Chạy Electron smoke test:
 pnpm test:e2e
 ```
 
-Smoke test build ứng dụng, mở Electron với thư mục user-data tạm, kiểm tra preload bridge, nhập dữ liệu mẫu, thử UI chia chương và lưu screenshot vào `test-results`. Test này không xác minh đăng nhập hoặc dịch thật qua ChatGPT Web.
+Smoke test build ứng dụng, mở Electron với thư mục user-data tạm, kiểm tra preload bridge, nhập dữ liệu mẫu, thử UI chia chương và lưu screenshot vào `test-results`. Test này không xác minh đăng nhập hoặc dịch thật qua website chatbot.
 
 Không ghi nhận lệnh nào là `pass` chỉ dựa vào tài liệu này. Điền môi trường, kết quả, artifact và lỗi thực tế vào [docs/TEST_REPORT.md](docs/TEST_REPORT.md).
 
@@ -302,7 +306,7 @@ ChatGPT có thể vừa thay đổi DOM hoặc đang chạy một biến thể g
 ## Dữ liệu và quyền riêng tư
 
 - Draft, cấu hình và profile đăng nhập ChatGPT được lưu trong thư mục dữ liệu người dùng của ứng dụng trên máy.
-- Nội dung nguồn được gửi tới ChatGPT Web khi bắt đầu dịch.
+- Nội dung nguồn được gửi tới website chatbot đang được chọn khi bắt đầu dịch.
 - Trích đoạn chương được gửi tới Gemini chỉ khi dùng tính năng đặt tên AI.
 - Tệp TXT chỉ được ghi tới vị trí người dùng chọn.
 - Trước khi chia sẻ log hoặc screenshot, hãy xóa nội dung truyện, token, API key và thông tin tài khoản.

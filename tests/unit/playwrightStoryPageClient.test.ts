@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { BrowserContext, Page, Response } from "playwright-core";
-import { classifyCloudflareChallenge, PlaywrightPageClient } from "../../src/main/storySources/PlaywrightStoryPageClient";
+import {
+  classifyCloudflareChallenge,
+  PlaywrightPageClient,
+  storyNavigationTimeoutMs,
+} from "../../src/main/storySources/PlaywrightStoryPageClient";
 import type { StoryPageSnapshot } from "../../src/main/storySources/types";
 
 function documentData(overrides: Partial<StoryPageSnapshot> = {}) {
@@ -22,6 +26,11 @@ function documentData(overrides: Partial<StoryPageSnapshot> = {}) {
 }
 
 describe("PlaywrightPageClient Cloudflare status tracking", () => {
+  it("uses the shorter recoverable navigation window only for C6K6", () => {
+    expect(storyNavigationTimeoutMs("https://m.c6k6.com/117/117694/29473777.html")).toBe(20_000);
+    expect(storyNavigationTimeoutMs("https://czbooks.net/n/pmeef4")).toBe(45_000);
+  });
+
   it("does not classify a normal story surface with hidden Cloudflare wording as a challenge", () => {
     expect(classifyCloudflareChallenge({
       title: "Mẹ Vu và thức ăn",

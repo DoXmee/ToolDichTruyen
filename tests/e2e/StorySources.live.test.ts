@@ -15,6 +15,7 @@ const XBANXIA_EXTRA_CHAPTER_URLS = [
   'https://www.xbanxia.cc/books/420871/73048294.html',
   'https://www.xbanxia.cc/books/143300/28251894.html',
 ] as const;
+const XBANXIA_TITLELESS_BOOK_URL = 'https://www.xbanxia.cc/books/423211.html';
 
 function expectCleanXbanxiaText(text: string): void {
   expect(text.length).toBeGreaterThan(500);
@@ -194,6 +195,40 @@ live('nguồn truyện thật (opt-in)', () => {
     expect(result.combinedSource.match(/^Chương\s+1\s*:/gmu)).toHaveLength(1);
     expectCleanXbanxiaText(result.chapters[0]?.sourceText ?? '');
     expectCleanXbanxiaText(result.combinedSource);
+  }, 120_000);
+
+  it('Xbanxia 423211 hỗ trợ đủ mục lục không có tên chương', async () => {
+    const analysis = await service.analyzeUrl(XBANXIA_TITLELESS_BOOK_URL);
+    expect(analysis).toMatchObject({
+      site: 'xbanxia',
+      inputKind: 'book',
+      bookId: '423211',
+      bookTitle: '六零年代我哥是卷王',
+    });
+    expect(analysis.chapters).toHaveLength(175);
+    expect(analysis.defaultSelectedChapterIds).toHaveLength(175);
+    expect(analysis.chapters.map((chapter) => chapter.number)).toEqual(
+      Array.from({ length: 175 }, (_, index) => index + 1),
+    );
+
+    const representatives = [1, 88, 175].map((number) => {
+      const chapter = analysis.chapters.find((candidate) => candidate.number === number);
+      expect(chapter, `Thiếu chương ${number} trong mục lục Xbanxia 423211`).toBeDefined();
+      return chapter!;
+    });
+    const result = await service.fetchChapters({
+      analysisId: analysis.analysisId,
+      chapterIds: representatives.map((chapter) => chapter.id),
+    });
+
+    expect(result.chapters.map((chapter) => chapter.number)).toEqual([1, 88, 175]);
+    expect(result.combinedSource.match(/^Chương\s+\d+$/gmu)).toHaveLength(3);
+    expect(result.combinedSource).not.toMatch(/^Chương\s+\d+\s*:/gmu);
+    for (const chapter of result.chapters) {
+      expect(chapter.title).toMatch(/^第\d+章$/u);
+      expect(chapter.sourceText).not.toMatch(/^\s*第\s*\d+\s*章/u);
+      expectCleanXbanxiaText(chapter.sourceText);
+    }
   }, 120_000);
 
   it('Xbanxia mẫu 420871 chỉ giữ trọn #nr1, không lấy đầu/cuối trang', async () => {

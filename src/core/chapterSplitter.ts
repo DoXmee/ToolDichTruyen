@@ -6,6 +6,7 @@ import type {
   SplitConfig,
 } from '../shared';
 import { countWords } from './language';
+import { isAssistantChromeLabel, isHorizontalRule } from './assistantResponse';
 import { constructTitle, parseChapterHeaderLine } from './titleParser';
 
 interface LineRecord {
@@ -323,9 +324,24 @@ function regionsFromParagraphs(
     header = undefined;
   };
 
+  const removeTrailingAssistantChrome = (): void => {
+    let labelIndex = current.length - 1;
+    while (labelIndex >= 0 && isHorizontalRule(current[labelIndex]?.text ?? '')) {
+      labelIndex -= 1;
+    }
+    if (labelIndex >= 0 && isAssistantChromeLabel(current[labelIndex]?.text ?? '')) {
+      current = current.slice(0, labelIndex);
+    }
+  };
+
   for (const paragraph of paragraphs) {
     const detected = config.autoDetectTitle ? paragraph.header : undefined;
     if (detected) {
+      // A localized ChatGPT writing-block label can be present in innerText
+      // immediately before the next chapter heading. It is UI chrome, not a
+      // body paragraph, and must neither become a dummy chapter nor trail the
+      // preceding one.
+      removeTrailingAssistantChrome();
       flush();
       chapterIndex = detected.chapterNumber;
       suffix = detected.extractedTitle || config.suffix;

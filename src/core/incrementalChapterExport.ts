@@ -1,5 +1,6 @@
 import type { Chapter, SplitConfig } from '../shared';
 import { parseParagraphs, splitStory } from './chapterSplitter';
+import { isAssistantChromeLabel, isHorizontalRule } from './assistantResponse';
 import { constructTitle } from './titleParser';
 
 interface OriginalChapterRegion {
@@ -25,10 +26,27 @@ function originalChapterRegions(content: string, config: SplitConfig): OriginalC
   let unheaded: ReturnType<typeof parseParagraphs> = [];
   let foundHeader = false;
 
+  const removeTrailingAssistantChrome = (region: OriginalChapterRegion): void => {
+    let labelIndex = region.paragraphs.length - 1;
+    while (labelIndex >= 0 && isHorizontalRule(region.paragraphs[labelIndex]?.text ?? '')) {
+      labelIndex -= 1;
+    }
+    if (labelIndex >= 0 && isAssistantChromeLabel(region.paragraphs[labelIndex]?.text ?? '')) {
+      region.paragraphs = region.paragraphs.slice(0, labelIndex);
+    }
+  };
+
   for (const paragraph of paragraphs) {
     const header = config.autoDetectTitle ? paragraph.header : undefined;
     if (header) {
-      if (current) regions.push(current);
+      if (current) {
+        removeTrailingAssistantChrome(current);
+        if (current.paragraphs.length) regions.push(current);
+      } else if (unheaded.length) {
+        const preface = { paragraphs: unheaded };
+        removeTrailingAssistantChrome(preface);
+        unheaded = preface.paragraphs;
+      }
       current = { paragraphs: [], header };
       foundHeader = true;
       continue;
@@ -38,7 +56,10 @@ function originalChapterRegions(content: string, config: SplitConfig): OriginalC
     else unheaded.push(paragraph);
   }
 
-  if (current) regions.push(current);
+  if (current) {
+    removeTrailingAssistantChrome(current);
+    if (current.paragraphs.length) regions.push(current);
+  }
 
   // Manual pasted text need not have a chapter heading.  Treat it as one
   // logical original chapter only when there are no recognised headings at

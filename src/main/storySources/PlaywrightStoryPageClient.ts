@@ -16,11 +16,16 @@ import {
 import { parseStoryUrl } from "./urlRules.js";
 
 const SNAPSHOT_SELECTORS = [
-  "h1", "h2", ".title", ".bookTitle", ".readTitle", ".info", ".meta-dir",
+  "h1", "h2", "h3", ".title", ".bookTitle", ".readTitle", ".info", ".meta-dir", ".cataloginfo", ".infotype", ".infotype a[href*='/author/']",
   "#nr_title", "#nr", "#nr1", ".chapter-content .content", "#htmlContent", "#content", "article.page-content",
   ".chaplist .all", "#list-chapterAll .panel-chapterlist", ".panel-chapterlist",
   ".book-list", ".book-describe h1", ".book-describe p", ".book-describe a[href^='/author/']",
   "#bookIntro", "[rel=author]", ".author", ".booktag", ".nr_page",
+  ".chapter-title", ".read-title", ".read-content", ".read-content-inner", ".article-content",
+  ".novel-content", ".book-title", ".novel-title", ".bookname", "main",
+  ".reader-content", ".reader-chap", ".reader-top__title", ".rc-row", ".chapter-list",
+  ".novelcontent", ".content_novel", ".content_title", ".panel-readcontent", ".readTitle",
+  ".chapter-detail .content",
 ].join(",");
 
 function abortError(signal?: AbortSignal): unknown {
@@ -135,8 +140,13 @@ async function snapshot(
       const clone = element.cloneNode(true) as Element;
       if (element.matches("#nr, #nr1, .chapter-content .content, #htmlContent, #content, article.page-content")) {
         clone.querySelectorAll(
-          'script, style, iframe, ins, figure, .adBlock, .gadBlock, .cf-unit, #comment, .bh-rec-embed, .recommend-wrap, [class^="ad-"], [class*=" ad-"], [style*="height: 0"]',
+          'script, style, iframe, ins, figure, .adBlock, .gadBlock, .clickforceads, .cf-unit, #comment, #teadunit, .bh-rec-embed, .recommend-wrap, [id^="cfadif"], [id^="div-onead-"], [id^="pf-"], [class^="ad-"], [class*=" ad-"], [style*="height: 0"]',
         ).forEach((node) => node.remove());
+        if (element.matches(".chapter-content .content")) {
+          clone.querySelectorAll(":scope > div").forEach((node) => {
+            if (/(?:ONEAD_TEXT|溫馨提示\s*[:：])/u.test(node.textContent ?? "")) node.remove();
+          });
+        }
         // XSZJ inserts an ad container as a direct child of #booktxt between
         // real paragraph nodes. That container never belongs to prose.
         if (element.matches("#content")) {
@@ -272,12 +282,28 @@ export class PlaywrightPageClient implements StoryPageClient {
     this.lastNavigation = { requestedUrl: url };
     try {
       return await raceStoryOperationWithAbort((async () => {
+        const c6k6 = isC6k6Url(url);
         const response = await page.goto(url, {
-          waitUntil: "domcontentloaded",
-          timeout: 45_000,
+          // C6K6 can leave a third-party script pending indefinitely after the
+          // useful document has committed. Wait for its story surface below
+          // instead of tying success to DOMContentLoaded.
+          waitUntil: c6k6 ? "commit" : "domcontentloaded",
+          // C6K6 often leaves a third-party script pending even though the
+          // catalog/chapter DOM is already usable.  Return control sooner so
+          // StorySourceService can inspect and validate that loaded DOM rather
+          // than paying the generic 45-second timeout for every chapter.
+          timeout: storyNavigationTimeoutMs(url),
           ...(signal ? { signal } : {}),
         });
         if (signal?.aborted) throw abortError(signal);
+        if (c6k6) {
+          await page.waitForFunction(
+            () => (document.body?.innerText ?? "").trim().length >= 40,
+            undefined,
+            { timeout: 20_000 },
+          );
+          if (signal?.aborted) throw abortError(signal);
+        }
         const status = response?.status();
         const current = this.lastNavigation;
         // The response event is authoritative because Cloudflare can finish a
@@ -416,6 +442,21 @@ export class PlaywrightPageClient implements StoryPageClient {
     const current = this.lastNavigation;
     if (current?.requestedUrl !== requestedUrl || current.status === undefined) return result;
     return { ...result, status: current.status };
+  }
+}
+
+export function storyNavigationTimeoutMs(url: string): number {
+  if (isC6k6Url(url)) return 20_000;
+  return 45_000;
+}
+
+function isC6k6Url(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return hostname === "c6k6.com" || hostname.endsWith(".c6k6.com");
+  } catch {
+    // URL ownership is validated before this helper is reached.
+    return false;
   }
 }
 

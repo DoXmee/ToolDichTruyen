@@ -40,6 +40,19 @@ function normalizeForComparison(value: string): string {
 const MIN_REPEATED_PARAGRAPH_CHARACTERS = 120;
 const MIN_REPEATED_SENTENCE_SEQUENCE_CHARACTERS = 100;
 
+export interface CrossTranslationReference {
+  segmentIndex: number;
+  sourceText: string;
+  translatedText: string;
+}
+
+export interface CrossTranslationRepetition {
+  previousSegmentIndex: number;
+  translationSimilarity: number;
+  sourceSimilarity: number;
+  sample: string;
+}
+
 function normalizedRepeatKey(value: string): string {
   return value.toLocaleLowerCase('vi-VN').replace(/\s+/gu, ' ').trim();
 }
@@ -80,11 +93,89 @@ function findRepeatedSample(value: string): string | null {
   return thirdRepeatSample(pairs, MIN_REPEATED_SENTENCE_SEQUENCE_CHARACTERS);
 }
 
+function wordBigrams(value: string): Set<string> {
+  const body = value
+    .normalize('NFC')
+    .replace(/^\s*Chương\s+\d+[^\r\n]*(?:\r\n|\r|\n)+/iu, '')
+    .toLocaleLowerCase('vi-VN');
+  const tokens = body.match(/[\p{L}\p{N}]+/gu) ?? [];
+  const result = new Set<string>();
+  for (let index = 0; index + 1 < tokens.length; index += 1) {
+    result.add(`${tokens[index]} ${tokens[index + 1]}`);
+  }
+  return result;
+}
+
+function sourceShingles(value: string): Set<string> {
+  const han = (value.match(/[\u3400-\u9fff\uf900-\ufaff]/gu) ?? []).join('');
+  if (han.length >= 80) {
+    const result = new Set<string>();
+    for (let index = 0; index + 3 < han.length; index += 1) {
+      result.add(han.slice(index, index + 4));
+    }
+    return result;
+  }
+  return wordBigrams(value);
+}
+
+function jaccard(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
+  if (left.size === 0 || right.size === 0) return 0;
+  let intersection = 0;
+  for (const item of left) if (right.has(item)) intersection += 1;
+  return intersection / (left.size + right.size - intersection);
+}
+
+/** Detect a response that replays a previous translated chapter even though
+ * the corresponding source chapters are different. Exact-repeat checks miss
+ * this failure when the model paraphrases its earlier Vietnamese output. */
+export function findCrossTranslationRepetition(
+  sourceText: string,
+  translatedText: string,
+  previous: readonly CrossTranslationReference[],
+): CrossTranslationRepetition | null {
+  const currentTranslation = wordBigrams(translatedText);
+  if (currentTranslation.size < 250) return null;
+  const currentSource = sourceShingles(sourceText);
+
+  for (const reference of [...previous].reverse()) {
+    const priorTranslation = wordBigrams(reference.translatedText);
+    if (priorTranslation.size < 250) continue;
+    const translationSimilarity = jaccard(currentTranslation, priorTranslation);
+    if (translationSimilarity < 0.24) continue;
+
+    const sourceSimilarity = jaccard(currentSource, sourceShingles(reference.sourceText));
+    if (sourceSimilarity >= 0.18) continue;
+
+    const sample = translatedText
+      .replace(/^\s*Chương\s+\d+[^\r\n]*(?:\r\n|\r|\n)+/iu, '')
+      .trim()
+      .slice(0, 160);
+    return {
+      previousSegmentIndex: reference.segmentIndex,
+      translationSimilarity,
+      sourceSimilarity,
+      sample,
+    };
+  }
+  return null;
+}
+
 function chapterHeaderNumbers(value: string): number[] {
   return value.split(/\r\n|\r|\n/u).flatMap((line) => {
     const header = parseChapterHeaderLine(line);
     return header ? [header.chapterNumber] : [];
   });
+}
+
+function proseParagraphCount(value: string): number {
+  return value.split(/\r\n|\r|\n/u).filter((line) => {
+    const trimmed = line.trim();
+    return trimmed.length > 0 && !parseChapterHeaderLine(trimmed);
+  }).length;
+}
+
+function sentenceEndingCount(value: string): number {
+  return value.match(/[.!?。！？…]+/gu)?.length ?? 0;
 }
 
 export function validateTranslation(
@@ -174,9 +265,43 @@ export function validateTranslation(
       });
     }
 
+    if (rules.checkTruncation && sourceCharacters >= 300 && sourceHan.length / sourceCharacters >= 0.45) {
+      const lengthRatio = translatedCharacters / sourceCharacters;
+      const sourceParagraphs = proseParagraphCount(source);
+      const translatedParagraphs = proseParagraphCount(translation);
+      const sourceSentenceEndings = sentenceEndingCount(source);
+      const translatedSentenceEndings = sentenceEndingCount(translation);
+      const paragraphCoverage = sourceParagraphs > 0
+        ? translatedParagraphs / sourceParagraphs
+        : 1;
+      const sentenceCoverage = sourceSentenceEndings > 0
+        ? translatedSentenceEndings / sourceSentenceEndings
+        : 1;
+
+      // A Chinese-to-Vietnamese translation is normally at least as long as
+      // its source. Only reject when the response is also missing most source
+      // paragraph and sentence boundaries. Requiring all three signals avoids
+      // treating ordinary paragraph merging or concise wording as truncation.
+      if (
+        lengthRatio < 1.5 &&
+        sourceParagraphs >= 8 &&
+        sourceSentenceEndings >= 8 &&
+        paragraphCoverage < 0.55 &&
+        sentenceCoverage < 0.65 &&
+        !issues.some((issue) => issue.code === 'too_short')
+      ) {
+        issues.push({
+          code: 'likely_truncated',
+          severity: 'error',
+          message: 'Bản dịch có dấu hiệu bị mất một phần lớn nội dung đầu hoặc giữa so với cấu trúc nguồn.',
+          sample: `Độ dài ${Math.round(lengthRatio * 100)}%; đoạn ${Math.round(paragraphCoverage * 100)}%; câu ${Math.round(sentenceCoverage * 100)}%.`,
+        });
+      }
+    }
+
     if (
       rules.checkPreamble &&
-      /^(?:#{1,6}\s*)?(?:dưới đây là (?:bản dịch|phần dịch)|bản dịch(?: tiếng việt)?\s*[:：]|here(?:'s| is) the translation\s*[:：])/iu.test(
+      /^(?:(?:Bài viết|Article)[ \t]*(?:\r\n|\r|\n|$)|(?:#{1,6}\s*)?(?:dưới đây là (?:bản dịch|phần dịch)|bản dịch(?: tiếng việt)?\s*[:：]|here(?:'s| is) the translation\s*[:：]))/iu.test(
         translation.trim(),
       )
     ) {

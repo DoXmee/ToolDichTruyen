@@ -157,6 +157,7 @@ export type TranslationValidationIssueCode =
   | 'source_echo'
   | 'assistant_preamble'
   | 'repetition'
+  | 'cross_chapter_repetition'
   | 'ownership_marker_leak'
   | 'chapter_structure'
   | 'error_response';
@@ -219,7 +220,7 @@ export interface TranslationAutoExportBinding {
 }
 
 /** AI web service selected for a translation job. */
-export type AiProvider = 'chatgpt' | 'kimi';
+export type AiProvider = 'chatgpt' | 'kimi' | 'deepseek';
 
 export interface TranslationJob {
   id: string;
@@ -227,6 +228,10 @@ export interface TranslationJob {
   updatedAt: string;
   status: TranslationJobStatus;
   aiProvider: AiProvider;
+  /** Fixed provider pool chosen when this job was created. */
+  allowedAiProviders?: AiProvider[];
+  /** Outside-pool provider currently armed for one failed segment only. */
+  manualRescueProvider?: AiProvider;
   promptMode: PromptMode;
   customPrompt?: string;
   resolvedPrompt: string;
@@ -264,6 +269,8 @@ export interface TranslationJobSnapshot {
   updatedAt: string;
   status: TranslationJobStatus;
   aiProvider: AiProvider;
+  allowedAiProviders?: AiProvider[];
+  manualRescueProvider?: AiProvider;
   totalSegments: number;
   completedSegments: number;
   segments: TranslationSegmentSnapshot[];
@@ -357,7 +364,7 @@ export type IpcResult<T, E = IpcError> =
   | { ok: true; data: T }
   | { ok: false; error: E };
 
-export type StorySite = 'huliwang' | 'timotxt' | 'qingrenyouxi' | 'xbanxia' | 'xszj';
+export type StorySite = 'huliwang' | 'timotxt' | 'qingrenyouxi' | 'xbanxia' | 'xszj' | 'liehuozw' | 'uaa002' | 'c6k6' | 'czbooks' | 'novel543';
 
 export type StoryUrlKind = 'book' | 'catalog' | 'chapter';
 
@@ -415,6 +422,15 @@ export interface StoryFetchResult {
   chapters: StoryChapterContent[];
   combinedSource: string;
   warnings: string[];
+}
+
+/** Stable identity persisted in an automatic-export directory so a folder
+ * selected for one website book cannot silently receive another book. */
+export interface StoryExportIdentity {
+  site: StorySite;
+  bookId: string;
+  bookTitle: string;
+  bookUrl: string;
 }
 
 export interface StorySourceProgress {

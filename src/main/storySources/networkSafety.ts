@@ -77,7 +77,7 @@ export async function assertSafeStoryNetworkRequest(
     throw new StorySourceError("UNSAFE_REDIRECT", "Trình duyệt đã chặn request tới localhost/mạng nội bộ.");
   }
   if ((kind === "navigation" || kind === "font") && !siteForHostname(hostname)) {
-    throw new StorySourceError("UNSAFE_REDIRECT", "Trang hoặc font đã chuyển ra ngoài bốn website truyện được cho phép.");
+    throw new StorySourceError("UNSAFE_REDIRECT", "Trang hoặc font đã chuyển ra ngoài các website truyện được cho phép.");
   }
   if ((kind === "navigation" || kind === "font" || kind === "transcode") && url.protocol !== "https:") {
     throw new StorySourceError("UNSAFE_REDIRECT", "Trang, font và endpoint nguồn truyện chỉ được kết nối qua HTTPS.");

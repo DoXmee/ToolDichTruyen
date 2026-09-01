@@ -20,9 +20,9 @@ describe("Huli normal-browser helper", () => {
   it("has a narrowly scoped MV3 manifest with a stable extension id key", async () => {
     const manifest = JSON.parse(await readFile(resolve(root, "manifest.json"), "utf8"));
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("1.0.6");
+    expect(manifest.version).toBe("1.0.7");
     expect(manifest.name).toBe("Tool Dịch Truyện - Browser Helper");
-    expect(manifest.description).toContain("Đọc trang Huliwang");
+    expect(manifest.description).toContain("Novel543");
     expect(manifest.permissions).toEqual(["storage"]);
     expect(manifest.host_permissions).toEqual([
       "https://m.huliwang.net/*",
@@ -31,6 +31,8 @@ describe("Huli normal-browser helper", () => {
       "https://www.xszj.org/*",
       "https://ixdzs8.com/*",
       "https://www.ixdzs8.com/*",
+      "https://novel543.com/*",
+      "https://www.novel543.com/*",
       "http://127.0.0.1/*",
     ]);
     expect(manifest.permissions).not.toEqual(expect.arrayContaining(["cookies", "history", "debugger", "webRequest", "scripting"]));
@@ -78,10 +80,37 @@ describe("Huli normal-browser helper", () => {
     }
   });
 
+  it("allow-lists and canonicalizes only exact Novel543 routes", () => {
+    expect(protocol.normalizeNovel543Url("https://novel543.com/1013669909/?from=x#y")).toBe("https://www.novel543.com/1013669909/");
+    expect(protocol.normalizeNovel543Url("https://www.novel543.com/1013669909/dir?q=x")).toBe("https://www.novel543.com/1013669909/dir");
+    expect(protocol.normalizeNovel543Url("https://novel543.com/1013669909/8096_1_2.html#x")).toBe("https://www.novel543.com/1013669909/8096_1_2.html");
+    expect(protocol.companionSite("https://www.novel543.com/1013669909/dir")).toBe("novel543");
+    for (const url of [
+      "http://novel543.com/1013669909/",
+      "https://evil.novel543.com/1013669909/",
+      "https://www.novel543.com.evil.test/1013669909/",
+      "https://user:pass@www.novel543.com/1013669909/",
+      "https://www.novel543.com:444/1013669909/",
+      "https://www.novel543.com/not-a-book/",
+      "https://www.novel543.com/1013669909/8096_1.html/extra",
+    ]) expect(() => protocol.normalizeNovel543Url(url)).toThrow();
+  });
+
+  it("ships a passive Novel543 content reader with fixed selectors and no verification clicks", async () => {
+    const script = await readFile(resolve(root, "novel543-content.js"), "utf8");
+    expect(script).toContain('".chaplist .all"');
+    expect(script).toContain('".chapter-content .content"');
+    expect(script).toContain("ONEAD");
+    expect(script).toContain("溫馨提示");
+    expect(script).not.toMatch(/\.click\s*\(|chrome\.scripting|executeScript|debugger/iu);
+  });
+
   it("accepts only fixed visit/catalog-next/chapter-next commands and does not put the token in a URL", () => {
     expect(protocol.validateVisitCommand({ id: "cmd_1", type: "visit", url: "https://m.huliwang.net/1703891/1.html" })).toEqual({ id: "cmd_1", type: "visit", url: "https://m.huliwang.net/1703891/1.html" });
     expect(protocol.validateCompanionCommand({ id: "cmd_2", type: "catalog-next", url: "https://m.huliwang.net/dir/1703891.html" })).toEqual({ id: "cmd_2", type: "catalog-next", url: "https://m.huliwang.net/dir/1703891.html" });
     expect(protocol.validateCompanionCommand({ id: "cmd_2b", type: "chapter-next", url: "https://m.huliwang.net/1703891/50/2.html" })).toEqual({ id: "cmd_2b", type: "chapter-next", url: "https://m.huliwang.net/1703891/50/2.html" });
+    expect(protocol.validateVisitCommand({ id: "cmd_n", type: "visit", url: "https://novel543.com/1013669909/8096_1_2.html" })).toEqual({ id: "cmd_n", type: "visit", url: "https://www.novel543.com/1013669909/8096_1_2.html" });
+    expect(() => protocol.validateCompanionCommand({ id: "cmd_n2", type: "chapter-next", url: "https://www.novel543.com/1013669909/8096_1.html" })).toThrow();
     expect(() => protocol.validateVisitCommand({ id: "cmd_1", type: "script", url: "https://m.huliwang.net/1703891/1.html" })).toThrow();
     expect(() => protocol.validateVisitCommand({ id: "cmd_1", type: "visit", url: "https://m.huliwang.net/1703891/1.html", script: "x" })).toThrow();
     expect(() => protocol.validateCompanionCommand({ id: "cmd_3", type: "catalog-next", url: "https://m.huliwang.net/1703891/1.html" })).toThrow();
@@ -417,6 +446,7 @@ describe("Huli normal-browser helper", () => {
     const pairing = await readFile(resolve(root, "pairing-content.js"), "utf8");
     const huli = await readFile(resolve(root, "huli-content.js"), "utf8");
     const xszj = await readFile(resolve(root, "xszj-content.js"), "utf8");
+    const novel543 = await readFile(resolve(root, "novel543-content.js"), "utf8");
     const manifest = JSON.parse(await readFile(resolve(root, "manifest.json"), "utf8"));
     expect(worker).not.toMatch(/pollLoop|onStartup/u);
     expect(worker).not.toContain('message?.type === "poll"');
@@ -427,10 +457,13 @@ describe("Huli normal-browser helper", () => {
     expect(pairing).toContain("chrome.runtime.connect({ name: HEARTBEAT_PORT_NAME })");
     expect(huli).toContain("chrome.runtime.connect({ name: HEARTBEAT_PORT_NAME })");
     expect(xszj).toContain("chrome.runtime.connect({ name: HEARTBEAT_PORT_NAME })");
+    expect(novel543).toContain("chrome.runtime.connect({ name: HEARTBEAT_PORT_NAME })");
     expect(pairing).not.toContain('sendMessage({ type: "poll" })');
     expect(huli).not.toContain('sendMessage({ type: "poll" })');
     expect(xszj).not.toContain('sendMessage({ type: "poll" })');
+    expect(novel543).not.toContain('sendMessage({ type: "poll" })');
     expect(manifest.content_scripts.map((entry: { js: string[] }) => entry.js)).toEqual([
+      ["novel543-content.js"],
       ["pairing-content.js"],
       ["huli-content.js"],
       ["xszj-content.js"],

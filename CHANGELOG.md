@@ -2,6 +2,30 @@
 
 Các thay đổi đáng chú ý của Tool Dịch Truyện được ghi lại tại đây.
 
+## [1.3.0] - 2026-09-01
+
+### Thêm mới
+
+- Thêm DeepSeek AI bên cạnh ChatGPT và Kimi AI, dùng cùng cơ chế checkpoint, kiểm tra phản hồi và tiếp tục tiến trình.
+- Cho phép chọn nhóm cố định gồm một, hai hoặc ba chatbot; mặc định bật cả ba.
+- Mở cả ba chatbot khi tiến trình lỗi để người dùng chọn bot cứu một lượt cho đúng đoạn, sau đó tự quay về nhóm cố định.
+- Thêm nguồn Novel543, đọc mục lục an toàn và ghép đầy đủ các trang con của cùng chương.
+
+### Sửa lỗi và cải thiện
+
+- Giữ chatbot người dùng vừa chọn khi tạm dừng rồi tiếp tục, không tự nhảy về chatbot cũ.
+- Ngăn DeepSeek reload và dịch lại từ đầu sau khi phản hồi hợp lệ đã hoàn tất.
+- Chặn vòng lặp failover/retry giữa các chatbot đã hết lượt cho cùng một đoạn.
+- Cải thiện xác minh phản hồi để loại nội dung lặp, phản hồi lỗi của AI và chương không khớp nguồn.
+- Cảnh báo khi thư mục xuất đã chứa nội dung của truyện khác và bảo vệ file người dùng khỏi bị ghi đè.
+- Sửa tải chương Xbanxia/Novel543, nội dung nhiều trang và các trường hợp chương đầu hoặc chương giữa bị thiếu/lặp.
+
+### Kiểm thử
+
+- 597 kiểm thử unit/integration/renderer đạt; 27 ca live phụ thuộc website, tài khoản hoặc thao tác xác minh được bỏ qua mặc định.
+- 81 kiểm thử riêng cho chọn nhóm chatbot, khóa/mở lựa chọn, failover, bot cứu ngoài nhóm và checkpoint đều đạt.
+- Production build, packaged Electron smoke và kiểm tra đồng bộ payload ZIP đều đạt.
+
 ## [1.2.0] - 2026-08-21
 
 ### Thêm mới

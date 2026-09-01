@@ -422,6 +422,39 @@ textarea:focus-visible {
   border-bottom: 1px solid rgb(72 78 67 / 12%);
 }
 
+.supported-sites-button {
+  margin-left: 14px;
+  align-self: center;
+  border: 1px solid var(--border-color, #d8c9ad);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  padding: 6px 11px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.supported-sites-button:hover,
+.supported-sites-button[aria-expanded='true'] { background: color-mix(in srgb, currentColor 10%, transparent); }
+.brand { position: relative; }
+.supported-sites-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  left: 42px;
+  min-width: 260px;
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-color, #d8c9ad);
+  border-radius: 10px;
+  background: var(--panel-bg, #fffdf8);
+  color: var(--text-color, #29251f);
+  box-shadow: 0 8px 22px rgb(0 0 0 / 18%);
+  font-size: 12px;
+}
+.supported-sites-popover strong { font-size: 13px; }
+
 
 .brand,
 .connection-box,
@@ -545,6 +578,10 @@ textarea:focus-visible {
 .ai-provider-switch button:disabled {
   cursor: not-allowed;
   opacity: .62;
+}
+
+.ai-provider-switch button.is-excluded:not(.is-active) {
+  opacity: .42;
 }
 
 main {
@@ -1225,11 +1262,45 @@ main {
 .prompt-panel {
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 .prompt-panel > .panel__heading > svg {
   color: var(--amber);
 }
+
+.provider-pool {
+  position: absolute;
+  top: 10px;
+  right: 38px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.provider-pool__options {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.provider-pool__options label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.provider-pool:has(input:disabled) { opacity: .68; }
 
 .prompt-list {
   display: grid;

@@ -23,6 +23,7 @@ import {
   StorySourceError,
   type FetchStoryChaptersRequest,
   type StoryPageClient,
+  type StoryPageSnapshot,
   type StoryProgressListener,
   type StorySourceServiceApi,
   type StorySourceServiceOptions,
@@ -39,14 +40,16 @@ interface ActiveOperation {
  * Cloudflare verification in the browser the person actually uses and avoids
  * treating the verification as content or attempting to automate it.
  */
-type BrowserCompanionSite = "huliwang" | "xszj";
+type BrowserCompanionSite = "huliwang" | "xszj" | "novel543";
 
 function isBrowserCompanionSite(site: StorySourceAnalysis["site"]): site is BrowserCompanionSite {
-  return site === "huliwang" || site === "xszj";
+  return site === "huliwang" || site === "xszj" || site === "novel543";
 }
 
 function browserCompanionSiteLabel(site: BrowserCompanionSite): string {
-  return site === "huliwang" ? "Huliwang" : "XSZJ/爱下电子书";
+  if (site === "huliwang") return "Huliwang";
+  if (site === "xszj") return "XSZJ/爱下电子书";
+  return "Novel543";
 }
 
 function browserCompanionRequiredMessage(site: BrowserCompanionSite): string {
@@ -88,6 +91,18 @@ function isClosedPageClientError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return /(?:target\s+(?:page(?:,\s*context)?\s+or\s+browser|page|context|browser)\s+(?:has\s+been\s+)?closed|(?:page|context|browser)\s+has\s+been\s+closed|target\s+closed)/iu
     .test(error.message);
+}
+
+function isPageNavigationTimeout(error: unknown): boolean {
+  return error instanceof Error && /(?:page\.goto|navigation)[\s\S]*timeout/iu.test(error.message);
+}
+
+function isTransientPageTransition(error: unknown): boolean {
+  return error instanceof Error && /(?:execution context was destroyed|frame was detached|cannot find context with specified id|most likely because of a navigation)/iu.test(error.message);
+}
+
+function isUaaLoginLocked(snapshot: StoryPageSnapshot): boolean {
+  return /(?:以下正文内容已隐藏|您在登录后即可阅读|立即登录)/iu.test(snapshot.bodyText);
 }
 
 function boundedPositiveInteger(value: unknown, fallback: number, maximum: number): number {
@@ -135,6 +150,7 @@ export class StorySourceService implements StorySourceServiceApi {
   private readonly profileDirectory: string;
   private readonly minRequestIntervalMs: number;
   private readonly verificationWaitMs: number;
+  private readonly manualVerificationWaitMs: number;
   private readonly maxCatalogPages: number;
   private readonly maxChapterPages: number;
   private readonly now: () => number;
@@ -156,6 +172,7 @@ export class StorySourceService implements StorySourceServiceApi {
       ?? path.join(os.tmpdir(), "tool-dich-truyen-story-source-profile");
     this.minRequestIntervalMs = Math.min(10_000, Math.max(0, options.minRequestIntervalMs ?? 650));
     this.verificationWaitMs = Math.min(60_000, Math.max(0, options.verificationWaitMs ?? 30_000));
+    this.manualVerificationWaitMs = Math.min(10 * 60_000, Math.max(0, options.manualVerificationWaitMs ?? 3 * 60_000));
     // Huliwang currently renders 50 chapters per catalog page.  One hundred
     // pages lets a normal book expose up to roughly 5,000 entries while the
     // explicit hard cap still prevents an unbounded hostile pager.
@@ -249,7 +266,7 @@ export class StorySourceService implements StorySourceServiceApi {
     if (!isBrowserCompanionSite(parsed.site)) {
       throw new StorySourceError(
         "UNSUPPORTED_URL",
-        "Kết nối trình duyệt mặc định chỉ hỗ trợ link Huliwang hoặc XSZJ hợp lệ.",
+        "Kết nối trình duyệt mặc định chỉ hỗ trợ link Huliwang, XSZJ hoặc Novel543 hợp lệ.",
       );
     }
     const companionSite = parsed.site;
@@ -484,21 +501,86 @@ export class StorySourceService implements StorySourceServiceApi {
   private async visit(url: string, signal: AbortSignal, analysisId: string) {
     this.throwIfAborted(signal);
     await this.throttle(signal);
-    let snapshot = await this.visitSnapshot(url, signal);
     const parsed = parseStoryUrl(url);
+    let snapshot: StoryPageSnapshot | undefined;
+    try {
+      snapshot = await this.visitSnapshot(url, signal);
+    } catch (error) {
+      if (parsed.site !== "c6k6" || !isPageNavigationTimeout(error)) throw error;
+      let lastError: unknown = error;
+      for (let retry = 1; retry <= 3; retry += 1) {
+        this.emit({
+          analysisId,
+          phase: "opening",
+          completed: 0,
+          total: 0,
+          message: `C6K6 tải trang quá lâu; đang kiểm tra và thử lại ${retry}/3…`,
+        });
+        try {
+          const current = await this.inspectCurrentSnapshot(url, signal);
+          const actual = parseStoryUrl(current.url);
+          if (
+            current.challenge === "none"
+            && actual.site === "c6k6"
+            && actual.bookId === parsed.bookId
+            && current.bodyText.trim().length >= 40
+          ) {
+            snapshot = current;
+            break;
+          }
+        } catch (inspectionError) {
+          lastError = inspectionError;
+        }
+        await this.sleep(1_500, signal);
+        try {
+          snapshot = await this.visitSnapshot(url, signal);
+          break;
+        } catch (retryError) {
+          lastError = retryError;
+          if (!isPageNavigationTimeout(retryError)) throw retryError;
+        }
+      }
+      if (!snapshot) throw lastError;
+    }
+    if (parsed.site === "c6k6" && snapshot.status !== undefined && snapshot.status >= 500) {
+      for (let retry = 1; retry <= 9 && snapshot.status !== undefined && snapshot.status >= 500; retry += 1) {
+        this.emit({
+          analysisId,
+          phase: "opening",
+          completed: 0,
+          total: 0,
+          message: `C6K6 tạm trả HTTP ${snapshot.status}; đang thử lại ${retry}/9…`,
+        });
+        await this.sleep(1_200, signal);
+        snapshot = await this.visitSnapshot(url, signal);
+      }
+    }
     const companionReady = isBrowserCompanionSite(parsed.site) && this.hasBrowserCompanionFor(parsed.site);
-    if ((parsed.site === "huliwang" || parsed.site === "xszj") && snapshot.challenge === "passive") {
+    if ((parsed.site === "huliwang" || parsed.site === "xszj" || parsed.site === "czbooks" || parsed.site === "novel543") && snapshot.challenge === "passive") {
       this.emit({ analysisId, phase: "verification", completed: 0, total: 0, message: "Đang chờ Cloudflare xác minh thụ động…" });
       // Cloudflare's automatic check does not have a stable duration. Sample
       // the current page rather than navigating to the URL again: a reload
       // restarts its verification JavaScript. No checkbox, challenge iframe
       // or CAPTCHA is clicked by the tool.
-      let remainingWaitMs = this.verificationWaitMs;
+      // CZBooks can trigger a longer passive Cloudflare cooldown only after a
+      // dozen chapter navigations. Keep inspecting the same tab for the same
+      // bounded window used by its visible manual-verification flow; reloading
+      // here would restart the challenge and lose the in-flight chapter.
+      let remainingWaitMs = parsed.site === "czbooks" || parsed.site === "novel543"
+        ? this.manualVerificationWaitMs
+        : this.verificationWaitMs;
       while (snapshot.challenge === "passive" && remainingWaitMs > 0) {
         const iterationStartedAt = Date.now();
         const waitMs = Math.min(2_000, remainingWaitMs);
         await this.sleep(waitMs, signal);
-        snapshot = await this.inspectCurrentSnapshot(url, signal);
+        try {
+          snapshot = await this.inspectCurrentSnapshot(url, signal);
+        } catch (error) {
+          if (!isTransientPageTransition(error)) throw error;
+          // Cloudflare can replace its verification document between the DOM
+          // lookup and page.evaluate. Keep the same tab and sample it again;
+          // reloading here would restart the verification.
+        }
         // Preserve deterministic fake-clock tests while also charging slow
         // extension/DOM collection against the real verification budget.
         remainingWaitMs -= Math.max(waitMs, Date.now() - iterationStartedAt);
@@ -507,30 +589,120 @@ export class StorySourceService implements StorySourceServiceApi {
         // Close only a Playwright-controlled context. A paired default-browser
         // companion stays alive so the user can finish a visible check without
         // losing the ordinary tab/profile.
-        if (!companionReady) await this.releasePageClient();
+        if (!companionReady && parsed.site !== "novel543") await this.releasePageClient();
         throw new StorySourceError(
           "SOURCE_BLOCKED",
           parsed.site === "huliwang" && companionReady
             ? "Cloudflare chưa hoàn tất kiểm tra trong trình duyệt mặc định. Hãy giữ tab Huliwang mở, chờ trang hiện nội dung rồi bấm Phân tích lại."
             : parsed.site === "xszj" && companionReady
               ? "Cloudflare chưa hoàn tất kiểm tra trong trình duyệt mặc định. Hãy giữ tab XSZJ/爱下电子书 mở, chờ trang hiện nội dung rồi bấm Phân tích lại."
+            : parsed.site === "novel543" && companionReady
+              ? "Cloudflare chưa hoàn tất kiểm tra trong trình duyệt mặc định. Hãy giữ tab Novel543 mở, chờ trang hiện nội dung rồi bấm Phân tích lại."
             : parsed.site === "xszj"
               ? "XSZJ/爱下电子书 vẫn đang xác minh thụ động. Tool đã giữ nguyên trang, chờ ngắn rồi mới dừng; hãy chờ trang hiện nội dung rồi bấm Phân tích lại."
+              : parsed.site === "czbooks"
+                ? "CZBooks chưa hoàn tất xác minh thụ động. Tool đã giữ nguyên trang trong thời gian chờ và không nhận trang Cloudflare làm nội dung truyện."
+              : parsed.site === "novel543"
+                ? "Novel543 chưa hoàn tất xác minh thụ động. Tool vẫn giữ nguyên cửa sổ và đúng trang đang tải; hãy chờ trang hiện nội dung rồi bấm lại thao tác."
               : "Cloudflare chưa hoàn tất xác minh thụ động. Tool đã đóng phiên đọc tự động; hãy bấm Kết nối trình duyệt mặc định để đọc Huliwang bằng đúng trình duyệt và hồ sơ bạn thường dùng.",
         );
       }
+    }
+    if ((parsed.site === "czbooks" || parsed.site === "novel543") && snapshot.challenge === "interactive") {
+      const sourceName = parsed.site === "novel543" ? "Novel543" : "CZBooks";
+      this.emit({
+        analysisId,
+        phase: "verification",
+        completed: 0,
+        total: 0,
+        message: `${sourceName} đang yêu cầu xác minh trong cửa sổ đọc nguồn. Hãy bấm ô xác minh; tool đang giữ nguyên đúng trang và sẽ tự tiếp tục ngay khi được duyệt…`,
+      });
+      let remainingWaitMs = this.manualVerificationWaitMs;
+      while (snapshot.challenge !== "none" && remainingWaitMs > 0) {
+        const iterationStartedAt = Date.now();
+        const waitMs = Math.min(1_000, remainingWaitMs);
+        await this.sleep(waitMs, signal);
+        try {
+          snapshot = await this.inspectCurrentSnapshot(url, signal);
+        } catch (error) {
+          if (!isTransientPageTransition(error)) throw error;
+        }
+        remainingWaitMs -= Math.max(waitMs, Date.now() - iterationStartedAt);
+      }
+      if (snapshot.challenge !== "none") {
+        const message = `${sourceName} vẫn đang chờ xác minh. Tool đã giữ nguyên cửa sổ và đúng trang nguồn; hãy hoàn tất thao tác Cloudflare rồi bấm lại Phân tích hoặc Tải, dịch và lưu. Tool không tự bấm hay giải CAPTCHA.`;
+        this.emit({ analysisId, phase: "verification", completed: 0, total: 0, message });
+        // Deliberately keep the factory-owned visible page alive. A retry can
+        // reuse the same persistent profile/cookie instead of opening browser
+        // windows repeatedly or throwing away the user's completed check.
+        throw new StorySourceError("USER_ACTION_REQUIRED", message);
+      }
+      this.emit({
+        analysisId,
+        phase: "verification",
+        completed: 0,
+        total: 0,
+        message: `${sourceName} đã xác minh xong; đang tiếp tục lấy đúng chương đang tải…`,
+      });
     }
     if (snapshot.challenge === "interactive") {
       const message = parsed.site === "huliwang" && companionReady
         ? "Cloudflare yêu cầu thao tác trong tab Huliwang của trình duyệt mặc định. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất bằng tay rồi bấm Phân tích lại."
         : parsed.site === "xszj" && companionReady
           ? "Cloudflare yêu cầu thao tác trong tab XSZJ/爱下电子书 của trình duyệt mặc định. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất bằng tay rồi bấm Phân tích lại."
+          : parsed.site === "novel543" && companionReady
+            ? "Cloudflare yêu cầu thao tác trong tab Novel543 của trình duyệt mặc định. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất bằng tay rồi bấm Phân tích lại."
           : parsed.site === "xszj"
           ? "XSZJ/爱下电子书 yêu cầu xác minh thủ công. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất trong trình duyệt rồi bấm Phân tích lại."
           : "Cloudflare không chấp nhận và tool đã đóng phiên đọc tự động; tool không bấm CAPTCHA/Turnstile. Hãy bấm Kết nối trình duyệt mặc định để Huliwang được mở bằng đúng trình duyệt và hồ sơ bạn thường dùng.";
       if (!companionReady) await this.releasePageClient();
       this.emit({ analysisId, phase: "verification", completed: 0, total: 0, message });
       throw new StorySourceError("USER_ACTION_REQUIRED", message);
+    }
+    if (parsed.site === "uaa002" && parsed.kind === "chapter" && isUaaLoginLocked(snapshot)) {
+      this.emit({
+        analysisId,
+        phase: "verification",
+        completed: 0,
+        total: 0,
+        message: "UAA đang yêu cầu đăng nhập. Hãy đăng nhập trong cửa sổ đọc nguồn và quay lại đúng chương; tool đang giữ nguyên phiên và sẽ tự tiếp tục…",
+      });
+      let remainingWaitMs = this.manualVerificationWaitMs;
+      while (remainingWaitMs > 0) {
+        const iterationStartedAt = Date.now();
+        const waitMs = Math.min(1_000, remainingWaitMs);
+        await this.sleep(waitMs, signal);
+        const current = await this.inspectCurrentSnapshot(url, signal);
+        remainingWaitMs -= Math.max(waitMs, Date.now() - iterationStartedAt);
+        try {
+          const currentUrl = parseStoryUrl(current.url);
+          if (
+            currentUrl.site === "uaa002"
+            && currentUrl.kind === "chapter"
+            && currentUrl.bookId === parsed.bookId
+            && currentUrl.chapterKey === parsed.chapterKey
+            && !isUaaLoginLocked(current)
+          ) {
+            snapshot = current;
+            this.emit({
+              analysisId,
+              phase: "verification",
+              completed: 0,
+              total: 0,
+              message: "UAA đã đăng nhập; đang tiếp tục lấy truyện…",
+            });
+            break;
+          }
+        } catch {
+          // The user may temporarily be on UAA's login route. Keep waiting for
+          // the same requested chapter; never accept the login page as prose.
+        }
+      }
+      if (isUaaLoginLocked(snapshot)) {
+        const message = "UAA vẫn đang khóa nội dung. Tool đã giữ nguyên cửa sổ và hồ sơ đăng nhập; hãy đăng nhập, quay lại chương đang mở rồi bấm Tải, dịch và lưu lần nữa.";
+        this.emit({ analysisId, phase: "verification", completed: 0, total: 0, message });
+        throw new StorySourceError("USER_ACTION_REQUIRED", message);
+      }
     }
     return snapshot;
   }

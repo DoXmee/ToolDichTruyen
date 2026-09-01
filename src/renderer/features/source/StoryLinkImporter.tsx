@@ -40,16 +40,25 @@ interface StoryLinkImporterProps {
 }
 
 function siteLabel(site: StorySourceAnalysis['site']): string {
-  if (site === 'huliwang') return 'Huliwang';
-  if (site === 'timotxt') return 'TimoTXT';
-  if (site === 'qingrenyouxi') return 'Qingrenyouxi';
-  if (site === 'xszj') return 'XSZJ/爱下电子书';
-  return 'Xbanxia';
+  const labels: Record<StorySourceAnalysis['site'], string> = {
+    huliwang: 'Huliwang',
+    timotxt: 'TimoTXT',
+    qingrenyouxi: 'Qingrenyouxi',
+    xbanxia: 'Xbanxia',
+    xszj: 'XSZJ/爱下电子书',
+    liehuozw: 'Liehuo中文网',
+    uaa002: 'UAA002',
+    c6k6: 'C6K6',
+    czbooks: 'CZBooks',
+    novel543: 'Novel543',
+  };
+  return labels[site];
 }
 
 function manualVerificationLabel(url: string): string {
   try {
     const hostname = new URL(url).hostname.toLowerCase();
+    if (['novel543.com', 'www.novel543.com'].includes(hostname)) return 'Novel543';
     return ['xszj.org', 'www.xszj.org', 'ixdzs8.com', 'www.ixdzs8.com'].includes(hostname)
       ? 'XSZJ/爱下电子书'
       : 'Huliwang';
@@ -110,7 +119,7 @@ export function StoryLinkImporter({
             onKeyDown={(event) => {
               if (event.key === 'Enter' && url.trim() && !busy && !disabled && !manualVerificationPending) onAnalyze();
             }}
-            placeholder="Dán link Huliwang, XSZJ, TimoTXT, Qingrenyouxi hoặc Xbanxia…"
+            placeholder="Dán link Novel543, Huliwang, XSZJ, TimoTXT, Xbanxia hoặc nguồn được hỗ trợ…"
           />
         </label>
         <button
@@ -126,7 +135,7 @@ export function StoryLinkImporter({
 
       {!analysis && (
         <p className="story-link-support" role="note">
-          <strong>Hỗ trợ nhập link truyện:</strong> Huliwang, XSZJ/爱下电子书, TimoTXT, Qingrenyouxi và Xbanxia. Dán link rồi bấm <strong>Phân tích</strong> để đọc danh sách chương.
+          <strong>Hỗ trợ nhập link truyện:</strong> Huliwang, Novel543, XSZJ/爱下电子书, TimoTXT, Qingrenyouxi, Xbanxia, Liehuo中文网, UAA002, C6K6 và CZBooks. Dán link rồi bấm <strong>Phân tích</strong> để đọc danh sách chương.
         </p>
       )}
 

@@ -3,6 +3,7 @@ import type {
   CombinedChapterExportResult,
   FinalChapterExportInput,
   StoryFetchResult,
+  StoryExportIdentity,
   StorySourceAnalysis,
   StorySourceProgress,
   TranslationJobSnapshot,
@@ -22,6 +23,7 @@ export interface TranslationRequest {
   promptMode: string;
   customPrompt?: string;
   aiProvider?: AiProvider;
+  allowedAiProviders?: AiProvider[];
   autoExport?: TranslationAutoExportBinding;
   settings?: {
     maxChunkChars?: number;
@@ -62,18 +64,18 @@ export interface StoryToolApi {
   onStorySourceProgress(callback: (progress: StorySourceProgress) => void): () => void;
   startTranslation(request: TranslationRequest): Promise<{ jobId: string }>;
   pauseTranslation(jobId: string): Promise<void>;
-  resumeTranslation(jobId: string): Promise<void>;
+  resumeTranslation(jobId: string, aiProvider?: AiProvider): Promise<void>;
   restartTranslation(jobId: string): Promise<{ jobId: string }>;
   cancelTranslation(jobId: string): Promise<void>;
   discardTranslation(jobId: string): Promise<void>;
   getTranslation(jobId: string): Promise<TranslationJobSnapshot>;
   getActiveTranslations(): Promise<TranslationJobSnapshot[]>;
   discoverTranslations(): Promise<TranslationJobSnapshot[]>;
-  retrySegment(request: { jobId: string; segmentId: string }): Promise<void>;
+  retrySegment(request: { jobId: string; segmentId: string; aiProvider?: AiProvider }): Promise<void>;
   onTranslationEvent(callback: (event: TranslationEvent) => void): () => void;
   exportText(request: { content: string; defaultName?: string }): Promise<{ canceled: boolean; filePath?: string }>;
   chooseChapterDirectory(): Promise<{ canceled: boolean; directory?: string }>;
-  validateChapterDirectory(directory: string): Promise<{ directory: string }>;
+  validateChapterDirectory(directory: string, identity?: StoryExportIdentity): Promise<{ directory: string }>;
   exportChapters(request: {
     directory: string;
     exportJobId: string;

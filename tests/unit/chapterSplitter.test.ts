@@ -133,6 +133,27 @@ describe('chapter splitter — paragraph boundaries only', () => {
     ]);
   });
 
+  it('drops only ChatGPT writing-block chrome before chapter headings', () => {
+    const source = [
+      'Bài viết',
+      '---',
+      'Chương 1: Mở đầu',
+      words(750, 'a'),
+      'Bài viết',
+      'Chương 2: Tiếp nối',
+      words(750, 'b'),
+    ].join('\n');
+    const result = splitStory(source, { ...baseConfig, autoDetectTitle: true });
+
+    expect(result.map((chapter) => chapter.index)).toEqual([1, 2]);
+    expect(result.every((chapter) => !chapter.content.includes('Bài viết'))).toBe(true);
+    expect(result.every((chapter) => !chapter.content.includes('---'))).toBe(true);
+
+    const legitimatePreface = `Lời dẫn của tác giả\nChương 1: Mở đầu\n${words(750, 'c')}`;
+    expect(splitStory(legitimatePreface, { ...baseConfig, autoDetectTitle: true })[0]?.content)
+      .toBe('Lời dẫn của tác giả');
+  });
+
   it('preserves paragraph separators, Unicode and source metadata exactly', () => {
     const source = '\r\nĐoạn một đủ dấu.\r\n \r\n你好 🌿 e\u0301.\r\n';
     const paragraphs = parseParagraphs(source);

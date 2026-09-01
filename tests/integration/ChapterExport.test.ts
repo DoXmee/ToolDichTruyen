@@ -48,6 +48,38 @@ describe('chapter TXT export', () => {
     );
   });
 
+  it('claims an empty folder for one book and rejects a different book', async () => {
+    const directory = await temporaryDirectory();
+    const first = {
+      site: 'xbanxia' as const,
+      bookId: 'book-one',
+      bookTitle: 'Bộ truyện một',
+      bookUrl: 'https://www.xbanxia.cc/books/book-one.html',
+    };
+    await expect(validateChapterExportDirectory(directory, first)).resolves.toEqual({
+      directory: path.resolve(directory),
+    });
+    await expect(validateChapterExportDirectory(directory, first)).resolves.toBeTruthy();
+    await expect(validateChapterExportDirectory(directory, {
+      ...first,
+      bookId: 'book-two',
+      bookTitle: 'Bộ truyện hai',
+      bookUrl: 'https://www.xbanxia.cc/books/book-two.html',
+    })).rejects.toThrow(/Bộ truyện một.*không phải.*Bộ truyện hai/u);
+  });
+
+  it('warns instead of adopting a non-empty legacy story folder', async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(path.join(directory, 'Chương 1.txt'), 'Nội dung truyện cũ.', 'utf8');
+    await expect(validateChapterExportDirectory(directory, {
+      site: 'novel543',
+      bookId: '101',
+      bookTitle: 'Truyện mới',
+      bookUrl: 'https://www.novel543.com/101/',
+    })).rejects.toThrow(/không có dấu nhận diện.*chọn thư mục trống/u);
+    expect(await readFile(path.join(directory, 'Chương 1.txt'), 'utf8')).toBe('Nội dung truyện cũ.');
+  });
+
   it('chooses a directory with or without an owner and handles cancel', async () => {
     const directory = await temporaryDirectory();
     const showOpenDialog = vi

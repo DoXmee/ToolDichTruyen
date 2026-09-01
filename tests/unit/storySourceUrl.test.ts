@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseStoryUrl } from "../../src/main/storySources/urlRules";
+import { assertSnapshotUrl, parseStoryUrl } from "../../src/main/storySources/urlRules";
 
 describe("story source URL rules", () => {
   it.each([
@@ -18,6 +18,21 @@ describe("story source URL rules", () => {
     ["https://xszj.org/b/485734/c/856451?page=2", "xszj", "chapter", "485734", "856451", 2],
     ["https://ixdzs8.com/read/646225/", "xszj", "book", "646225", undefined, undefined],
     ["https://ixdzs8.com/read/646225/p1.html", "xszj", "chapter", "646225", "1", undefined],
+    ["https://m.liehuozw.com/74/74628/", "liehuozw", "book", "74/74628", undefined, undefined],
+    ["https://m.liehuozw.com/74/74628/12.html", "liehuozw", "chapter", "74/74628", "12", undefined],
+    ["https://m.liehuozw.com/74/74628/12_2.html", "liehuozw", "chapter", "74/74628", "12", 2],
+    ["https://m.uaa002.com/novel/intro?id=11306159", "uaa002", "book", "11306159", undefined, undefined],
+    ["https://m.uaa002.com/novel/read/11306159/8", "uaa002", "chapter", "11306159", "8", undefined],
+    ["https://www.c6k6.com/book/138252.html", "c6k6", "book", "138252", undefined, undefined],
+    ["https://www.c6k6.com/book/138252/8.html", "c6k6", "chapter", "138252", "8", undefined],
+    ["https://m.c6k6.com/3/138252/", "c6k6", "book", "138252", undefined, undefined],
+    ["https://m.c6k6.com/138/138252/35142154.html", "c6k6", "chapter", "138252", "35142154", undefined],
+    ["https://czbooks.net/n/pmeef4", "czbooks", "book", "pmeef4", undefined, undefined],
+    ["https://czbooks.net/n/pmeef4/8", "czbooks", "chapter", "pmeef4", "8", undefined],
+    ["https://www.novel543.com/1013669909/", "novel543", "book", "1013669909", undefined, undefined],
+    ["https://novel543.com/1013669909/dir", "novel543", "catalog", "1013669909", undefined, undefined],
+    ["https://www.novel543.com/1013669909/8096_1.html", "novel543", "chapter", "1013669909", "8096_1", 1],
+    ["https://novel543.com/1013669909/8096_1_2.html", "novel543", "chapter", "1013669909", "8096_1", 2],
     ["https://www.xbanxia.cc/books/143300.html", "xbanxia", "book", "143300", undefined, undefined],
     ["https://xbanxia.cc/books/143300/28251886.html", "xbanxia", "chapter", "143300", "28251886", undefined],
   ] as const)("classifies %s", (url, site, kind, bookId, chapterKey, page) => {
@@ -25,6 +40,27 @@ describe("story source URL rules", () => {
     expect(parsed).toMatchObject({ site, kind, bookId });
     expect(parsed.chapterKey).toBe(chapterKey);
     expect(parsed.page).toBe(page);
+  });
+
+  it("canonicalizes a desktop C6K6 book URL to its working mobile catalog", () => {
+    const parsed = parseStoryUrl("https://www.c6k6.com/book/124560.html");
+    expect(parsed.bookUrl).toBe("https://m.c6k6.com/124/124560/");
+    expect(parsed.catalogUrl).toBe("https://m.c6k6.com/124/124560/");
+    expect(parsed.normalizedUrl).toBe("https://m.c6k6.com/124/124560/");
+  });
+
+  it("normalizes Novel543 chapters and keeps its verified same-chapter page suffix", () => {
+    const parsed = parseStoryUrl("http://novel543.com/1013669909/8096_1_2.html?from=history#chapter");
+    expect(parsed).toMatchObject({
+      site: "novel543",
+      kind: "chapter",
+      bookId: "1013669909",
+      chapterKey: "8096_1",
+      page: 2,
+      normalizedUrl: "https://www.novel543.com/1013669909/8096_1_2.html",
+      bookUrl: "https://www.novel543.com/1013669909/",
+      catalogUrl: "https://www.novel543.com/1013669909/dir",
+    });
   });
 
   it.each([
@@ -56,8 +92,30 @@ describe("story source URL rules", () => {
     "https://www.xbanxia.cc/books/143300/not-a-chapter.html",
     "https://www.xbanxia.cc/books/143300/28251886/extra.html",
     "https://www.xbanxia.cc/books/143300%2F28251886.html",
+    "https://evil.novel543.com/1013669909/",
+    "https://www.novel543.com.evil.test/1013669909/",
+    "https://user:pass@www.novel543.com/1013669909/",
+    "https://www.novel543.com:444/1013669909/",
+    "https://www.novel543.com./1013669909/",
+    "https://www.novel543.com/not-a-book/",
+    "https://www.novel543.com/1013669909/not-a-chapter.html",
+    "https://www.novel543.com/1013669909/8096_1.html/extra",
+    "https://www.novel543.com/1013669909%2F8096_1.html",
   ])("rejects non-allowlisted or unsupported URL %s", (url) => {
     expect(() => parseStoryUrl(url)).toThrow();
+  });
+
+  it("rejects Novel543 redirects to another domain or another book", () => {
+    expect(() => assertSnapshotUrl(
+      "https://www.novel543.com.evil.test/1013669909/8096_1.html",
+      "novel543",
+      "1013669909",
+    )).toThrow(/ngoài phạm vi an toàn/u);
+    expect(() => assertSnapshotUrl(
+      "https://www.novel543.com/1022699969/8096_1.html",
+      "novel543",
+      "1013669909",
+    )).toThrow(/sách khác/u);
   });
 
   it("normalizes Huliwang page one alias to chapter canonical URL", () => {

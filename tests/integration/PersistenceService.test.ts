@@ -56,7 +56,7 @@ describe('PersistenceService', () => {
     const service = new PersistenceService(directory, createSafeStorage())
     await service.saveJob({
       id: 'job-summary', createdAt: '2026-08-25T00:00:00.000Z', updatedAt: '2026-08-25T00:01:00.000Z',
-      status: 'failed', aiProvider: 'kimi', sourceText: '原文'.repeat(400_000), translatedText: 'Bản dịch'.repeat(200_000),
+      status: 'failed', aiProvider: 'deepseek', sourceText: '原文'.repeat(400_000), translatedText: 'Bản dịch'.repeat(200_000),
       segments: [
         { id: 's1', index: 0, status: 'completed', sourceText: 'nguồn', translatedText: 'dịch' },
         { id: 's2', index: 1, status: 'failed', error: 'Lỗi kiểm thử', sourceText: 'nguồn 2', translatedText: '' },
@@ -66,7 +66,7 @@ describe('PersistenceService', () => {
 
     const summaries = await service.listJobSummaries()
     expect(summaries).toEqual([expect.objectContaining({
-      id: 'job-summary', status: 'failed', aiProvider: 'kimi', totalSegments: 2, completedSegments: 1,
+      id: 'job-summary', status: 'failed', aiProvider: 'deepseek', totalSegments: 2, completedSegments: 1,
     })])
     expect(summaries[0]).not.toHaveProperty('sourceText')
     expect(summaries[0]).not.toHaveProperty('translatedText')
@@ -94,7 +94,7 @@ describe('PersistenceService', () => {
     await expect(service.loadJob('../outside')).rejects.toThrow(/Mã tác vụ không hợp lệ/u)
   })
 
-  it('lưu lựa chọn Kimi riêng trong settings và mặc định ChatGPT cho bản cũ', async () => {
+  it('lưu lựa chọn AI mới trong settings và mặc định ChatGPT cho bản cũ', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'tool-dich-truyen-'))
     const service = new PersistenceService(directory, createSafeStorage())
 
@@ -104,5 +104,9 @@ describe('PersistenceService', () => {
 
     const restored = new PersistenceService(directory, createSafeStorage())
     await expect(restored.getAiProvider()).resolves.toBe('kimi')
+    await expect(restored.setAiProvider('deepseek')).resolves.toBe('deepseek')
+    await restored.flush()
+    const restoredDeepSeek = new PersistenceService(directory, createSafeStorage())
+    await expect(restoredDeepSeek.getAiProvider()).resolves.toBe('deepseek')
   })
 })

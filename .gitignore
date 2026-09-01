@@ -18,6 +18,7 @@ coverage/
 *.local.json
 playwright-report/
 test-results/
+test-output/
 handoff/
 
 # Dữ liệu máy cục bộ / Electron / Chromium. Không bao giờ commit.

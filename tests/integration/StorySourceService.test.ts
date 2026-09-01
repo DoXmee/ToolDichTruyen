@@ -100,6 +100,7 @@ function service(client: StoryPageClient, extra: Partial<ConstructorParameters<t
     pageClient: client,
     minRequestIntervalMs: 0,
     verificationWaitMs: 0,
+    manualVerificationWaitMs: 0,
     ...extra,
   });
 }
@@ -187,6 +188,53 @@ function xbanxiaChapterOne(overrides: Partial<StoryPageSnapshot> = {}): StoryPag
 }
 
 describe("StorySourceService integration", () => {
+  it("imports the verified Novel543 catalog and joins the numbered reader pages of one chapter", async () => {
+    const bookUrl = "https://www.novel543.com/1013669909/";
+    const catalogUrl = "https://www.novel543.com/1013669909/dir";
+    const chapterOne = "https://www.novel543.com/1013669909/8096_1.html";
+    const chapterOnePartTwo = "https://www.novel543.com/1013669909/8096_1_2.html";
+    const firstPart = "蘇諾寒在陌生的房間睜開眼睛，努力回想自己為何會來到這個年代。";
+    const secondPart = "她握緊手中的麵包，決定先照顧好自己，再慢慢處理蘇家留下的麻煩。";
+    const client = new FakeClient(new Map<string, StoryPageSnapshot | (() => Promise<StoryPageSnapshot>)>([
+      [bookUrl, page(bookUrl, {
+        title: "《驚！下鄉的女知青竟是頂級雇傭兵》(九幽月光)小說在線閱讀",
+        elements: { ".title": ["驚！下鄉的女知青竟是頂級雇傭兵"] },
+      })],
+      [catalogUrl, page(catalogUrl, {
+        title: "驚！下鄉的女知青竟是頂級雇傭兵章節列表 - 稷下書院",
+        elements: { h1: ["驚！下鄉的女知青竟是頂級雇傭兵 章節列表"] },
+        links: [
+          link(chapterOne, "第 1章 穿越重生", [".all", ".chaplist"]),
+          link("https://www.novel543.com/1013669909/8096_2.html", "第 2章 蘇家人的指責", [".all", ".chaplist"]),
+          link("https://www.novel543.com/0603702137/999_1.html", "第1章 推薦書籍", [".chaplist"]),
+        ],
+      })],
+      [chapterOne, page(chapterOne, {
+        elements: {
+          h1: ["第 1章 穿越重生 (1/2)"],
+          ".chapter-content .content": [`第 1章 穿越重生 (1/2)\n${firstPart}`],
+        },
+        links: [link(chapterOnePartTwo, "下一章", [".foot-nav"])],
+      })],
+      [chapterOnePartTwo, page(chapterOnePartTwo, {
+        elements: {
+          h1: ["第 1章 穿越重生 (2/2)"],
+          ".chapter-content .content": [`第 1章 穿越重生 (2/2)\n${secondPart}\n溫馨提示: 優化了VIP會員的閱讀體驗，方便設定上一頁和下一頁。`],
+        },
+        links: [link("https://www.novel543.com/1013669909/8096_2.html", "下一章", [".foot-nav"])],
+      })],
+    ]));
+    const source = service(client);
+    const analysis = await source.analyzeUrl(bookUrl);
+    expect(analysis).toMatchObject({ site: "novel543", bookId: "1013669909", bookTitle: "驚！下鄉的女知青竟是頂級雇傭兵" });
+    expect(analysis.chapters).toHaveLength(2);
+    expect(analysis.chapters[0]).toMatchObject({ id: "novel543:1013669909:8096_1", number: 1, title: "穿越重生" });
+
+    const result = await source.fetchChapters({ analysisId: analysis.analysisId, chapterIds: [analysis.chapters[0]!.id] });
+    expect(result.chapters[0]).toMatchObject({ sourceText: `${firstPart}\n\n${secondPart}`, sourceUrls: [chapterOne, chapterOnePartTwo], mergedPartCount: 2 });
+    expect(result.combinedSource).not.toMatch(/溫馨提示|VIP/u);
+  });
+
   it("keeps unnumbered and duplicate-number catalog items as distinct output chapters", async () => {
     const bookUrl = "https://www.qingrenyouxi.com/book/115013.html";
     const chapterUrls = [
@@ -260,7 +308,7 @@ describe("StorySourceService integration", () => {
     const p1 = "https://m.huliwang.net/1703891/36.html";
     const p2 = "https://m.huliwang.net/1703891/36/2.html";
     const p3 = "https://m.huliwang.net/1703891/36/3.html";
-    const client = new FakeClient(new Map([
+    const client = new FakeClient(new Map<string, StoryPageSnapshot | StoryPageSnapshot[]>([
       [catalog.url, catalog],
       [p1, page(p1, {
         // Host aliases and the explicit /1.html page-one alias represent the
@@ -488,6 +536,57 @@ describe("StorySourceService integration", () => {
     expect(fetched.chapters).toHaveLength(1);
     expect(fetched.chapters[0]?.sourceText).toContain("日常浏览器");
     expect(session.close).not.toHaveBeenCalled();
+    await source.close();
+    expect(session.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires the paired daily browser for Novel543 and reads it without launching Playwright", async () => {
+    const bookUrl = "https://www.novel543.com/1013669909/";
+    const catalogUrl = "https://www.novel543.com/1013669909/dir";
+    const chapterUrl = "https://www.novel543.com/1013669909/8096_1.html";
+    const companionClient = new FakeClient(new Map([
+      [bookUrl, page(bookUrl, { elements: { h1: ["Novel543 测试小说"] } })],
+      [catalogUrl, page(catalogUrl, {
+        elements: { h1: ["Novel543 测试小说 章節列表"], ".meta-dir": ["章節：1"] },
+        links: [link(chapterUrl, "第1章 测试开篇", [".all", ".chaplist"])],
+      })],
+      [chapterUrl, page(chapterUrl, {
+        elements: {
+          h1: ["第1章 测试开篇 (1/1)"],
+          ".chapter-content .content": ["这是由日常浏览器读取的 Novel543 正文，人物在雨夜中继续前行，情节完整且没有混入广告或网页导航。"],
+        },
+      })],
+    ]));
+    const playwrightFactory = vi.fn(async () => new FakeClient(new Map()));
+    const session = {
+      bridgeOrigin: "http://127.0.0.1:45678",
+      pairingUrl: "http://127.0.0.1:45678/v1/pair#tdt-pair=test-payload",
+      client: companionClient,
+      waitUntilPaired: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const source = new StorySourceService({
+      pageClientFactory: playwrightFactory,
+      huliwangCompanionFactory: vi.fn(async () => session),
+      manualVerificationLauncher: vi.fn(async () => undefined),
+      minRequestIntervalMs: 0,
+      verificationWaitMs: 0,
+    });
+
+    await expect(source.analyzeUrl(bookUrl)).rejects.toMatchObject({
+      code: "USER_ACTION_REQUIRED",
+      message: expect.stringMatching(/Novel543/u),
+    });
+    expect(playwrightFactory).not.toHaveBeenCalled();
+
+    await source.openManualVerification(bookUrl);
+    const analysis = await source.analyzeUrl(bookUrl);
+    const fetched = await source.fetchChapters({ analysisId: analysis.analysisId, chapterIds: analysis.defaultSelectedChapterIds });
+
+    expect(playwrightFactory).not.toHaveBeenCalled();
+    expect(companionClient.visits).toEqual(expect.arrayContaining([bookUrl, catalogUrl, chapterUrl]));
+    expect(fetched.chapters).toHaveLength(1);
+    expect(fetched.chapters[0]?.sourceText).toContain("日常浏览器");
     await source.close();
     expect(session.close).toHaveBeenCalledTimes(1);
   });
@@ -776,6 +875,200 @@ describe("StorySourceService integration", () => {
         code: "USER_ACTION_REQUIRED",
         message: expect.stringMatching(/đã đóng phiên đọc tự động[\s\S]*không bấm CAPTCHA\/Turnstile/iu),
       });
+  });
+
+  it("keeps the same visible CZBooks page alive and resumes after the user completes verification", async () => {
+    const bookUrl = "https://czbooks.net/n/pmeef4";
+    const chapterUrl = "https://czbooks.net/n/pmeef4/chapter1";
+    const interactive = page(bookUrl, {
+      challenge: "interactive",
+      title: "Just a moment...",
+      bodyText: "Verify you are human — Cloudflare Ray ID",
+    });
+    const catalog = page(bookUrl, {
+      title: "《测试小说》",
+      elements: { h1: ["测试小说"] },
+      links: [link(chapterUrl, "第1章 开始")],
+    });
+    const sleeper = vi.fn(async (_milliseconds: number, _signal?: AbortSignal) => undefined);
+    const client = new FakeClient(new Map([[bookUrl, [interactive, catalog]]]));
+    const source = service(client, { manualVerificationWaitMs: 5_000, sleep: sleeper });
+
+    const analysis = await source.analyzeUrl(bookUrl);
+
+    expect(analysis.site).toBe("czbooks");
+    expect(analysis.chapters).toHaveLength(1);
+    expect(client.visits).toEqual([bookUrl]);
+    expect(client.inspections).toEqual([bookUrl]);
+    expect(sleeper).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not click or close CZBooks when interactive verification needs user action", async () => {
+    const bookUrl = "https://czbooks.net/n/pmeef4";
+    const interactive = page(bookUrl, {
+      challenge: "interactive",
+      title: "Just a moment...",
+      bodyText: "Verify you are human — Cloudflare Ray ID",
+    });
+    const sleeper = vi.fn(async (_milliseconds: number, _signal?: AbortSignal) => undefined);
+    const client = new FakeClient(new Map([[bookUrl, [interactive, interactive, interactive]]]));
+    const source = service(client, { manualVerificationWaitMs: 2_000, sleep: sleeper });
+
+    await expect(source.analyzeUrl(bookUrl)).rejects.toMatchObject({
+      code: "USER_ACTION_REQUIRED",
+      message: expect.stringMatching(/giữ nguyên cửa sổ[\s\S]*không tự bấm hay giải CAPTCHA/iu),
+    });
+    expect(client.visits).toEqual([bookUrl]);
+    expect(client.inspections).toEqual([bookUrl, bookUrl]);
+    expect(client.closed).toBe(false);
+  });
+
+  it("keeps the exact Novel543 page and resumes after interactive Cloudflare verification", async () => {
+    const bookUrl = "https://www.novel543.com/1013669909/";
+    const catalogUrl = "https://www.novel543.com/1013669909/dir";
+    const chapterUrl = "https://www.novel543.com/1013669909/8096_1.html";
+    const interactive = page(bookUrl, {
+      challenge: "interactive",
+      title: "Just a moment...",
+      bodyText: "Verify you are human — Cloudflare Ray ID",
+    });
+    const book = page(bookUrl, { title: "测试书", elements: { ".title": ["测试书"] } });
+    const catalog = page(catalogUrl, {
+      elements: { h1: ["测试书 章節列表"], ".meta-dir": ["章節：1"] },
+      links: [link(chapterUrl, "第1章 开始", [".all", ".chaplist"])],
+    });
+    const sleeper = vi.fn(async (_milliseconds: number, _signal?: AbortSignal) => undefined);
+    const client = new FakeClient(new Map<string, StoryPageSnapshot | StoryPageSnapshot[]>([[bookUrl, [interactive, book]], [catalogUrl, catalog]]));
+    const source = service(client, { manualVerificationWaitMs: 5_000, sleep: sleeper });
+
+    const analysis = await source.analyzeUrl(bookUrl);
+
+    expect(analysis).toMatchObject({ site: "novel543", bookId: "1013669909" });
+    expect(client.visits).toEqual([bookUrl, catalogUrl]);
+    expect(client.inspections).toEqual([bookUrl]);
+    expect(client.closed).toBe(false);
+  });
+
+  it("keeps Novel543 open without clicking CAPTCHA when verification is unfinished", async () => {
+    const bookUrl = "https://www.novel543.com/1013669909/";
+    const interactive = page(bookUrl, {
+      challenge: "interactive",
+      title: "Just a moment...",
+      bodyText: "Verify you are human — Cloudflare Ray ID",
+    });
+    const sleeper = vi.fn(async (_milliseconds: number, _signal?: AbortSignal) => undefined);
+    const client = new FakeClient(new Map([[bookUrl, [interactive, interactive, interactive]]]));
+    const source = service(client, { manualVerificationWaitMs: 2_000, sleep: sleeper });
+
+    await expect(source.analyzeUrl(bookUrl)).rejects.toMatchObject({
+      code: "USER_ACTION_REQUIRED",
+      message: expect.stringMatching(/Novel543[\s\S]*giữ nguyên cửa sổ và đúng trang nguồn[\s\S]*không tự bấm hay giải CAPTCHA/iu),
+    });
+    expect(client.visits).toEqual([bookUrl]);
+    expect(client.inspections).toEqual([bookUrl, bookUrl]);
+    expect(client.closed).toBe(false);
+  });
+
+  it("survives Novel543 replacing the passive Cloudflare document during inspection", async () => {
+    const bookUrl = "https://www.novel543.com/1013669909/";
+    const catalogUrl = "https://www.novel543.com/1013669909/dir";
+    const chapterUrl = "https://www.novel543.com/1013669909/8096_1.html";
+    const passive = page(bookUrl, { challenge: "passive", title: "Just a moment..." });
+    const book = page(bookUrl, { elements: { ".title": ["测试书"] } });
+    const catalog = page(catalogUrl, {
+      elements: { h1: ["测试书 章節列表"], ".meta-dir": ["章節：1"] },
+      links: [link(chapterUrl, "第1章 开始", [".all"])],
+    });
+    let reads = 0;
+    const client = new FakeClient(new Map<string, StoryPageSnapshot | (() => Promise<StoryPageSnapshot>)>([
+      [bookUrl, async () => {
+        reads += 1;
+        if (reads === 1) return passive;
+        if (reads === 2) throw new Error("page.evaluate: Execution context was destroyed, most likely because of a navigation");
+        return book;
+      }],
+      [catalogUrl, catalog],
+    ]));
+    const sleeper = vi.fn(async (_milliseconds: number, _signal?: AbortSignal) => undefined);
+    const source = service(client, { manualVerificationWaitMs: 5_000, sleep: sleeper });
+
+    const analysis = await source.analyzeUrl(bookUrl);
+
+    expect(analysis.site).toBe("novel543");
+    expect(client.inspections).toEqual([bookUrl, bookUrl]);
+    expect(client.visits).toEqual([bookUrl, catalogUrl]);
+  });
+
+  it("salvages a C6K6 page whose DOM loaded even when goto reports a timeout", async () => {
+    const bookUrl = "https://www.c6k6.com/book/124560.html";
+    const catalogUrl = "https://m.c6k6.com/124/124560/";
+    const chapterUrl = "https://m.c6k6.com/124/124560/1.html";
+    const timeout = new Error("page.goto: Timeout 45000ms exceeded while navigating");
+    const catalog = page(catalogUrl, {
+      title: "测试书",
+      bodyText: "测试书目录已经完整加载，这段文字足够长，可以证明页面内容已经到达浏览器，并且无需重新访问同一个网址。",
+      elements: { h1: ["测试书"] },
+      links: [link(chapterUrl, "第1章 开始")],
+    });
+    let reads = 0;
+    const client = new FakeClient(
+      new Map([
+        [
+          catalogUrl,
+          async () => {
+            reads += 1;
+            if (reads === 1) throw timeout;
+            return catalog;
+          },
+        ],
+      ]),
+    );
+    const source = service(client);
+
+    const analysis = await source.analyzeUrl(bookUrl);
+
+    expect(analysis.site).toBe("c6k6");
+    expect(analysis.chapters).toHaveLength(1);
+    expect(client.visits).toEqual([catalogUrl]);
+    expect(client.inspections).toEqual([catalogUrl]);
+  });
+
+  it("keeps the UAA chapter open and resumes after the user signs in", async () => {
+    const bookUrl = "https://m.uaa002.com/novel/intro?id=11306159";
+    const chapterUrl = "https://m.uaa002.com/novel/chapter?id=388595";
+    const catalog = page(bookUrl, {
+      title: "测试小说",
+      bodyText: "测试小说目录，包含完整章节链接。",
+      elements: { h1: ["测试小说"] },
+      links: [link(chapterUrl, "第1章 开始")],
+    });
+    const locked = page(chapterUrl, {
+      title: "第1章 开始",
+      bodyText: "以下正文内容已隐藏，您在登录后即可阅读。立即登录",
+      elements: { ".reader-content": ["以下正文内容已隐藏，您在登录后即可阅读。立即登录"] },
+    });
+    const unlockedText = "这是登录后显示的完整小说正文。".repeat(30);
+    const unlocked = page(chapterUrl, {
+      title: "第1章 开始",
+      bodyText: unlockedText,
+      elements: { ".reader-content": [unlockedText] },
+    });
+    const client = new FakeClient(new Map<string, StoryPageSnapshot | StoryPageSnapshot[]>([
+      [bookUrl, catalog],
+      [chapterUrl, [locked, unlocked]],
+    ]));
+    const sleeper = vi.fn(async (_milliseconds: number, _signal?: AbortSignal) => undefined);
+    const source = service(client, { manualVerificationWaitMs: 2_000, sleep: sleeper });
+    const analysis = await source.analyzeUrl(bookUrl);
+
+    const result = await source.fetchChapters({
+      analysisId: analysis.analysisId,
+      chapterIds: [analysis.chapters[0]!.id],
+    });
+
+    expect(result.chapters).toHaveLength(1);
+    expect(result.chapters[0]!.sourceText).toContain("登录后显示的完整小说正文");
+    expect(client.inspections).toEqual([chapterUrl]);
   });
 
   it("never launches a factory-owned automated browser for an unpaired Huliwang URL", async () => {
@@ -1164,6 +1457,54 @@ describe("StorySourceService integration", () => {
     );
     // The next-chapter navigation is page chrome, not same-chapter pagination.
     expect(client.visits).toEqual([XBANXIA_BOOK_URL, XBANXIA_CHAPTER_ONE_URL]);
+  });
+
+  it("accepts a verified Xbanxia chapter with no title after its chapter number", async () => {
+    const titlelessText = "一九六七年秋天，艷陽高照，村民們正在田間完成最後一批秋收，故事正文完整而且連續。";
+    const client = new FakeClient(new Map([
+      [XBANXIA_BOOK_URL, xbanxiaCatalog({
+        links: [link(XBANXIA_CHAPTER_ONE_URL, "第1章", [".book-list"])],
+      })],
+      [XBANXIA_CHAPTER_ONE_URL, xbanxiaChapterOne({
+        elements: {
+          "#nr_title": ["第1章"],
+          "#nr1": [`第1章\n${titlelessText}\n半夏小說，快樂很多`],
+        },
+      })],
+    ]));
+    const source = service(client);
+    const analysis = await source.analyzeUrl(XBANXIA_BOOK_URL);
+
+    expect(analysis.chapters).toHaveLength(1);
+    expect(analysis.chapters[0]).toMatchObject({ number: 1, title: "第1章" });
+    const result = await source.fetchChapters({
+      analysisId: analysis.analysisId,
+      chapterIds: analysis.defaultSelectedChapterIds,
+    });
+
+    expect(result.chapters[0]).toMatchObject({ number: 1, title: "第1章", sourceText: titlelessText });
+    expect(result.combinedSource).toBe(`Chương 1\n\n${titlelessText}`);
+  });
+
+  it("does not disguise a corrupt Xbanxia title as an intentionally titleless chapter", async () => {
+    const client = new FakeClient(new Map([
+      [XBANXIA_BOOK_URL, xbanxiaCatalog({
+        links: [link(XBANXIA_CHAPTER_ONE_URL, "第1章????????", [".book-list"])],
+      })],
+      [XBANXIA_CHAPTER_ONE_URL, xbanxiaChapterOne({
+        elements: {
+          "#nr_title": ["第1章"],
+          "#nr1": ["第1章\n正文內容完整，但目錄標題已損壞，因此不能冒充正常的無標題章節。"],
+        },
+      })],
+    ]));
+    const source = service(client);
+    const analysis = await source.analyzeUrl(XBANXIA_BOOK_URL);
+
+    await expect(source.fetchChapters({
+      analysisId: analysis.analysisId,
+      chapterIds: analysis.defaultSelectedChapterIds,
+    })).rejects.toMatchObject({ code: "SOURCE_CHANGED" });
   });
 
   it("preserves the real Xbanxia number when the entire catalog title is wrapped in 【】", async () => {

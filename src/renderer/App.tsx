@@ -281,8 +281,12 @@ function loadSplitConfig(value: unknown): SplitConfig {
 }
 
 function aiProviderLabel(provider: AiProvider): string {
-  return provider === 'kimi' ? 'Kimi AI' : 'ChatGPT';
+  if (provider === 'kimi') return 'Kimi AI';
+  if (provider === 'deepseek') return 'DeepSeek AI';
+  return 'ChatGPT';
 }
+
+const ALL_AI_PROVIDERS: AiProvider[] = ['chatgpt', 'kimi', 'deepseek'];
 
 function connectionPresentation(state: ConnectionState, provider: AiProvider) {
   const label = aiProviderLabel(provider);
@@ -295,7 +299,7 @@ function connectionPresentation(state: ConnectionState, provider: AiProvider) {
   }
 }
 
-type ManualVerificationSite = 'huliwang' | 'xszj';
+type ManualVerificationSite = 'huliwang' | 'xszj' | 'novel543';
 
 /**
  * This is only a renderer convenience guard. The main process validates the
@@ -309,6 +313,7 @@ function manualVerificationSite(value: string): ManualVerificationSite | undefin
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
     if (['huliwang.net', 'm.huliwang.net', 'www.huliwang.net'].includes(hostname)) return 'huliwang';
     if (['xszj.org', 'www.xszj.org', 'ixdzs8.com', 'www.ixdzs8.com'].includes(hostname)) return 'xszj';
+    if (['novel543.com', 'www.novel543.com'].includes(hostname)) return 'novel543';
     return undefined;
   } catch {
     return undefined;
@@ -316,7 +321,9 @@ function manualVerificationSite(value: string): ManualVerificationSite | undefin
 }
 
 function manualVerificationSiteLabel(site: ManualVerificationSite): string {
-  return site === 'huliwang' ? 'Huliwang' : 'XSZJ/爱下电子书';
+  if (site === 'huliwang') return 'Huliwang';
+  if (site === 'xszj') return 'XSZJ/爱下电子书';
+  return 'Novel543';
 }
 
 function isCloudflareVerificationMessage(message: string): boolean {
@@ -372,12 +379,14 @@ export default function App() {
   const [splitConfig, setSplitConfig] = useState<SplitConfig>(DEFAULT_SPLIT_CONFIG);
   const [connection, setConnection] = useState<ConnectionState>('disconnected');
   const [aiProvider, setAiProvider] = useState<AiProvider>('chatgpt');
+  const [allowedAiProviders, setAllowedAiProviders] = useState<AiProvider[]>([...ALL_AI_PROVIDERS]);
   const [translationState, setTranslationState] = useState<TranslationState>('idle');
   const [activeJobId, setActiveJobId] = useState('');
   const [translationHistory, setTranslationHistory] = useState<TranslationJobSnapshot[]>([]);
   const [activityLog, setActivityLog] = useState<TranslationActivityEntry[]>([]);
   const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
   const [isChapterDrawerOpen, setIsChapterDrawerOpen] = useState(false);
+  const [isSupportedSitesOpen, setIsSupportedSitesOpen] = useState(false);
   const [completedSegments, setCompletedSegments] = useState(0);
   const [totalSegments, setTotalSegments] = useState(0);
   const [segmentErrors, setSegmentErrors] = useState<SegmentError[]>([]);
@@ -811,6 +820,8 @@ export default function App() {
 
     setTotalSegments(job.totalSegments);
     setCompletedSegments(job.completedSegments);
+    setAiProvider(job.aiProvider);
+    if (job.allowedAiProviders?.length) setAllowedAiProviders([...job.allowedAiProviders]);
     const nextActivityLog = job.activityLog ?? [];
     setActivityLog((current) => {
       if (current === nextActivityLog) return current;
@@ -1145,7 +1156,10 @@ export default function App() {
     const subscribe = api.onAiStatus ?? api.onChatGPTStatus;
     if (!subscribe) return;
     return subscribe((snapshot) => {
-      if ('provider' in snapshot && (snapshot.provider === 'chatgpt' || snapshot.provider === 'kimi')) {
+      if (
+        'provider' in snapshot
+        && (snapshot.provider === 'chatgpt' || snapshot.provider === 'kimi' || snapshot.provider === 'deepseek')
+      ) {
         setAiProvider(snapshot.provider);
       }
       const status = snapshot.status.toLowerCase();
@@ -1218,7 +1232,13 @@ export default function App() {
     // that provider before resuming. Therefore changing the provider shown in
     // the header while paused is safe. Only an actively running/cancelling job
     // must lock the switch.
-    if (!appAvailable || provider === aiProvider || ['running', 'cancelling'].includes(translationState)) return;
+    const outsideFixedPool = !allowedAiProviders.includes(provider);
+    if (
+      !appAvailable
+      || provider === aiProvider
+      || ['running', 'cancelling'].includes(translationState)
+      || (translationState === 'paused' && outsideFixedPool)
+    ) return;
     setConnection('connecting');
     setAppNotice('');
     try {
@@ -1237,6 +1257,17 @@ export default function App() {
       setConnection('error');
       setAppNotice(error instanceof Error ? error.message : 'Không thể đổi AI.');
     }
+  };
+
+  const toggleAllowedAiProvider = (provider: AiProvider) => {
+    if (activeJobId && ['running', 'paused', 'error', 'cancelling'].includes(translationState)) return;
+    const removing = allowedAiProviders.includes(provider);
+    if (removing && allowedAiProviders.length === 1) return;
+    const next = ALL_AI_PROVIDERS.filter((candidate) => (
+      candidate === provider ? !removing : allowedAiProviders.includes(candidate)
+    ));
+    setAllowedAiProviders(next);
+    if (!next.includes(aiProvider)) void changeAiProvider(next[0]!);
   };
 
   const beginTranslation = async (sourceText: string, automaticExportDirectory = '') => {
@@ -1312,14 +1343,19 @@ export default function App() {
       const result = await getStoryTool().startTranslation({
         source: sourceText,
         promptMode,
-        ...(aiProvider === 'kimi' ? { aiProvider } : {}),
+        ...(aiProvider === 'chatgpt' ? {} : { aiProvider }),
+        allowedAiProviders: [...allowedAiProviders],
         customPrompt: promptMode === 'custom' ? customPrompt.trim() : undefined,
         // Link imports preserve an ordinary source chapter in one request;
         // only unusually long chapters are split by the runner.
         settings: {
           maxRetries: 3,
           maxCharsPerSegment: 12_000,
-          responseTimeoutMs: aiProvider === 'kimi' ? 600_000 : 480_000,
+          responseTimeoutMs: aiProvider === 'deepseek'
+            ? 1_200_000
+            : aiProvider === 'kimi'
+              ? 600_000
+              : 480_000,
         },
         ...(automaticExportDirectory && nextExportRange
           ? {
@@ -1507,7 +1543,12 @@ export default function App() {
       // The chosen path can disappear after an old draft is restored. Check
       // it before fetching or creating a translation job, not only later when
       // checkpoint files are first written.
-      const verified = await getStoryTool().validateChapterDirectory(exportDirectory);
+      const verified = await getStoryTool().validateChapterDirectory(exportDirectory, {
+        site: storyAnalysis.site,
+        bookId: storyAnalysis.bookId,
+        bookTitle: storyAnalysis.bookTitle,
+        bookUrl: storyAnalysis.bookUrl,
+      });
       if (verified.directory !== exportDirectory) setExportDirectory(verified.directory);
     } catch (error) {
       setStoryImportState('ready');
@@ -1570,7 +1611,7 @@ export default function App() {
       // prior translated segments and automatic exports remain complete.
       const checkpoint = await getStoryTool().getTranslation(activeJobRef.current);
       reconcileTranslationJob(checkpoint);
-      await getStoryTool().resumeTranslation(activeJobRef.current);
+      await getStoryTool().resumeTranslation(activeJobRef.current, aiProvider);
       setTranslationState('running');
     } catch (error) {
       setAppNotice(error instanceof Error ? error.message : 'Không thể tiếp tục.');
@@ -1604,7 +1645,7 @@ export default function App() {
       // restored before the runner produces the next segment.
       const checkpoint = await getStoryTool().getTranslation(job.id);
       bindTranslationHistoryJob(checkpoint);
-      await getStoryTool().resumeTranslation(job.id);
+      await getStoryTool().resumeTranslation(job.id, aiProvider);
       setTranslationState('running');
       setAppNotice('Đang tiếp tục tác vụ từ checkpoint đã lưu.');
       void refreshTranslationHistory().catch(() => undefined);
@@ -1622,7 +1663,7 @@ export default function App() {
       const checkpoint = await getStoryTool().getTranslation(job.id);
       bindTranslationHistoryJob(checkpoint);
       setSegmentErrors((current) => current.filter((error) => error.segmentId !== segmentId));
-      await getStoryTool().retrySegment({ jobId: job.id, segmentId });
+      await getStoryTool().retrySegment({ jobId: job.id, segmentId, aiProvider });
       setTranslationState('running');
       setAppNotice('Đang tiếp tục từ đúng đoạn lỗi trong checkpoint.');
       void refreshTranslationHistory().catch(() => undefined);
@@ -1675,7 +1716,7 @@ export default function App() {
     setSegmentErrors((current) => current.filter((error) => error.segmentId !== segmentId));
     setTranslationState('running');
     try {
-      await getStoryTool().retrySegment({ jobId: activeJobRef.current, segmentId });
+      await getStoryTool().retrySegment({ jobId: activeJobRef.current, segmentId, aiProvider });
     } catch (error) {
       setTranslationState('error');
       setSegmentErrors((current) => [...current, {
@@ -1706,8 +1747,16 @@ export default function App() {
     }
   };
 
+  const automaticExportStartIndex = autoExportJobId
+    ? (autoExportOutputChapterStart ?? autoExportRange?.startChapter)
+    : (outputChapterStart ?? suggestedOutputChapterStart);
   const splitForAutomaticExport = useMemo(() => ({
     ...splitConfig,
+    // The visible source-number default is also the real export default. Keep
+    // an explicit replacement separate so legacy/default filenames do not gain
+    // a misleading `c.gốc` prefix merely because a stale editor draft started
+    // at another number.
+    startIndex: automaticExportStartIndex ?? splitConfig.startIndex,
     // Link imports are always divided into reader-sized Vietnamese chapters;
     // never let an old draft's editor setting change the durable export rule.
     targetWords: 800,
@@ -1715,7 +1764,7 @@ export default function App() {
     // The importer supplies stable `Chương N` boundaries.  They let us seal a
     // completed source chapter while later segments are still translating.
     autoDetectTitle: true,
-  }), [splitConfig]);
+  }), [automaticExportStartIndex, splitConfig]);
   // Export effects may only use the immutable job-owned directory. The
   // editable folder is exclusively an input for the next start request.
   const resolvedAutoExportDirectory = autoExportJobId ? autoExportResolvedDirectory : undefined;
@@ -2213,25 +2262,44 @@ export default function App() {
             <h1>Dịch Truyện</h1>
             <p>Trung <span>→</span> Việt</p>
           </div>
+          <button className="supported-sites-button" type="button" onClick={() => setIsSupportedSitesOpen((open) => !open)} aria-expanded={isSupportedSitesOpen}>
+            Website hỗ trợ
+          </button>
+          {isSupportedSitesOpen && (
+            <div className="supported-sites-popover" role="dialog" aria-label="Website được hỗ trợ">
+              <strong>Website hỗ trợ nhập link</strong>
+              <span>Huliwang · TimoTXT · Qingrenyouxi</span>
+              <span>Xbanxia · XSZJ / IXDZS8</span>
+              <span>Liehuo中文网 · UAA002 · C6K6 · CZBooks · Novel543</span>
+            </div>
+          )}
         </div>
         <div className="connection-box">
           <div className="connection-box__identity">
             <div className="connection-box__status-row">
               <StatusPill tone={connectionInfo.tone} pulse={connection === 'connecting'}>{connectionInfo.label}</StatusPill>
               <div className="ai-provider-switch" aria-label="AI dùng để dịch" role="radiogroup">
-                {(['chatgpt', 'kimi'] as const).map((provider) => (
+                {(['chatgpt', 'kimi', 'deepseek'] as const).map((provider) => {
+                  const outsideFixedPool = !allowedAiProviders.includes(provider);
+                  const canUseOutsidePoolForFailure = translationState === 'error';
+                  const disabled = !appAvailable
+                    || ['running', 'cancelling'].includes(translationState)
+                    || (translationState === 'paused' && outsideFixedPool)
+                    || (Boolean(activeJobId) && outsideFixedPool && !canUseOutsidePoolForFailure);
+                  return (
                   <button
                     aria-checked={aiProvider === provider}
-                    className={aiProvider === provider ? 'is-active' : ''}
-                    disabled={!appAvailable || ['running', 'cancelling'].includes(translationState)}
+                    className={`${aiProvider === provider ? 'is-active' : ''}${outsideFixedPool ? ' is-excluded' : ''}`}
+                    disabled={disabled}
                     key={provider}
                     onClick={() => void changeAiProvider(provider)}
                     role="radio"
                     type="button"
                   >
-                    {provider === 'kimi' ? 'Kimi AI' : 'ChatGPT'}
+                    {aiProviderLabel(provider)}
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
             <small>Phiên đăng nhập được lưu cục bộ trên máy này.</small>
@@ -2372,6 +2440,7 @@ export default function App() {
           </section>
 
           <PromptSelector
+            allowedAiProviders={allowedAiProviders}
             customPrompt={customPrompt}
             loading={promptsLoading}
             mode={promptMode}
@@ -2380,6 +2449,7 @@ export default function App() {
             outputChapterStart={outputChapterStart}
             prompts={prompts}
             suggestedChapterStart={sourceMode === 'link' ? suggestedOutputChapterStart : undefined}
+            providerSelectionLocked={Boolean(activeJobId) && ['running', 'paused', 'error', 'cancelling'].includes(translationState)}
             onCustomPromptChange={(value) => {
               setCustomPrompt(value);
               if (value.length > 0) setPromptMode('custom');
@@ -2387,6 +2457,7 @@ export default function App() {
             onModeChange={setPromptMode}
             onOmitOutputChapterTitlesChange={setOmitOutputChapterTitles}
             onExportCombinedSourceChaptersChange={setExportCombinedSourceChapters}
+            onToggleAiProvider={toggleAllowedAiProvider}
             onOutputChapterStartChange={setOutputChapterStart}
           />
 

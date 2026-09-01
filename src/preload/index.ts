@@ -4,6 +4,7 @@ import type {
   CombinedChapterExportResult,
   FinalChapterExportInput,
   StoryFetchResult,
+  StoryExportIdentity,
   StorySourceAnalysis,
   StorySourceProgress,
   TranslationJobSnapshot,
@@ -55,12 +56,12 @@ export interface StoryToolApi {
   disconnectAi(): Promise<void>;
   startTranslation(request: TranslationRequest): Promise<{ jobId: string }>;
   pauseTranslation(jobId: string): Promise<void>;
-  resumeTranslation(jobId: string): Promise<void>;
+  resumeTranslation(jobId: string, aiProvider?: AiProvider): Promise<void>;
   restartTranslation(jobId: string): Promise<{ jobId: string }>;
   cancelTranslation(jobId: string): Promise<void>;
   discardTranslation(jobId: string): Promise<void>;
   getTranslation(jobId: string): Promise<TranslationJobSnapshot>;
-  retrySegment(request: { jobId: string; segmentId: string }): Promise<void>;
+  retrySegment(request: { jobId: string; segmentId: string; aiProvider?: AiProvider }): Promise<void>;
   getActiveTranslations(): Promise<TranslationJobSnapshot[]>;
   discoverTranslations(): Promise<TranslationJobSnapshot[]>;
   onTranslationEvent(callback: (event: TranslationEvent) => void): () => void;
@@ -77,7 +78,7 @@ export interface StoryToolApi {
     defaultName?: string;
   }): Promise<{ canceled: boolean; filePath?: string }>;
   chooseChapterDirectory(): Promise<{ canceled: boolean; directory?: string }>;
-  validateChapterDirectory(directory: string): Promise<{ directory: string }>;
+  validateChapterDirectory(directory: string, identity?: StoryExportIdentity): Promise<{ directory: string }>;
   exportChapters(request: {
     directory: string;
     exportJobId: string;
@@ -160,8 +161,8 @@ const storyTool: StoryToolApi = Object.freeze({
     ipcRenderer.invoke(IPC_CHANNELS.translationStart, request) as Promise<{ jobId: string }>,
   pauseTranslation: (jobId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.translationPause, jobId) as Promise<void>,
-  resumeTranslation: (jobId: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.translationResume, jobId) as Promise<void>,
+  resumeTranslation: (jobId: string, aiProvider?: AiProvider) =>
+    ipcRenderer.invoke(IPC_CHANNELS.translationResume, { jobId, aiProvider }) as Promise<void>,
   restartTranslation: (jobId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.translationRestart, jobId) as Promise<{ jobId: string }>,
   cancelTranslation: (jobId: string) =>
@@ -170,7 +171,7 @@ const storyTool: StoryToolApi = Object.freeze({
     ipcRenderer.invoke(IPC_CHANNELS.translationDiscard, jobId) as Promise<void>,
   getTranslation: (jobId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.translationGet, jobId) as Promise<TranslationJobSnapshot>,
-  retrySegment: (request: { jobId: string; segmentId: string }) =>
+  retrySegment: (request: { jobId: string; segmentId: string; aiProvider?: AiProvider }) =>
     ipcRenderer.invoke(IPC_CHANNELS.translationRetrySegment, request) as Promise<void>,
   getActiveTranslations: () =>
     ipcRenderer.invoke(IPC_CHANNELS.translationActive) as Promise<TranslationJobSnapshot[]>,
@@ -204,8 +205,11 @@ const storyTool: StoryToolApi = Object.freeze({
       canceled: boolean;
       directory?: string;
     }>,
-  validateChapterDirectory: (directory: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.exportValidateDirectory, { directory }) as Promise<{ directory: string }>,
+  validateChapterDirectory: (directory: string, identity?: StoryExportIdentity) =>
+    ipcRenderer.invoke(IPC_CHANNELS.exportValidateDirectory, {
+      directory,
+      ...(identity ? { identity } : {}),
+    }) as Promise<{ directory: string }>,
   exportChapters: (request: { directory: string; exportJobId: string; chapters: FinalChapterExportInput[]; recoveryOnConflict?: boolean }) =>
     ipcRenderer.invoke(IPC_CHANNELS.exportChapters, request) as Promise<ChapterExportResult>,
   exportOriginalChapters: (request: { directory: string; exportJobId: string; chapters: FinalChapterExportInput[]; recoveryOnConflict?: boolean }) =>

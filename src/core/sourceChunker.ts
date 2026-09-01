@@ -104,7 +104,7 @@ function chooseEnd(
  */
 function chapterStarts(text: string): number[] {
   const starts: number[] = [];
-  const pattern = /(^|\n)[\t ]*chương[\t ]+\d+[\t ]*(?::|：|-|–|—)/gimu;
+  const pattern = /(^|\n)[\t ]*chương[\t ]+\d+(?:[\t ]*(?::|：|-|–|—)[^\r\n]*)?[\t ]*(?=\r?$)/gimu;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
     starts.push(match.index + (match[1] === '\n' ? 1 : 0));

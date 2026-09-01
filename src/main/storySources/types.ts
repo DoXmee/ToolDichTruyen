@@ -168,6 +168,12 @@ export interface StorySourceServiceOptions {
   minRequestIntervalMs?: number;
   /** Passive Cloudflare wait (default 30 seconds). No challenge is ever clicked. */
   verificationWaitMs?: number;
+  /**
+   * Maximum time CZBooks keeps its visible source tab and the current import
+   * operation alive while the user completes an interactive Cloudflare check.
+   * The tool only samples the same tab; it never clicks or solves the check.
+   */
+  manualVerificationWaitMs?: number;
   maxCatalogPages?: number;
   maxChapterPages?: number;
   now?: () => number;

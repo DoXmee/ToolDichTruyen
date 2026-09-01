@@ -1,4 +1,5 @@
 export * from './chapterSplitter';
+export * from './assistantResponse';
 export * from './chapterOutputNumbering';
 export * from './incrementalChapterExport';
 export * from './language';

@@ -53,4 +53,22 @@ describe('source chunker', () => {
     expect(chunks).toHaveLength(4);
     expect(chunks.every((chunk) => chunk.text.length <= 60)).toBe(true);
   });
+
+  it('keeps imported chapters whole when their headings have no separator or title', () => {
+    const source = [
+      'Chương 1\n' + '甲'.repeat(30),
+      'Chương 2\n' + '乙'.repeat(30),
+      'Chương 3\n' + '丙'.repeat(30),
+    ].join('\n\n');
+    const chunks = chunkSourceText(source, { maxChars: 60 });
+
+    expect(chunks.map((chunk) => chunk.text).join('')).toBe(source);
+    expect(chunks).toHaveLength(3);
+    expect(chunks.map((chunk) => chunk.text.match(/^Chương \d+/u)?.[0])).toEqual([
+      'Chương 1',
+      'Chương 2',
+      'Chương 3',
+    ]);
+    expect(chunks.every((chunk) => chunk.text.length <= 60)).toBe(true);
+  });
 });

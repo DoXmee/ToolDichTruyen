@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "1.0.6";
+export const EXTENSION_VERSION = "1.0.7";
 export const HEARTBEAT_PORT_NAME = "huli-heartbeat";
 export const PAIR_FRAGMENT_PREFIX = "#tdt-pair=";
 export const POLL_DELAY_MS = 800;
@@ -26,6 +26,7 @@ const COMMAND_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const HULI_HOSTS = new Set(["m.huliwang.net", "www.huliwang.net"]);
 const XSZJ_HOSTS = new Set(["xszj.org", "www.xszj.org"]);
 const IXDZS_HOSTS = new Set(["ixdzs8.com", "www.ixdzs8.com"]);
+const NOVEL543_HOSTS = new Set(["novel543.com", "www.novel543.com"]);
 const XSZJ_BOOK_PATH = /^\/b\/(\d+)\/?$/u;
 const XSZJ_CATALOG_PATH = /^\/b\/(\d+)\/cs\/(\d+)\/?$/u;
 const XSZJ_CHAPTER_PATH = /^\/b\/(\d+)\/c\/(\d+)\/?$/u;
@@ -179,12 +180,41 @@ export function normalizeXszjUrl(rawUrl) {
   throw new TypeError("Unsupported XSZJ/爱下电子书 path.");
 }
 
+export function normalizeNovel543Url(rawUrl) {
+  if (typeof rawUrl !== "string") throw new TypeError("Novel543 URL must be a string.");
+  const url = new URL(rawUrl);
+  const host = url.hostname.toLowerCase();
+  if (
+    url.href.length > 2_048
+    || url.protocol !== "https:"
+    || url.port
+    || url.username
+    || url.password
+    || !NOVEL543_HOSTS.has(host)
+  ) throw new TypeError("Only exact HTTPS Novel543 hosts are allowed.");
+  const path = url.pathname.replace(/\/{2,}/gu, "/");
+  const book = /^\/(\d{6,20})\/?$/u.exec(path);
+  const catalog = /^\/(\d{6,20})\/dir\/?$/u.exec(path);
+  const chapter = /^\/(\d{6,20})\/(\d+_\d+)(?:_(\d+))?\.html$/u.exec(path);
+  if (book?.[1]) return `https://www.novel543.com/${book[1]}/`;
+  if (catalog?.[1]) return `https://www.novel543.com/${catalog[1]}/dir`;
+  if (chapter?.[1] && chapter[2]) {
+    const part = chapter[3] && Number.parseInt(chapter[3], 10) > 1 ? `_${Number.parseInt(chapter[3], 10)}` : "";
+    return `https://www.novel543.com/${chapter[1]}/${chapter[2]}${part}.html`;
+  }
+  throw new TypeError("Unsupported Novel543 path.");
+}
+
 /** Return a canonical URL for the extension's two strictly allow-listed sites. */
 export function normalizeCompanionUrl(rawUrl) {
   try {
     return normalizeHuliUrl(rawUrl);
   } catch {
-    return normalizeXszjUrl(rawUrl);
+    try {
+      return normalizeXszjUrl(rawUrl);
+    } catch {
+      return normalizeNovel543Url(rawUrl);
+    }
   }
 }
 
@@ -193,17 +223,26 @@ export function companionSite(rawUrl) {
     normalizeHuliUrl(rawUrl);
     return "huliwang";
   } catch {
-    normalizeXszjUrl(rawUrl);
-    return "xszj";
+    try {
+      normalizeXszjUrl(rawUrl);
+      return "xszj";
+    } catch {
+      normalizeNovel543Url(rawUrl);
+      return "novel543";
+    }
   }
 }
 
-/** Huli has aliases; XSZJ routes are already canonicalized above. */
+/** Huli has aliases; XSZJ and Novel543 routes are canonicalized above. */
 export function companionPageIdentity(rawUrl) {
   try {
     return huliPageIdentity(rawUrl);
   } catch {
-    return normalizeXszjUrl(rawUrl);
+    try {
+      return normalizeXszjUrl(rawUrl);
+    } catch {
+      return normalizeNovel543Url(rawUrl);
+    }
   }
 }
 

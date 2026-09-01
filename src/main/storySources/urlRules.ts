@@ -19,6 +19,11 @@ const HOSTS: Readonly<Record<StorySite, ReadonlySet<string>>> = {
   qingrenyouxi: new Set(["qingrenyouxi.com", "www.qingrenyouxi.com"]),
   xbanxia: new Set(["xbanxia.cc", "www.xbanxia.cc"]),
   xszj: new Set(["xszj.org", "www.xszj.org", "ixdzs8.com", "www.ixdzs8.com"]),
+  liehuozw: new Set(["liehuozw.com", "www.liehuozw.com", "m.liehuozw.com"]),
+  uaa002: new Set(["uaa002.com", "www.uaa002.com", "m.uaa002.com", "uaa.com", "www.uaa.com", "m.uaa.com"]),
+  c6k6: new Set(["c6k6.com", "www.c6k6.com", "m.c6k6.com"]),
+  czbooks: new Set(["czbooks.net", "www.czbooks.net", "m.czbooks.net"]),
+  novel543: new Set(["novel543.com", "www.novel543.com"]),
 };
 
 function safeUrl(raw: string): URL {
@@ -48,7 +53,12 @@ function canonicalOrigin(site: StorySite): string {
   if (site === "timotxt") return "https://www.timotxt.com";
   if (site === "qingrenyouxi") return "https://www.qingrenyouxi.com";
   if (site === "xbanxia") return "https://www.xbanxia.cc";
-  return "https://xszj.org";
+  if (site === "xszj") return "https://xszj.org";
+  if (site === "liehuozw") return "https://m.liehuozw.com";
+  if (site === "uaa002") return "https://m.uaa002.com";
+  if (site === "c6k6") return "https://www.c6k6.com";
+  if (site === "novel543") return "https://www.novel543.com";
+  return "https://czbooks.net";
 }
 
 export function siteForHostname(hostname: string): StorySite | undefined {
@@ -62,11 +72,14 @@ export function parseStoryUrl(raw: string): ParsedStoryUrl {
   if (!site) {
     throw new StorySourceError(
       "UNSUPPORTED_URL",
-      "Chỉ hỗ trợ các nguồn: huliwang.net, timotxt.com, qingrenyouxi.com, xbanxia.cc và xszj.org/ixdzs8.com.",
+      "Chỉ hỗ trợ các nguồn: huliwang.net, timotxt.com, qingrenyouxi.com, xbanxia.cc, xszj.org/ixdzs8.com, liehuozw.com, uaa002.com, c6k6.com, czbooks.net và novel543.com.",
     );
   }
   const path = input.pathname.replace(/\/{2,}/gu, "/");
   const sourcePage = input.searchParams.get("page");
+  const sourceNovelId = input.searchParams.get("id") ?? input.searchParams.get("novelId") ?? input.searchParams.get("novel_id");
+  const sourceChapterId = input.searchParams.get("chapter") ?? input.searchParams.get("chapterId") ?? input.searchParams.get("cid");
+  const sourcePageId = input.searchParams.get("id");
   input.search = "";
   const origin = canonicalOrigin(site);
 
@@ -168,6 +181,101 @@ export function parseStoryUrl(raw: string): ParsedStoryUrl {
       normalizedUrl,
       bookUrl: isNative ? `${origin}/b/${bookId}` : `${origin}/read/${bookId}/`,
       catalogUrl: isNative ? `${origin}/b/${bookId}/cs/1` : `${origin}/read/${bookId}/`,
+    };
+  }
+
+  if (site === "liehuozw") {
+    const catalog = /^\/(\d+)\/(\d+)\/all(?:_\d+)?\/?$/u.exec(path);
+    const match = /^\/(\d+)\/(\d+)(?:\/(\d+)(?:_(\d+))?)?(?:\.html)?\/?$/u.exec(path);
+    const bookId = (match?.[1] ?? catalog?.[1]) && (match?.[2] ?? catalog?.[2]) ? `${match?.[1] ?? catalog?.[1]}/${match?.[2] ?? catalog?.[2]}` : undefined;
+    if (!bookId) throwUnsupportedPath(site);
+    const chapterKey = match?.[3];
+    const page = match?.[4] ? Number.parseInt(match[4], 10) : undefined;
+    const normalizedUrl = catalog
+      ? `${origin}/${bookId}/all${path.match(/all(_\d+)?/u)?.[1] ?? ""}/`
+      : chapterKey
+        ? `${origin}/${bookId}/${chapterKey}${page && page > 1 ? `_${page}` : ""}.html`
+        : `${origin}/${bookId}/`;
+    return {
+      site,
+      kind: catalog ? "catalog" : chapterKey ? "chapter" : "book",
+      bookId,
+      ...(chapterKey ? { chapterKey } : {}),
+      ...(page ? { page } : {}),
+      inputUrl: input.toString(),
+      normalizedUrl,
+      bookUrl: `${origin}/${bookId}/`,
+      catalogUrl: `${origin}/${bookId}/all_1/`,
+    };
+  }
+
+  if (site === "uaa002") {
+    const id = sourceNovelId;
+    const pathId = /\/novel\/(?:intro|read|chapter)\/(\d+)/iu.exec(path)?.[1];
+    const chapterQueryId = sourcePageId;
+    const isChapterPath = /^\/novel\/chapter\/?$/iu.test(path);
+    const bookId = id ?? pathId ?? (isChapterPath ? "unknown" : undefined);
+    if (!bookId || (!/^\d+$/u.test(bookId) && bookId !== "unknown")) throwUnsupportedPath(site);
+    const chapterKey = sourceChapterId ?? (isChapterPath ? chapterQueryId : undefined) ?? (/\/novel\/(?:read|chapter)\/\d+\/(\d+)/iu.exec(path)?.[1]);
+    const normalizedUrl = chapterKey
+      ? (isChapterPath ? `${origin}/novel/chapter?id=${chapterKey}` : `${origin}/novel/read/${bookId}/${chapterKey}`)
+      : `${origin}/novel/intro?id=${bookId}`;
+    return { site, kind: chapterKey ? "chapter" : "book", bookId, ...(chapterKey ? { chapterKey } : {}), inputUrl: input.toString(), normalizedUrl, bookUrl: `${origin}/novel/intro?id=${bookId}`, catalogUrl: `${origin}/novel/intro?id=${bookId}` };
+  }
+
+  if (site === "c6k6") {
+    const desktop = /^\/book\/(\d+)(?:\/(\d+))?\.html\/?$/u.exec(path) ?? /^\/book\/(\d+)(?:\/(\d+))?\/?$/u.exec(path);
+    const mobile = /^\/(\d+)\/(\d+)(?:\/(\d+)\.html)?\/?$/u.exec(path);
+    const bookId = desktop?.[1] ?? mobile?.[2];
+    if (!bookId) throwUnsupportedPath(site);
+    const chapterKey = desktop?.[2] ?? mobile?.[3];
+    // The desktop C6K6 book endpoint is intermittently returning HTTP 500
+    // while its canonical mobile catalog remains available. Its directory is
+    // the integer book id divided by 1000 (for example 124560 -> 124 and
+    // 1064 -> 1), which is also the structure used by every accepted mobile
+    // URL. Canonicalize both variants to that same verified mobile surface.
+    const mobileSection = mobile?.[1] ?? String(Math.floor(Number.parseInt(bookId, 10) / 1_000));
+    const mobileOrigin = "https://m.c6k6.com";
+    const normalizedUrl = chapterKey
+      ? `${mobileOrigin}/${mobileSection}/${bookId}/${chapterKey}.html`
+      : `${mobileOrigin}/${mobileSection}/${bookId}/`;
+    const bookUrl = `${mobileOrigin}/${mobileSection}/${bookId}/`;
+    return { site, kind: chapterKey ? "chapter" : "book", bookId, ...(chapterKey ? { chapterKey } : {}), inputUrl: input.toString(), normalizedUrl, bookUrl, catalogUrl: bookUrl };
+  }
+
+  if (site === "czbooks") {
+    const match = /^\/n\/([a-z0-9]+)(?:\/([a-z0-9]+))?\/?$/iu.exec(path);
+    const bookId = match?.[1];
+    if (!bookId) throwUnsupportedPath(site);
+    const chapterKey = match?.[2];
+    const chapterNumber = input.searchParams.get("chapterNumber");
+    const normalizedUrl = chapterKey
+      ? `${origin}/n/${bookId}/${chapterKey}${chapterNumber === null ? "" : `?chapterNumber=${encodeURIComponent(chapterNumber)}`}`
+      : `${origin}/n/${bookId}`;
+    return { site, kind: chapterKey ? "chapter" : "book", bookId, ...(chapterKey ? { chapterKey } : {}), inputUrl: input.toString(), normalizedUrl, bookUrl: `${origin}/n/${bookId}`, catalogUrl: `${origin}/n/${bookId}` };
+  }
+
+  if (site === "novel543") {
+    const catalog = /^\/(\d{6,20})\/dir\/?$/u.exec(path);
+    const chapter = /^\/(\d{6,20})\/(\d+)_(\d+)(?:_(\d+))?\.html\/?$/u.exec(path);
+    const book = /^\/(\d{6,20})\/?$/u.exec(path);
+    const bookId = catalog?.[1] ?? chapter?.[1] ?? book?.[1];
+    if (!bookId) throwUnsupportedPath(site);
+    const chapterKey = chapter ? `${chapter[2]}_${chapter[3]}` : undefined;
+    const page = chapter?.[4] ? Number.parseInt(chapter[4], 10) : chapter ? 1 : undefined;
+    const normalizedUrl = chapterKey
+      ? `${origin}/${bookId}/${chapterKey}${page && page > 1 ? `_${page}` : ""}.html`
+      : catalog ? `${origin}/${bookId}/dir` : `${origin}/${bookId}/`;
+    return {
+      site,
+      kind: catalog ? "catalog" : chapter ? "chapter" : "book",
+      bookId,
+      ...(chapterKey ? { chapterKey } : {}),
+      ...(page ? { page } : {}),
+      inputUrl: input.toString(),
+      normalizedUrl,
+      bookUrl: `${origin}/${bookId}/`,
+      catalogUrl: `${origin}/${bookId}/dir`,
     };
   }
 

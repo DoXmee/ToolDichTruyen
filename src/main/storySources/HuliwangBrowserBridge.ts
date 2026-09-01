@@ -23,14 +23,11 @@ export const HULIWANG_COMPANION_EXTENSION_ORIGIN =
  * expose the narrowly scoped `catalog-next` command, so pairing them would
  * otherwise fail later with a misleading empty/partial catalog error.
  */
-// Version 1.0.6 adds the fixed IXDZS full-catalog expansion to the existing
-// strict XSZJ reader surface. Older helpers would otherwise pair successfully
-// and silently expose only the initial catalog slice.
-// helper. Older helpers must be reloaded before they can be paired because
-// they cannot read that host at all.
-export const HULIWANG_COMPANION_MINIMUM_VERSION = "1.0.6";
+// Version 1.0.7 adds Novel543's strict URL/snapshot surface. Older helpers
+// cannot read that host and must be reloaded before pairing.
+export const HULIWANG_COMPANION_MINIMUM_VERSION = "1.0.7";
 
-export type BrowserCompanionSite = "huliwang" | "xszj";
+export type BrowserCompanionSite = "huliwang" | "xszj" | "novel543";
 
 const MAX_RESULT_BYTES = 2 * 1024 * 1024;
 const MAX_PAIR_BYTES = 4 * 1024;
@@ -146,7 +143,9 @@ function isExtensionVersionAtLeast(
 }
 
 function companionSiteLabel(site: BrowserCompanionSite): string {
-  return site === "huliwang" ? "Huliwang" : "XSZJ/爱下电子书";
+  if (site === "huliwang") return "Huliwang";
+  if (site === "xszj") return "XSZJ/爱下电子书";
+  return "Novel543";
 }
 
 function incompatibleCompanionVersionError(extensionVersion: string, site: BrowserCompanionSite): StorySourceError {
@@ -172,7 +171,9 @@ function assertCompanionHttpsUrl(value: unknown, name: string, site: BrowserComp
   const host = parsed.hostname.toLowerCase();
   const allowedHosts = site === "huliwang"
     ? ["huliwang.net", "www.huliwang.net", "m.huliwang.net"]
-    : ["xszj.org", "www.xszj.org", "ixdzs8.com", "www.ixdzs8.com"];
+    : site === "xszj"
+      ? ["xszj.org", "www.xszj.org", "ixdzs8.com", "www.ixdzs8.com"]
+      : ["novel543.com", "www.novel543.com"];
   if (
     parsed.protocol !== "https:"
     || parsed.username

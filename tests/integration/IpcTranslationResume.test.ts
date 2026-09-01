@@ -42,8 +42,10 @@ describe('IPC resume translation checkpoint', () => {
       senderFrame: { url: 'file:///tool/index.html' },
     }
 
-    await expect(handler!(event, { jobId: 'failed-chat-setup-checkpoint' })).resolves.toBeUndefined()
-    expect(resume).toHaveBeenCalledWith('failed-chat-setup-checkpoint')
+    await expect(handler!(event, { jobId: 'failed-chat-setup-checkpoint', aiProvider: 'kimi' })).resolves.toBeUndefined()
+    expect(resume).toHaveBeenCalledWith('failed-chat-setup-checkpoint', 'kimi')
+    await expect(handler!(event, { jobId: 'failed-deepseek-checkpoint', aiProvider: 'deepseek' })).resolves.toBeUndefined()
+    expect(resume).toHaveBeenLastCalledWith('failed-deepseek-checkpoint', 'deepseek')
 
     dispose()
   })
@@ -64,6 +66,29 @@ describe('IPC resume translation checkpoint', () => {
 
     await expect(handler!(event, { jobId: 'history-job' })).resolves.toEqual({ jobId: 'new-job' })
     expect(restart).toHaveBeenCalledWith('history-job')
+    dispose()
+  })
+
+  it('forwards DeepSeek when retrying the exact failed segment', async () => {
+    const handlers = new Map<string, (event: unknown, payload?: unknown) => Promise<unknown>>()
+    const retrySegment = vi.fn(async () => undefined)
+    const window = { isDestroyed: () => false, webContents: { id: 83, isDestroyed: () => false, send: vi.fn() } }
+    const dependencies = {
+      ipcMain: { removeHandler: vi.fn(), handle: vi.fn((channel: string, handler: (event: unknown, payload?: unknown) => Promise<unknown>) => handlers.set(channel, handler)) },
+      dialog: {}, appVersion: () => 'test', mainWindow: () => window, prompts: {}, persistence: {},
+      chatGpt: { onStatus: () => () => undefined }, translator: { retrySegment, onEvent: () => () => undefined },
+      storySources: { onProgress: () => () => undefined }, gemini: {},
+    } as unknown as IpcDependencies
+    const dispose = registerIpcHandlers(dependencies)
+    const handler = handlers.get(IPC_CHANNELS.translationRetrySegment)
+    const event = { sender: { id: 83, getURL: () => 'file:///tool/index.html' }, senderFrame: { url: 'file:///tool/index.html' } }
+
+    await expect(handler!(event, {
+      jobId: 'failed-job', segmentId: 'segment-9', aiProvider: 'deepseek',
+    })).resolves.toBeUndefined()
+    expect(retrySegment).toHaveBeenCalledWith({
+      jobId: 'failed-job', segmentId: 'segment-9', aiProvider: 'deepseek',
+    })
     dispose()
   })
 })

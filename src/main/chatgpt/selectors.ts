@@ -185,3 +185,77 @@ export const KIMI_SELECTORS: ChatWebSelectors = Object.freeze({
     'a:has-text("Log in")',
   ],
 });
+
+/**
+ * DeepSeek selectors stay isolated from the two existing providers. The
+ * semantic fallbacks intentionally avoid generated class names so a site
+ * deployment cannot make the tool click an unrelated control.
+ */
+export const DEEPSEEK_SELECTORS: ChatWebSelectors = Object.freeze({
+  composer: [
+    'div[contenteditable="true"][role="textbox"]',
+    'textarea[placeholder*="Message DeepSeek" i]',
+    'textarea[placeholder*="Send a message" i]',
+    'textarea[placeholder*="Ask DeepSeek" i]',
+    'textarea[aria-label*="message" i]',
+  ],
+  sendButton: [
+    'button[aria-label="Send"]',
+    'button[aria-label*="send message" i]',
+    '[role="button"][aria-label*="send" i]',
+  ],
+  stopButton: [
+    'button[aria-label*="Stop" i]',
+    '[role="button"][aria-label*="Stop" i]',
+    'button:has-text("Stop generating")',
+  ],
+  assistantMessages: [
+    '.ds-assistant-message-main-content',
+    '[data-message-author-role="assistant"]',
+    '[data-role="assistant"]',
+    '.assistant-message',
+    '.ds-markdown',
+  ],
+  assistantTurnContainerFromMessage: [
+    'xpath=ancestor-or-self::*[contains(concat(" ", normalize-space(@class), " "), " ds-message ")][1]',
+    'xpath=ancestor-or-self::*[@data-message-author-role="assistant"][1]',
+    'xpath=ancestor-or-self::*[@data-role="assistant"][1]',
+    'xpath=ancestor-or-self::article[1]',
+  ],
+  assistantTurnCompletionAction: [
+    'button[aria-label*="Copy" i]',
+    'button:has-text("Copy")',
+  ],
+  toolConversationUserMessages: [
+    '.ds-collapsible-text',
+    '[data-message-author-role="user"]',
+    '[data-role="user"]',
+    '.user-message',
+  ],
+  newChat: [
+    'button:has-text("New chat")',
+    'a:has-text("New chat")',
+    'button[aria-label*="New chat" i]',
+  ],
+  currentConversationMenu: [
+    'button[aria-label*="More" i]',
+    'button[aria-label*="Conversation options" i]',
+  ],
+  deleteCurrentConversation: [
+    '[role="menuitem"]:has-text("Delete")',
+    'button:has-text("Delete chat")',
+  ],
+  confirmDeleteConversation: [
+    '[role="dialog"] button:has-text("Delete")',
+  ],
+  retryButton: [
+    'button:has-text("Retry")',
+    'button:has-text("Regenerate")',
+    'button:has-text("Try again")',
+  ],
+  loginLink: [
+    'button:has-text("Log in")',
+    'a[href*="sign_in"]',
+    'a[href*="login"]',
+  ],
+});

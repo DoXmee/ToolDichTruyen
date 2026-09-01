@@ -86,6 +86,7 @@ function canonicalChapterUrl(parsed: ParsedStoryUrl): string {
   if (parsed.site === "timotxt") return `https://www.timotxt.com/${parsed.bookId}/${parsed.chapterKey}.html`;
   if (parsed.site === "qingrenyouxi") return `https://www.qingrenyouxi.com/book/${parsed.bookId}/${parsed.chapterKey}.html`;
   if (parsed.site === "xbanxia") return `https://www.xbanxia.cc/books/${parsed.bookId}/${parsed.chapterKey}.html`;
+  if (parsed.site === "novel543") return parsed.normalizedUrl;
   return parsed.normalizedUrl;
 }
 
@@ -103,7 +104,12 @@ function catalogReferences(
     } catch {
       continue;
     }
-    if (parsed.site !== parsedInput.site || parsed.bookId !== parsedInput.bookId || parsed.kind !== "chapter") continue;
+    if (parsed.site !== parsedInput.site || parsed.kind !== "chapter") continue;
+    // UAA002 chapter links contain an internal chapter id and intentionally
+    // omit the parent novel id. They are accepted only from the already
+    // verified book page; fetch still enforces the same host.
+    if (parsedInput.site !== "uaa002" && parsed.bookId !== parsedInput.bookId) continue;
+    if (parsedInput.site === "c6k6" && /^\s*立即阅读\s*$/u.test(link.text)) continue;
     candidates.push({ parsed, label: link.text, url: canonicalChapterUrl(parsed) });
   }
 
@@ -114,6 +120,9 @@ function catalogReferences(
     return true;
   }).map((candidate, index): StoryChapterReference => {
     const label = parseChapterLabel(candidate.label);
+    const czbooksCatalogTitle = label.title.trim().replace(/^\d+\s*[-—:：.、]\s*/u, "");
+    const czbooksNonStoryEntry = parsedInput.site === "czbooks"
+      && /^(?:我的用心|作者(?:的)?[話话]|作者有[話话](?:要)?[說说]|作品相[關关]|公告|通知|後記|后记|完本感言|新書通知|新书通知)$/iu.test(czbooksCatalogTitle);
     return {
       id: `${parsedInput.site}:${parsedInput.bookId}:${candidate.parsed.chapterKey}`,
       order: index,
@@ -122,8 +131,8 @@ function catalogReferences(
       title: label.title,
       url: candidate.url,
       partUrls: [candidate.url],
-      isIntroduction: label.isIntroduction,
-      selectedByDefault: !label.isIntroduction,
+      isIntroduction: label.isIntroduction || czbooksNonStoryEntry,
+      selectedByDefault: !label.isIntroduction && !czbooksNonStoryEntry,
     };
   });
   if (parsedInput.site === "huliwang" || parsedInput.site === "timotxt" || parsedInput.site === "xszj") {
@@ -321,7 +330,7 @@ function qingSoft200(snapshot: StoryPageSnapshot): boolean {
 }
 
 function extractAuthor(snapshot: StoryPageSnapshot): string | undefined {
-  const direct = firstValue(snapshot, "[rel=author]", ".author", ".book-describe a[href^='/author/']");
+  const direct = firstValue(snapshot, "[rel=author]", ".author", ".book-describe a[href^='/author/']", ".infotype a[href*='/author/']");
   if (direct) return direct.replace(/^\s*(?:作者|Tác giả)\s*[/:：]?\s*/iu, "").slice(0, 160);
   const combined = values(snapshot, ".info", ".booktag", "h2").join("\n");
   const match = /(?:作者\s*[/:：]?|\u4f5c者\s*\/\s*)([^\n分類类别更新]{1,80})/iu.exec(combined);
@@ -609,10 +618,65 @@ function chooseBookTitle(snapshot: StoryPageSnapshot, site: StorySite): string {
         ? firstValue(snapshot, ".bookTitle", "h1")
         : site === "xszj"
           ? firstValue(snapshot, "h1", ".title")
-        : firstValue(snapshot, ".book-describe h1");
+        : site === "xbanxia"
+          ? firstValue(snapshot, ".book-describe h1")
+        : site === "czbooks"
+          ? firstValue(snapshot, "h1", ".book-title", ".novel-title")
+            ?? /[《『]([^》』]{1,200})[》』]/u.exec(snapshot.title)?.[1]
+        : site === "liehuozw"
+          ? firstValue(snapshot, "h3", ".cataloginfo")
+        : firstValue(snapshot, "h1", "h2", "h3", ".reader-top__title", ".bookTitle", ".book-title", ".novel-title", ".bookname", ".title", ".book-describe h1");
   title = title?.replace(/\s*(?:章节列表|章節列表|目录|目錄)\s*$/iu, "").trim();
   if (!title || title.length > 300) throw new StorySourceError("SOURCE_CHANGED", "Không đọc được tên sách từ DOM đã xác minh.");
   return title;
+}
+
+function validateNovel543Catalog(
+  snapshots: readonly StoryPageSnapshot[],
+  chapters: readonly StoryChapterReference[],
+): void {
+  const declaredCount = snapshots.flatMap((snapshot) => values(snapshot, ".meta-dir"))
+    .map((text) => /章[節节]\s*[：:]?\s*(\d+)/u.exec(text)?.[1])
+    .find((value): value is string => Boolean(value));
+  if (declaredCount && Number.parseInt(declaredCount, 10) !== chapters.length) {
+    throw new StorySourceError(
+      "SOURCE_CHANGED",
+      `Novel543 công bố ${declaredCount} chương nhưng vùng “全部章节” chỉ đọc được ${chapters.length}; tool đã dừng để không bỏ sót chương.`,
+    );
+  }
+  const ids = new Set<string>();
+  for (const [index, chapter] of chapters.entries()) {
+    const expected = index + 1;
+    const parsed = parseStoryUrl(chapter.url);
+    const pathNumber = Number.parseInt(parsed.chapterKey?.split("_").at(-1) ?? "", 10);
+    if (ids.has(chapter.id)) {
+      throw new StorySourceError("SOURCE_CHANGED", `Mục lục Novel543 có ID chương trùng: ${chapter.id}.`);
+    }
+    ids.add(chapter.id);
+    if (chapter.number !== expected || pathNumber !== expected) {
+      throw new StorySourceError(
+        "SOURCE_CHANGED",
+        `Mục lục Novel543 bị thiếu, đảo hoặc nhảy số tại vị trí ${expected}.`,
+      );
+    }
+  }
+}
+
+const NOVEL543_BOOKSHELF_PROMPT = /【[^】\n]{0,180}(?:加書架|加书架)[^】\n]{0,180}】/gu;
+const NOVEL543_TERMINAL_CHROME = /\s*(?:溫馨提示\s*[:：][\s\S]{0,500}(?:VIP|設定|上一頁|下一頁)[\s\S]{0,200}|應廣大讀者的要求[\s\S]{0,500}VIP會員免廣告功能[\s\S]*)\s*$/iu;
+const NOVEL543_LEAKED_CHROME = /(?:ONEAD_TEXT|溫馨提示\s*[:：][\s\S]{0,300}(?:VIP|設定|上一頁|下一頁)|(?:加書架|加书架)[^】\n]{0,80}(?:按催更|催更))/iu;
+
+function cleanNovel543StoryText(raw: string): string {
+  return normalizeText(raw)
+    .replace(NOVEL543_BOOKSHELF_PROMPT, "")
+    .replace(NOVEL543_TERMINAL_CHROME, "")
+    .trim();
+}
+
+function assertCleanNovel543StoryText(text: string): void {
+  if (NOVEL543_LEAKED_CHROME.test(text)) {
+    throw new StorySourceError("INVALID_CONTENT", "Nội dung Novel543 còn lẫn quảng cáo hoặc giao diện trình đọc.");
+  }
 }
 
 /**
@@ -622,6 +686,7 @@ function chooseBookTitle(snapshot: StoryPageSnapshot, site: StorySite): string {
  * truncated chapter into an apparently complete one.
  */
 const HULI_UNFINISHED_PAGE_TAIL = /\s*\u672c\u7ae0\u672a\u5b8c(?:[\uFF0C,\.\u3002!\uFF01\u2026~\uFF5E]*)\s*$/u;
+const LIEHUO_UNFINISHED_PAGE_TAIL = /\s*本章未完(?:[，,]\s*请)?(?:点击下一页继续阅读)?(?:\s*[》〉>]+)?[，,\.。!！…~～]*\s*$/u;
 const HULI_NEXT_PAGE_TAIL = /\s*(?:(?:\u70b9\u51fb|\u9ede\u64ca)\s*)?(?:\u4e0b\u4e00|\u4e0b)\s*[\u9875\u9801](?:\s*(?:\u7ee7\u7eed|\u7e7c\u7e8c)?(?:\u9605\u8bfb|\u95b1\u8b80)?)?[\s~\uFF5E\u2026]*$/u;
 const HULI_PAGE_COUNTER_TAIL = /\s*(?:\u6b64\u9875\u4e3a\u672c\u7ae0|\u6b64\u9801\u70ba\u672c\u7ae0)\s*\u7b2c\s*\d+\s*[\u9875\u9801]\s*\/\s*\u5171\s*\d+\s*[\u9875\u9801][\s~\uFF5E\u2026]*$/u;
 const HULI_TITLE_PAGE = /\u7b2c\s*(\d+)\s*[\u9875\u9801]/u;
@@ -1039,14 +1104,27 @@ class XbanxiaAdapter implements Adapter {
         throw new StorySourceError("SOURCE_CHANGED", "Số chương Xbanxia trong nội dung không khớp mục lục.");
       }
       const chapterNumber = chapter.number;
-      const pageTitle = chapterNumber === undefined
-        ? chapter.title
+      const titleCandidates = chapterNumber === undefined
+        ? [chapter.title]
         : [
             cleanXbanxiaChapterTitle(heading, chapterNumber),
             cleanXbanxiaChapterTitle(`第${chapterNumber}章 ${chapter.title}`, chapterNumber),
             ...normalizeText(raw).split("\n").slice(0, 3)
               .map((line) => cleanXbanxiaChapterTitle(line, chapterNumber)),
-          ].find((title): title is string => Boolean(title));
+          ];
+      let pageTitle = titleCandidates.find((title): title is string => Boolean(title));
+      if (!pageTitle && chapterNumber !== undefined) {
+        const catalogLabel = parseChapterLabel(chapter.title);
+        const catalogIsExactlyNumberOnly = catalogLabel.number === chapterNumber
+          && catalogLabel.title === catalogLabel.numberLabel;
+        // Some valid Xbanxia books intentionally publish only "第N章" in
+        // both the catalog and reader heading. Accept that narrow shape after
+        // both independently parsed numbers agree; a corrupt/garbled title,
+        // missing selector or mismatched number still fails closed.
+        if (catalogIsExactlyNumberOnly && headingLabel.title === headingLabel.numberLabel) {
+          pageTitle = headingLabel.numberLabel;
+        }
+      }
       if (!pageTitle) {
         throw new StorySourceError("SOURCE_CHANGED", `Không thể xác định tên sạch của chương Xbanxia ${chapterNumber ?? chapter.order + 1}.`);
       }
@@ -1179,6 +1257,223 @@ class XszjAdapter implements Adapter {
   }
 }
 
+/**
+ * Conservative adapter for the newer static novel sites.  The browser
+ * snapshot is queried only through allow-listed content surfaces; links are
+ * accepted after parseStoryUrl has verified both host and book identity.
+ * This keeps navigation and extraction site-scoped while tolerating minor
+ * layout changes on mobile/desktop variants.
+ */
+class StaticNovelAdapter implements Adapter {
+  public async analyze(input: ParsedStoryUrl, runtime: AdapterRuntime): Promise<AdapterAnalysisData> {
+    const snapshot = await runtime.visit(input.bookUrl);
+    assertPageReady(snapshot, parseStoryUrl(input.bookUrl));
+    const c6k6MobileCatalogUrl = input.site === "c6k6"
+      ? snapshot.links.map((link) => link.href).find((href) => {
+        try {
+          const parsed = parseStoryUrl(href);
+          return new URL(href).hostname === "m.c6k6.com"
+            && parsed.site === "c6k6"
+            && parsed.kind === "book"
+            && parsed.bookId === input.bookId;
+        } catch {
+          return false;
+        }
+      })
+      : undefined;
+    const c6k6CatalogSnapshot = c6k6MobileCatalogUrl ? await runtime.visit(c6k6MobileCatalogUrl) : undefined;
+    if (c6k6CatalogSnapshot && c6k6MobileCatalogUrl) {
+      assertPageReady(c6k6CatalogSnapshot, parseStoryUrl(c6k6MobileCatalogUrl));
+    }
+    const catalog = input.site === "liehuozw"
+      ? await collectCatalog(input.catalogUrl, input, runtime, {
+        scopes: [],
+        nextLabels: /(?:更多|下一页|下一頁|all_\d+)/iu,
+        nextPath: (candidate) => candidate.site === "liehuozw" && candidate.kind === "catalog",
+      })
+      : input.site === "novel543"
+        ? await collectCatalog(input.catalogUrl, input, runtime, { scopes: [".all"] })
+        : {
+        snapshots: c6k6CatalogSnapshot ? [snapshot, c6k6CatalogSnapshot] : [snapshot],
+        chapters: catalogReferences(c6k6CatalogSnapshot ?? snapshot, input, []),
+      };
+    const chapters = input.site === "liehuozw" || input.site === "c6k6" || input.site === "novel543"
+      ? [...catalog.chapters].sort((left, right) => {
+        const leftNumber = left.number ?? Number.POSITIVE_INFINITY;
+        const rightNumber = right.number ?? Number.POSITIVE_INFINITY;
+        if (leftNumber !== rightNumber) return leftNumber - rightNumber;
+        const leftKey = Number.parseInt(parseStoryUrl(left.url).chapterKey ?? "", 10);
+        const rightKey = Number.parseInt(parseStoryUrl(right.url).chapterKey ?? "", 10);
+        return leftKey - rightKey;
+      }).map((chapter, order) => ({ ...chapter, order }))
+      : catalog.chapters;
+    if (!chapters.length) {
+      throw new StorySourceError("SOURCE_CHANGED", `Không tìm thấy chương hợp lệ trên ${input.site}; trang có thể đã đổi cấu trúc.`);
+    }
+    if (input.site === "novel543") validateNovel543Catalog(catalog.snapshots, chapters);
+    return {
+      bookTitle: chooseBookTitle(snapshot, input.site),
+      ...(extractAuthor(snapshot) ? { author: extractAuthor(snapshot) } : {}),
+      chapters,
+      notices: [`${input.site}: chỉ lấy liên kết chương cùng sách và vùng nội dung truyện đã xác minh; nội dung điều hướng/quảng cáo bị loại.`],
+    };
+  }
+
+  public async fetch(
+    analysis: StorySourceAnalysis,
+    chapter: StoryChapterReference,
+    runtime: AdapterRuntime,
+  ): Promise<StoryChapterContent> {
+    const parts: string[] = [];
+    const sourceUrls: string[] = [];
+    const warnings: string[] = [];
+    const siteContentSelectors = analysis.site === "czbooks"
+      ? [".chapter-detail .content"]
+      : analysis.site === "uaa002"
+        ? [".reader-content"]
+        : analysis.site === "c6k6"
+          ? [".panel-readcontent"]
+          : analysis.site === "liehuozw"
+            ? [".novelcontent", ".content_novel"]
+            : analysis.site === "novel543"
+              ? [".chapter-content .content"]
+            : [];
+    const contentSelectors = analysis.site === "novel543" ? siteContentSelectors : [...siteContentSelectors,
+      "#content", ".chapter-content", ".chapter-content .content", ".read-content",
+      ".read-content-inner", ".article-content", ".novel-content", ".reader-content", ".reader-chap", ".novelcontent", ".content_novel", ".panel-readcontent", "article", "main",
+    ];
+    const pendingUrls = [...chapter.partUrls];
+    const visitedUrls = new Set<string>();
+    for (let partIndex = 0; partIndex < pendingUrls.length; partIndex += 1) {
+      if (partIndex >= runtime.maxChapterPages) {
+        throw new StorySourceError("SOURCE_CHANGED", `${analysis.site} vượt quá giới hạn ${runtime.maxChapterPages} trang cho một chương.`);
+      }
+      const url = pendingUrls[partIndex]!;
+      if (visitedUrls.has(url)) throw new StorySourceError("SOURCE_CHANGED", `${analysis.site} lặp lại cùng một trang trong chương.`);
+      visitedUrls.add(url);
+      const parsed = parseStoryUrl(url);
+      const snapshot = await runtime.visit(url);
+      assertPageReady(snapshot, parsed);
+      const actual = assertSnapshotUrl(snapshot.url, analysis.site, analysis.site === "uaa002" ? undefined : analysis.bookId);
+      if (actual.kind !== "chapter" || actual.chapterKey !== parsed.chapterKey) {
+        throw new StorySourceError("SOURCE_CHANGED", `Trang ${analysis.site} chuyển sang chương khác trong khi đang đọc.`);
+      }
+      const heading = firstValue(snapshot, "h1", ".chapter-title", ".read-title", ".reader-top__title", ".content_title", ".readTitle", ".title");
+      let raw: string | undefined;
+      const minimumPartLength = analysis.site === "liehuozw" && partIndex > 0
+        ? 4
+        : analysis.site === "novel543" ? 20 : 40;
+      for (const selector of contentSelectors) {
+        raw = firstRawValue(snapshot, selector);
+        if (raw && normalizeText(raw).length >= minimumPartLength) break;
+        raw = undefined;
+      }
+      if (!raw) {
+        throw new StorySourceError(
+          "SOURCE_CHANGED",
+          `DOM chương ${analysis.site} tại ${snapshot.url.slice(0, 300)} thiếu vùng nội dung hợp lệ.`,
+        );
+      }
+      let text = analysis.site === "novel543" ? cleanNovel543StoryText(raw) : normalizeText(raw);
+      if (heading) text = removeRepeatedHeading(text, heading);
+      if (analysis.site === "liehuozw") {
+        const currentPage = parsed.page ?? 1;
+        const nextPage = snapshot.links.map((candidate) => {
+          if (!/(?:下一页|下一頁|下页|下頁)/u.test(candidate.text.trim())) return undefined;
+          try { return parseStoryUrl(candidate.href); } catch { return undefined; }
+        }).find((candidate) => candidate
+          && candidate.site === "liehuozw"
+          && candidate.kind === "chapter"
+          && candidate.bookId === analysis.bookId
+          && candidate.chapterKey === parsed.chapterKey
+          && candidate.page === currentPage + 1);
+        const unfinished = LIEHUO_UNFINISHED_PAGE_TAIL.test(text);
+        LIEHUO_UNFINISHED_PAGE_TAIL.lastIndex = 0;
+        if (unfinished && !nextPage) {
+          throw new StorySourceError(
+            "SOURCE_CHANGED",
+            `Trang ${currentPage} của chương Liehuo báo chưa hoàn tất nhưng không có liên kết trang ${currentPage + 1} hợp lệ.`,
+          );
+        }
+        if (nextPage) {
+          if (!unfinished) {
+            throw new StorySourceError(
+              "SOURCE_CHANGED",
+              `Trang ${currentPage} của chương Liehuo có liên kết sang trang sau nhưng thiếu dấu hiệu phân trang hợp lệ.`,
+            );
+          }
+          pendingUrls.push(nextPage.normalizedUrl);
+          text = text.replace(LIEHUO_UNFINISHED_PAGE_TAIL, "").trim();
+        }
+      }
+      if (analysis.site === "novel543") {
+        const currentPage = parsed.page ?? 1;
+        const pageMarker = /\(\s*(\d+)\s*\/\s*(\d+)\s*\)/u.exec(heading ?? "");
+        const totalPages = pageMarker?.[2] ? Number.parseInt(pageMarker[2], 10) : 1;
+        const markedPage = pageMarker?.[1] ? Number.parseInt(pageMarker[1], 10) : currentPage;
+        if (!Number.isSafeInteger(totalPages) || totalPages < 1 || markedPage !== currentPage || currentPage > totalPages) {
+          throw new StorySourceError("SOURCE_CHANGED", "Novel543 trả chỉ dấu phân trang chương không hợp lệ.");
+        }
+        if (currentPage < totalPages) {
+          const nextPage = snapshot.links.map((candidate) => {
+            try { return parseStoryUrl(candidate.href); } catch { return undefined; }
+          }).find((candidate) => candidate
+            && candidate.site === "novel543"
+            && candidate.kind === "chapter"
+            && candidate.bookId === analysis.bookId
+            && candidate.chapterKey === parsed.chapterKey
+            && candidate.page === currentPage + 1);
+          if (!nextPage) {
+            throw new StorySourceError("SOURCE_CHANGED", `Novel543 báo chương còn trang ${currentPage + 1} nhưng không có liên kết hợp lệ.`);
+          }
+          pendingUrls.push(nextPage.normalizedUrl);
+        }
+        assertCleanNovel543StoryText(text);
+      }
+      if (analysis.site === "uaa002") {
+        if (/(?:以下正文内容已隐藏|您在登录后即可阅读|立即登录)/iu.test(text)) {
+          throw new StorySourceError(
+            "USER_ACTION_REQUIRED",
+            "UAA002 đã khóa nội dung chương này sau đăng nhập; tool đã dừng để không lưu bản bị cắt.",
+          );
+        }
+        const lines = text.split("\n");
+        while (lines[0] && (
+          /^(?:第[\d一二三四五六七八九十百千万萬零〇两兩]+卷|第一卷)$/u.test(lines[0])
+          || (heading !== undefined && lines[0].replace(/\s+/gu, "") === heading.replace(/\s+/gu, ""))
+          || /^.{1,80}\s+著\s*·\s*\d+字$/u.test(lines[0])
+        )) lines.shift();
+        text = lines.join("\n").trim();
+      }
+      // Remove only unambiguous reader chrome; prose is never removed by
+      // broad keyword matching.  Missing/short content fails closed below.
+      text = text.split("\n").filter((line) => !/^(?:上一[页頁章]|下一[页頁章]|下一章|上一章|目录|目錄|评论|評論|回報錯誤|返回顶部|回到顶部|上一章下一章本章评论\d*|溫馨提示\s*[:：].*(?:VIP|設定|上一頁|下一頁).*)$/iu.test(line.trim())).join("\n").trim();
+      if (
+        analysis.site === "czbooks"
+        && text.length < 1_200
+        && [
+          /身為一個作家|身为一个作家/iu,
+          /讀者的支持是創作|读者的支持是创作/iu,
+          /我的第一篇小說|我的第一篇小说/iu,
+          /(?:Facebook|臉書|脸书).{0,24}(?:粉絲|粉丝|專頁|专页)/iu,
+          /(?:作者專欄|作者专栏|懇求您的支持|恳求您的支持)/iu,
+          /https?:\/\//iu,
+        ].filter((pattern) => pattern.test(text)).length >= 2
+      ) {
+        throw new StorySourceError("INVALID_CONTENT", "CZBooks trả về một mục thuần quảng bá tác giả, không phải nội dung chương truyện.");
+      }
+      if (!(analysis.site === "liehuozw" && partIndex > 0 && text.length >= 4)) {
+        assertPlausibleStoryText(text, analysis.site);
+      }
+      parts.push(text);
+      sourceUrls.push(snapshot.url);
+    }
+    const merged = mergeTextParts(parts);
+    if (merged.overlapsRemoved) warnings.push(`Đã loại ${merged.overlapsRemoved} ký tự trùng giữa các phần.`);
+    return chapterContent(chapter, merged.text, sourceUrls, warnings);
+  }
+}
+
 function chapterContent(
   chapter: StoryChapterReference,
   text: string,
@@ -1205,6 +1500,11 @@ const ADAPTERS: Readonly<Record<StorySite, Adapter>> = {
   qingrenyouxi: new QingrenyouxiAdapter(),
   xbanxia: new XbanxiaAdapter(),
   xszj: new XszjAdapter(),
+  liehuozw: new StaticNovelAdapter(),
+  uaa002: new StaticNovelAdapter(),
+  c6k6: new StaticNovelAdapter(),
+  czbooks: new StaticNovelAdapter(),
+  novel543: new StaticNovelAdapter(),
 };
 
 export function adapterFor(site: StorySite): Adapter {

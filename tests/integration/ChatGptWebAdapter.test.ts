@@ -28,7 +28,11 @@ interface FakePageOptions {
   assistantCountAfterSend?: number;
   initialAssistantTurnOrdinal?: number;
   latestAssistantTurnOrdinalAfterSend?: number;
+  assistantTurnOrdinalUnavailable?: boolean;
+  initialAssistantVirtualItemKey?: string;
+  latestAssistantVirtualItemKeyAfterSend?: string;
   response?: string;
+  responseFactory?: () => string;
   stopButtonAfterSend?: boolean;
   stopButtonVisibilitiesAfterSend?: boolean[];
   initialStopButtonVisibilities?: boolean[];
@@ -58,6 +62,7 @@ interface FakePageOptions {
   atomicNavigationUrl?: string;
   deleteRedirectUrl?: string;
   renderUserMessage?: (message: string) => string;
+  kimiUsageLimit?: boolean;
 }
 
 const STORED_TOOL_MARKER = 'TDTOWN_0123456789abcdef0123456789abcdef'
@@ -113,9 +118,16 @@ function createFakeBrowser(options: FakePageOptions = {}) {
       && !selector.includes('task-bar-stop')
       && (selector.includes('send-button') || selector.includes('Send') || selector.includes('Gửi'))
     const isCompletionAction = selector.includes('copy-turn-action-button')
+    const isVirtualItemContainer = selector.includes('@data-virtual-list-item-key')
+      && !selector.includes('following-sibling')
+    const isDeepSeekPairedAssistant = selector.includes('following-sibling')
+      && selector.includes('ds-assistant-message-main-content')
     const isAssistantTurnContainer = selector.includes('ancestor-or-self')
+      && !isVirtualItemContainer
+      && !isDeepSeekPairedAssistant
     const isAssistant = !isCompletionAction
       && !isAssistantTurnContainer
+      && !isVirtualItemContainer
       && (
         selector.includes('message-author-role="assistant"')
         || selector.includes('data-role="assistant"')
@@ -123,6 +135,9 @@ function createFakeBrowser(options: FakePageOptions = {}) {
         || selector.includes('assistant-content')
         || selector.includes('segment-assistant')
         || selector.includes('chat-message.assistant')
+        || selector.includes('ds-assistant-message-main-content')
+        || selector.includes('ds-markdown')
+        || isDeepSeekPairedAssistant
       )
     const isStop = selector.includes('stop-button')
       || selector.includes('stop-icon')
@@ -137,7 +152,12 @@ function createFakeBrowser(options: FakePageOptions = {}) {
       || selector.includes('user-content')
       || selector.includes('segment-user')
       || selector.includes('chat-message.user')
+      || selector.includes('ds-collapsible-text')
     const isLogin = selector.includes('auth/login') || selector.includes('Log in') || selector.includes('Đăng nhập')
+    const isKimiUsageLimit = selector.includes('free quota')
+      || selector.includes('quota.*refreshes')
+      || selector.includes('免费')
+      || selector.includes('额度')
     const isConversationMenu = selector.includes('conversation-options') || selector.includes('tùy chọn cuộc trò chuyện') || selector.includes('Tùy chọn cuộc trò chuyện')
     const isMainScopedMenu = selector.startsWith('main ')
       || selector.startsWith('[role="main"] ')
@@ -150,6 +170,9 @@ function createFakeBrowser(options: FakePageOptions = {}) {
     const latestAssistantTurnOrdinal = () => sendCount > 0
       ? options.latestAssistantTurnOrdinalAfterSend ?? sendCount * 2
       : options.initialAssistantTurnOrdinal ?? 0
+    const latestAssistantVirtualItemKey = () => sendCount > 0
+      ? options.latestAssistantVirtualItemKeyAfterSend ?? String(sendCount * 2)
+      : options.initialAssistantVirtualItemKey ?? '0'
     const stopButtonVisibilities = () => {
       if (sendCount === 0) return options.initialStopButtonVisibilities ?? []
       return options.stopButtonVisibilitiesAfterSend
@@ -166,9 +189,11 @@ function createFakeBrowser(options: FakePageOptions = {}) {
       (isSend && options.composer !== false && !options.login) ||
       (isAssistant && assistantMessageCount() > 0 && options.assistantAfterSend !== false) ||
       (isAssistantTurnContainer && assistantMessageCount() > 0 && options.assistantAfterSend !== false) ||
+      (isVirtualItemContainer && assistantMessageCount() > 0 && options.assistantAfterSend !== false) ||
       (isStop && stopButtonVisibilities().length > 0) ||
       (isCompletionAction && completionActionCount() > 0) ||
       (isUserMessage && userMessages.length > 0) ||
+      (isKimiUsageLimit && options.kimiUsageLimit === true) ||
       (isLogin && Boolean(options.login)) ||
       (isConversationMenu && currentUrl.includes('/c/') && options.deleteMenuAvailable !== false) ||
       (isDeleteAction && menuOpen && options.deleteActionAvailable !== false) ||
@@ -244,7 +269,11 @@ function createFakeBrowser(options: FakePageOptions = {}) {
       },
       getAttribute: async (name: string) => {
         if (isAssistantTurnContainer && name === 'data-testid' && exists()) {
+          if (options.assistantTurnOrdinalUnavailable) return null
           return `conversation-turn-${latestAssistantTurnOrdinal()}`
+        }
+        if (isVirtualItemContainer && name === 'data-virtual-list-item-key' && exists()) {
+          return latestAssistantVirtualItemKey()
         }
         return null
       },
@@ -289,7 +318,7 @@ function createFakeBrowser(options: FakePageOptions = {}) {
           options.login = true
           currentUrl = 'https://chatgpt.com/auth/login'
         }
-        return options.response ?? 'Bản dịch hoàn chỉnh.'
+        return options.responseFactory?.() ?? options.response ?? 'Bản dịch hoàn chỉnh.'
       },
     }
     return locator
@@ -1022,6 +1051,208 @@ describe('ChatGptWebAdapter', () => {
     await vi.waitFor(() => expect(fake.sent).toBe(true))
     await vi.advanceTimersByTimeAsync(10_000)
     await expect(response).resolves.toBe('Bản dịch Kimi hoàn chỉnh.')
+    await adapter.close()
+  })
+
+  it('Kimi báo hết hạn mức sau khoảng chờ xác nhận khi không tạo phản hồi', async () => {
+    vi.useFakeTimers()
+    const fake = createFakeBrowser({
+      composer: true,
+      kimiUsageLimit: true,
+      assistantAfterSend: false,
+      assistantCountAfterSend: 0,
+      initialUrl: 'https://www.kimi.ai/',
+      conversationUrlAfterSend: 'https://www.kimi.ai/chat/tool-created-kimi-quota-0001',
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'kimi',
+      profileDirectory: 'fake-kimi-profile',
+      baseUrl: 'https://www.kimi.ai/',
+      browserFactory: async () => fake.context,
+    })
+
+    const opening = adapter.openLogin()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await expect(opening).resolves.toMatchObject({ status: 'ready' })
+    const response = adapter.sendAndWait('Hãy dịch đoạn này.', { timeoutMs: 480_000 })
+    const rejection = expect(response).rejects.toThrow('hết hạn mức')
+    await vi.advanceTimersByTimeAsync(3_000)
+    await vi.waitFor(() => expect(fake.sent).toBe(true))
+    await vi.advanceTimersByTimeAsync(20_000)
+
+    await rejection
+    expect(fake.sent).toBe(true)
+    await adapter.close()
+  })
+
+  it('Kimi vẫn nhận bản dịch đang sinh dù banner hết hạn mức đã xuất hiện', async () => {
+    vi.useFakeTimers()
+    const fake = createFakeBrowser({
+      composer: true,
+      kimiUsageLimit: true,
+      initialUrl: 'https://www.kimi.ai/',
+      conversationUrlAfterSend: 'https://www.kimi.ai/chat/tool-created-kimi-last-quota-response-0001',
+      response: 'Bản dịch cuối cùng Kimi vẫn trả về đầy đủ.',
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'kimi',
+      profileDirectory: 'fake-kimi-profile',
+      baseUrl: 'https://www.kimi.ai/',
+      browserFactory: async () => fake.context,
+    })
+
+    const opening = adapter.openLogin()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await expect(opening).resolves.toMatchObject({ status: 'ready' })
+    const response = adapter.sendAndWait('Hãy dịch đoạn này.', { timeoutMs: 30_000 })
+    await vi.advanceTimersByTimeAsync(3_000)
+    await vi.waitFor(() => expect(fake.sent).toBe(true))
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    await expect(response).resolves.toBe('Bản dịch cuối cùng Kimi vẫn trả về đầy đủ.')
+    await adapter.close()
+  })
+
+  it('DeepSeek nhận diện sign_in và không coi đó là phiên sẵn sàng', async () => {
+    const fake = createFakeBrowser({
+      composer: true,
+      login: true,
+      loggedOutComposer: true,
+      initialUrl: 'https://chat.deepseek.com/sign_in',
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'deepseek',
+      profileDirectory: 'fake-deepseek-profile',
+      baseUrl: 'https://chat.deepseek.com/',
+      browserFactory: async () => fake.context,
+    })
+
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'login-required' })
+    await adapter.close()
+  })
+
+  it('DeepSeek gửi, xác minh chat riêng và nhận phản hồi hoàn chỉnh', async () => {
+    vi.useFakeTimers()
+    const fake = createFakeBrowser({
+      composer: true,
+      initialUrl: 'https://chat.deepseek.com/',
+      conversationUrlAfterSend: 'https://chat.deepseek.com/a/chat/s/tool-created-deepseek-0001',
+      response: 'Bản dịch DeepSeek hoàn chỉnh.',
+      assistantTurnOrdinalUnavailable: true,
+      latestAssistantVirtualItemKeyAfterSend: '4',
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'deepseek',
+      profileDirectory: 'fake-deepseek-profile',
+      baseUrl: 'https://chat.deepseek.com/',
+      browserFactory: async () => fake.context,
+    })
+
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
+    const freshConversation = adapter.startNewConversation()
+    await vi.advanceTimersByTimeAsync(4_000)
+    await freshConversation
+    const response = adapter.sendAndWait('Hãy dịch đoạn này.', { timeoutMs: 20 * 60_000 })
+    await vi.advanceTimersByTimeAsync(3_000)
+    await vi.waitFor(() => expect(fake.sent).toBe(true))
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    await expect(response).resolves.toBe('Bản dịch DeepSeek hoàn chỉnh.')
+    await adapter.close()
+  })
+
+  it('DeepSeek nhận phản hồi mới khi danh sách ảo tái dùng cùng một khối', async () => {
+    vi.useFakeTimers()
+    const conversationUrl = 'https://chat.deepseek.com/a/chat/s/tool-created-deepseek-virtual-0001'
+    const store = new VolatileConversationStateStore()
+    await store.save({
+      id: 'tool-created-deepseek-virtual-0001',
+      url: conversationUrl,
+      recordedAt: new Date().toISOString(),
+      ownershipHashes: [ownershipHash(STORED_TOOL_MARKER)],
+    })
+    const fake = createFakeBrowser({
+      composer: true,
+      initialUrl: conversationUrl,
+      conversationUrlAfterSend: conversationUrl,
+      userMessages: [STORED_TOOL_MESSAGE],
+      response: 'Bản dịch DeepSeek từ khóa danh sách ảo mới.',
+      assistantTurnOrdinalUnavailable: true,
+      initialAssistantCount: 1,
+      assistantCountAfterSend: 1,
+      initialAssistantVirtualItemKey: '2',
+      latestAssistantVirtualItemKeyAfterSend: '4',
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'deepseek',
+      profileDirectory: 'fake-deepseek-profile',
+      baseUrl: 'https://chat.deepseek.com/',
+      browserFactory: async () => fake.context,
+      conversationStateStore: store,
+    })
+
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
+    const response = adapter.sendAndWait('Hãy dịch đoạn kế tiếp.', { timeoutMs: 20 * 60_000 })
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    await expect(response).resolves.toBe('Bản dịch DeepSeek từ khóa danh sách ảo mới.')
+    await adapter.close()
+  })
+
+  it('DeepSeek dừng chờ sau ba phút nếu chưa bắt đầu tạo phản hồi', async () => {
+    vi.useFakeTimers()
+    const fake = createFakeBrowser({
+      composer: true,
+      assistantAfterSend: false,
+      assistantCountAfterSend: 0,
+      initialUrl: 'https://chat.deepseek.com/',
+      conversationUrlAfterSend: 'https://chat.deepseek.com/a/chat/s/tool-created-deepseek-timeout-0001',
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'deepseek',
+      profileDirectory: 'fake-deepseek-profile',
+      baseUrl: 'https://chat.deepseek.com/',
+      browserFactory: async () => fake.context,
+    })
+
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
+    const response = adapter.sendAndWait('Hãy dịch đoạn này.', { timeoutMs: 20 * 60_000 })
+    const rejection = expect(response).rejects.toThrow(
+      /không phát hiện được phản hồi mới trong 180 giây.*không gửi lại/iu,
+    )
+    await vi.advanceTimersByTimeAsync(185_000)
+    await rejection
+    await adapter.close()
+  })
+
+  it('DeepSeek gia hạn cửa sổ chờ khi nội dung vẫn đang tăng', async () => {
+    vi.useFakeTimers()
+    let growing = true
+    let reads = 0
+    const fake = createFakeBrowser({
+      composer: true,
+      initialUrl: 'https://chat.deepseek.com/',
+      conversationUrlAfterSend: 'https://chat.deepseek.com/a/chat/s/tool-created-deepseek-growing-0001',
+      responseFactory: () => {
+        if (growing) reads += 1
+        return `Bản dịch DeepSeek đang tăng ${'nội dung '.repeat(reads + 1)}`
+      },
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'deepseek',
+      profileDirectory: 'fake-deepseek-profile',
+      baseUrl: 'https://chat.deepseek.com/',
+      browserFactory: async () => fake.context,
+    })
+
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
+    const response = adapter.sendAndWait('Hãy dịch đoạn này.', { timeoutMs: 20 * 60_000 })
+    await vi.advanceTimersByTimeAsync(190_000)
+    await vi.waitFor(() => expect(fake.sent).toBe(true))
+    growing = false
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    await expect(response).resolves.toContain('Bản dịch DeepSeek đang tăng')
     await adapter.close()
   })
 

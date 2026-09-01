@@ -1,7 +1,7 @@
 import { nativeTheme, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent } from "electron";
 import { access } from "node:fs/promises";
 import path from "node:path";
-import type { AiProvider, FinalChapterExportInput, PromptMode } from "../shared/types.js";
+import type { AiProvider, FinalChapterExportInput, PromptMode, StoryExportIdentity } from "../shared/types.js";
 import { IPC_CHANNELS } from "../preload/channels.js";
 import {
   chooseChapterDirectory,
@@ -240,7 +240,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   });
   handle(IPC_CHANNELS.aiProviderGet, () => dependencies.chatGpt.activeProvider());
   handle(IPC_CHANNELS.aiProviderSet, async (_event, payload) => {
-    if (payload !== "chatgpt" && payload !== "kimi") {
+    if (payload !== "chatgpt" && payload !== "kimi" && payload !== "deepseek") {
       throw new TypeError("Nhà cung cấp AI không hợp lệ.");
     }
     await dependencies.chatGpt.selectProvider(payload);
@@ -255,7 +255,17 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     const source = stringField(payload, "source", { required: true })!;
     const mode = promptMode(payload.promptMode);
     const customPrompt = stringField(payload, "customPrompt", { max: 100_000 });
-    const aiProvider: AiProvider = payload.aiProvider === "kimi" ? "kimi" : "chatgpt";
+    const aiProvider: AiProvider = payload.aiProvider === "kimi" || payload.aiProvider === "deepseek"
+      ? payload.aiProvider
+      : "chatgpt";
+    const rawAllowedAiProviders = payload.allowedAiProviders;
+    const allowedAiProviders = Array.isArray(rawAllowedAiProviders)
+      ? (["chatgpt", "kimi", "deepseek"] as AiProvider[]).filter((provider) =>
+          rawAllowedAiProviders.includes(provider))
+      : (["chatgpt", "kimi", "deepseek"] as AiProvider[]);
+    if (!allowedAiProviders.length) {
+      throw new TypeError("Phải chọn ít nhất một AI cho tiến trình.");
+    }
     const resolvedPrompt = await dependencies.prompts.resolve(mode, customPrompt);
     const rawSettings = payload.settings;
     if (rawSettings !== undefined && (!rawSettings || typeof rawSettings !== "object" || Array.isArray(rawSettings))) {
@@ -326,6 +336,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
       ...(customPrompt ? { customPrompt } : {}),
       resolvedPrompt,
       aiProvider,
+      allowedAiProviders,
       ...(autoExport ? { autoExport } : {}),
       settings: {
         maxChunkChars: numberSetting("maxChunkChars"),
@@ -343,7 +354,19 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     return stringField(payload, "jobId", { required: true, max: 100 })!;
   };
   handle(IPC_CHANNELS.translationPause, (_event, payload) => dependencies.translator.pause(idPayload(payload)));
-  handle(IPC_CHANNELS.translationResume, (_event, payload) => dependencies.translator.resume(idPayload(payload)));
+  handle(IPC_CHANNELS.translationResume, (_event, rawPayload) => {
+    if (typeof rawPayload === "string") return dependencies.translator.resume(rawPayload);
+    const payload = objectPayload(rawPayload, "Tác vụ tiếp tục");
+    const provider = payload.aiProvider === "kimi" || payload.aiProvider === "deepseek"
+      ? payload.aiProvider
+      : payload.aiProvider === "chatgpt"
+        ? "chatgpt"
+        : undefined;
+    return dependencies.translator.resume(
+      stringField(payload, "jobId", { required: true, max: 100 })!,
+      provider,
+    );
+  });
   handle(IPC_CHANNELS.translationRestart, (_event, payload) => dependencies.translator.restart(idPayload(payload)));
   handle(IPC_CHANNELS.translationCancel, (_event, payload) => dependencies.translator.cancel(idPayload(payload)));
   handle(IPC_CHANNELS.translationDiscard, (_event, payload) => dependencies.translator.discard(idPayload(payload)));
@@ -353,6 +376,9 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     await dependencies.translator.retrySegment({
       jobId: stringField(payload, "jobId", { required: true, max: 100 })!,
       segmentId: stringField(payload, "segmentId", { required: true, max: 100 })!,
+      ...(payload.aiProvider === "chatgpt" || payload.aiProvider === "kimi" || payload.aiProvider === "deepseek"
+        ? { aiProvider: payload.aiProvider }
+        : {}),
     });
   });
   handle(IPC_CHANNELS.translationActive, () => dependencies.translator.activeJobs());
@@ -419,7 +445,18 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   handle(IPC_CHANNELS.exportValidateDirectory, async (_event, rawPayload) => {
     const payload = objectPayload(rawPayload, 'Yêu cầu kiểm tra thư mục xuất');
     const directory = stringField(payload, 'directory', { required: true, max: 32_767 })!;
-    return validateChapterExportDirectory(directory);
+    const rawIdentity = payload.identity;
+    let identity: StoryExportIdentity | undefined;
+    if (rawIdentity !== undefined) {
+      const value = objectPayload(rawIdentity, 'Dấu nhận diện bộ truyện');
+      identity = {
+        site: stringField(value, 'site', { required: true, max: 100 })! as StoryExportIdentity['site'],
+        bookId: stringField(value, 'bookId', { required: true, max: 1_000 })!,
+        bookTitle: stringField(value, 'bookTitle', { required: true, max: 2_000 })!,
+        bookUrl: stringField(value, 'bookUrl', { required: true, max: 32_000 })!,
+      };
+    }
+    return validateChapterExportDirectory(directory, identity);
   });
   handle(IPC_CHANNELS.exportChapters, async (_event, rawPayload) => {
     const payload = objectPayload(rawPayload, "Yêu cầu lưu các chương");

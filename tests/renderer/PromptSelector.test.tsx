@@ -8,9 +8,11 @@ function NumberingHarness({ suggestedChapterStart }: { suggestedChapterStart?: n
   const [outputChapterStart, setOutputChapterStart] = useState<number | undefined>();
   const [omitOutputChapterTitles, setOmitOutputChapterTitles] = useState(false);
   const [exportCombinedSourceChapters, setExportCombinedSourceChapters] = useState(false);
+  const [allowedAiProviders, setAllowedAiProviders] = useState<Array<'chatgpt' | 'kimi' | 'deepseek'>>(['chatgpt', 'kimi', 'deepseek']);
 
   return (
     <PromptSelector
+      allowedAiProviders={allowedAiProviders}
       customPrompt=""
       exportCombinedSourceChapters={exportCombinedSourceChapters}
       mode={mode}
@@ -21,6 +23,12 @@ function NumberingHarness({ suggestedChapterStart }: { suggestedChapterStart?: n
       onCustomPromptChange={() => undefined}
       onExportCombinedSourceChaptersChange={setExportCombinedSourceChapters}
       onModeChange={setMode}
+      onToggleAiProvider={(provider) => setAllowedAiProviders((current) => {
+        if (current.includes(provider)) {
+          return current.length === 1 ? current : current.filter((candidate) => candidate !== provider);
+        }
+        return ['chatgpt', 'kimi', 'deepseek'].filter((candidate) => current.includes(candidate as typeof provider) || candidate === provider) as Array<'chatgpt' | 'kimi' | 'deepseek'>;
+      })}
       onOmitOutputChapterTitlesChange={setOmitOutputChapterTitles}
       onOutputChapterStartChange={setOutputChapterStart}
     />
@@ -30,6 +38,23 @@ function NumberingHarness({ suggestedChapterStart }: { suggestedChapterStart?: n
 afterEach(() => cleanup());
 
 describe('PromptSelector chapter output numbering', () => {
+  it('mặc định chọn cả 3 chatbot và không cho bỏ lựa chọn cuối cùng', () => {
+    render(<NumberingHarness />);
+    const chatgpt = screen.getByRole('checkbox', { name: 'ChatGPT' });
+    const kimi = screen.getByRole('checkbox', { name: 'Kimi AI' });
+    const deepseek = screen.getByRole('checkbox', { name: 'DeepSeek AI' });
+    expect(chatgpt).toBeChecked();
+    expect(kimi).toBeChecked();
+    expect(deepseek).toBeChecked();
+
+    fireEvent.click(kimi);
+    fireEvent.click(deepseek);
+    expect(chatgpt).toBeChecked();
+    expect(kimi).not.toBeChecked();
+    expect(deepseek).not.toBeChecked();
+    expect(chatgpt).toBeDisabled();
+  });
+
   it('hiển thị bốn phong cách có sẵn trong lưới gọn và cho phép chọn từng phong cách', () => {
     render(<NumberingHarness />);
 

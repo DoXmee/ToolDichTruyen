@@ -53,8 +53,8 @@ function installStoryTool(options: {
     cultivation: 'Prompt tu tiên mặc định',
   }));
   const connectChatGPT = vi.fn(async () => ({ status: options.connectionStatus ?? 'ready' }));
-  let aiProvider: 'chatgpt' | 'kimi' = 'chatgpt';
-  const setAiProvider = vi.fn(async (provider: 'chatgpt' | 'kimi') => {
+  let aiProvider: 'chatgpt' | 'kimi' | 'deepseek' = 'chatgpt';
+  const setAiProvider = vi.fn(async (provider: 'chatgpt' | 'kimi' | 'deepseek') => {
     aiProvider = provider;
     return { provider, status: 'closed' };
   });
@@ -63,7 +63,11 @@ function installStoryTool(options: {
       const result = await connectChatGPT();
       return { provider: aiProvider, ...result };
     }
-    return { provider: aiProvider, status: 'login-required', message: 'Hãy đăng nhập Kimi AI.' };
+    return {
+      provider: aiProvider,
+      status: 'login-required',
+      message: `Hãy đăng nhập ${aiProvider === 'kimi' ? 'Kimi AI' : 'DeepSeek AI'}.`,
+    };
   });
   const startTranslation = vi.fn(async (_request: TranslationRequest) => ({ jobId: 'job-1' }));
   const cancelTranslation = vi.fn(async () => undefined);
@@ -248,6 +252,13 @@ describe('App renderer', () => {
       expect(screen.getByRole('radio', { name: 'ChatGPT' })).toHaveAttribute('aria-checked', 'true');
       expect(screen.getByText('ChatGPT đã kết nối')).toBeInTheDocument();
     });
+
+    fireEvent.click(screen.getByRole('radio', { name: 'DeepSeek AI' }));
+    await waitFor(() => {
+      expect(harness.api.setAiProvider).toHaveBeenLastCalledWith('deepseek');
+      expect(screen.getByRole('radio', { name: 'DeepSeek AI' })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByText('Chờ đăng nhập DeepSeek AI')).toBeInTheDocument();
+    });
   });
 
   it('cho phép đổi AI khi checkpoint chỉ đang tạm dừng', async () => {
@@ -277,6 +288,117 @@ describe('App renderer', () => {
       expect(harness.api.setAiProvider).toHaveBeenCalledWith('kimi');
       expect(kimi).toHaveAttribute('aria-checked', 'true');
     });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tiếp tục' }));
+    await waitFor(() => {
+      expect(harness.api.resumeTranslation).toHaveBeenCalledWith(
+        'job-paused-provider-switch',
+        'kimi',
+      );
+    });
+  });
+
+  it('khi tạm dừng thường chỉ cho đổi trong nhóm AI cố định', async () => {
+    const pausedJob: TranslationJobSnapshot = {
+      id: 'job-paused-fixed-pool',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+      status: 'paused',
+      aiProvider: 'chatgpt',
+      allowedAiProviders: ['chatgpt'],
+      totalSegments: 1,
+      completedSegments: 0,
+      currentSegmentIndex: 0,
+      segments: [{ id: 'segment-waiting', index: 0, status: 'queued' }],
+    };
+    installStoryTool({ activeTranslations: [pausedJob], translationJob: pausedJob });
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('radio', { name: 'ChatGPT' })).toBeEnabled();
+      expect(screen.getByRole('radio', { name: 'Kimi AI' })).toBeDisabled();
+      expect(screen.getByRole('radio', { name: 'DeepSeek AI' })).toBeDisabled();
+    });
+  });
+
+  it('tiếp tục checkpoint lỗi bằng DeepSeek do người dùng vừa chọn', async () => {
+    const failedJob: TranslationJobSnapshot = {
+      id: 'job-failed-deepseek-switch',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+      status: 'failed',
+      aiProvider: 'chatgpt',
+      allowedAiProviders: ['chatgpt'],
+      totalSegments: 2,
+      completedSegments: 1,
+      currentSegmentIndex: 1,
+      error: 'ChatGPT không tạo được phản hồi.',
+      segments: [
+        { id: 'segment-done', index: 0, status: 'completed' },
+        { id: 'segment-failed', index: 1, status: 'failed', error: 'Lỗi AI.' },
+      ],
+    };
+    const harness = installStoryTool({
+      draft: {
+        source: '原文', output: 'checkpoint', promptMode: 'period', customPrompt: '', sourceMode: 'link',
+        storyUrl: 'https://www.timotxt.com/1/', exportDirectory: 'D:\\Truyện đã dịch',
+        autoExportJobId: 'job-failed-deepseek-switch', exportedRecords: [],
+      },
+      activeTranslations: [failedJob],
+      translationJob: failedJob,
+    });
+    render(<App />);
+
+    const deepseek = await screen.findByRole('radio', { name: 'DeepSeek AI' });
+    await waitFor(() => expect(deepseek).toBeEnabled());
+    fireEvent.click(deepseek);
+    await waitFor(() => expect(harness.api.setAiProvider).toHaveBeenCalledWith('deepseek'));
+
+    fireEvent.click(await screen.findByText(/Lịch sử checkpoint cần xử lý/u));
+    fireEvent.click(await screen.findByRole('button', { name: 'Bắt đầu từ CP lỗi' }));
+    await waitFor(() => {
+      expect(harness.api.retrySegment).toHaveBeenCalledWith({
+        jobId: 'job-failed-deepseek-switch',
+        segmentId: 'segment-failed',
+        aiProvider: 'deepseek',
+      });
+    });
+  });
+
+  it('nút tiếp tục ngay trên tiến trình dùng đúng AI cứu ngoài nhóm vừa chọn', async () => {
+    const harness = installStoryTool({ connectionStatus: 'ready' });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Kimi AI' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'DeepSeek AI' }));
+    fireEvent.change(screen.getByLabelText('Nội dung tiếng Trung cần dịch'), {
+      target: { value: '第一章。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Kết nối/u }));
+    await screen.findByText('ChatGPT đã kết nối');
+    fireEvent.click(screen.getByRole('button', { name: 'Bắt đầu dịch' }));
+    await waitFor(() => expect(harness.startTranslation).toHaveBeenCalledWith(
+      expect.objectContaining({ allowedAiProviders: ['chatgpt'] }),
+    ));
+    act(() => harness.emit({
+      jobId: 'job-1',
+      type: 'segment-failed',
+      timestamp: 1,
+      payload: {
+        segment: { id: 'segment-direct-failed', index: 0, status: 'failed', error: 'Lỗi ChatGPT.' },
+        error: 'Lỗi ChatGPT.',
+      },
+    }));
+
+    const deepseek = await screen.findByRole('radio', { name: 'DeepSeek AI' });
+    await waitFor(() => expect(deepseek).toBeEnabled());
+    fireEvent.click(deepseek);
+    await waitFor(() => expect(harness.api.setAiProvider).toHaveBeenCalledWith('deepseek'));
+    fireEvent.click(await screen.findByRole('button', { name: /Tiếp tục từ đoạn lỗi/u }));
+
+    await waitFor(() => expect(harness.api.retrySegment).toHaveBeenCalledWith({
+      jobId: 'job-1',
+      segmentId: 'segment-direct-failed',
+      aiProvider: 'deepseek',
+    }));
   });
 
   it('giữ công cụ chia chương thu gọn mặc định và mở được bằng bàn phím hoặc chuột', async () => {
@@ -411,6 +533,7 @@ describe('App renderer', () => {
 
     await waitFor(() => {
       expect(harness.startTranslation).toHaveBeenCalledWith({
+        allowedAiProviders: ['chatgpt', 'kimi', 'deepseek'],
         source,
         promptMode: 'period',
         customPrompt: undefined,
@@ -637,7 +760,7 @@ describe('App renderer', () => {
     fireEvent.click(history);
     const button = await screen.findByRole('button', { name: 'Bắt đầu từ CP lỗi' });
     fireEvent.click(button);
-    await waitFor(() => expect(resumeTranslation).toHaveBeenCalledWith('job-setup-failure'));
+    await waitFor(() => expect(resumeTranslation).toHaveBeenCalledWith('job-setup-failure', 'chatgpt'));
   });
 
   it('hiện tiếp tục trong lịch sử cho checkpoint đã hủy còn đoạn chờ', async () => {
@@ -659,7 +782,7 @@ describe('App renderer', () => {
     fireEvent.click(history);
     const resume = await screen.findByRole('button', { name: 'Bắt đầu từ CP lỗi' });
     fireEvent.click(resume);
-    await waitFor(() => expect(resumeTranslation).toHaveBeenCalledWith('job-cancelled-checkpoint'));
+    await waitFor(() => expect(resumeTranslation).toHaveBeenCalledWith('job-cancelled-checkpoint', 'chatgpt'));
   });
 
   it('khôi phục đích xuất của checkpoint đã hủy rồi tiếp tục lưu vào đúng thư mục', async () => {
@@ -692,7 +815,7 @@ describe('App renderer', () => {
     fireEvent.click(await screen.findByText(/Lịch sử checkpoint cần xử lý/u));
     fireEvent.click(await screen.findByRole('button', { name: 'Bắt đầu từ CP lỗi' }));
 
-    await waitFor(() => expect(resumeTranslation).toHaveBeenCalledWith('job-export-resume'));
+    await waitFor(() => expect(resumeTranslation).toHaveBeenCalledWith('job-export-resume', 'chatgpt'));
     await waitFor(() => expect(harness.exportChapters).toHaveBeenCalled());
     expect(harness.exportChapters.mock.calls[0]?.[0]).toMatchObject({
       directory: 'D:\\Bo-giu-nguyen',
@@ -722,7 +845,7 @@ describe('App renderer', () => {
     fireEvent.click(await screen.findByText(/Lịch sử checkpoint cần xử lý/u));
     fireEvent.click(await screen.findByRole('button', { name: 'Bắt đầu từ CP lỗi' }));
     await waitFor(() => expect(retrySegment).toHaveBeenCalledWith({
-      jobId: 'job-failed-segment-history', segmentId: 's2',
+      jobId: 'job-failed-segment-history', segmentId: 's2', aiProvider: 'chatgpt',
     }));
   });
 
@@ -931,6 +1054,104 @@ describe('App renderer', () => {
     await waitFor(() => expect(harness.startTranslation).toHaveBeenCalledWith(expect.objectContaining({
       source: combinedSource,
     })));
+  });
+
+  it('khóa đúng số chương mặc định đang hiển thị thay vì dùng startIndex cũ của công cụ chia', async () => {
+    const storyAnalysis = {
+      analysisId: 'visible-default-numbering',
+      site: 'qingrenyouxi' as const,
+      inputKind: 'book' as const,
+      inputUrl: 'https://www.qingrenyouxi.com/book/visible-default.html',
+      bookId: 'visible-default',
+      bookTitle: 'Kiểm tra số chương hiển thị',
+      bookUrl: 'https://www.qingrenyouxi.com/book/visible-default.html',
+      catalogUrl: 'https://www.qingrenyouxi.com/book/visible-default.html',
+      chapters: [
+        { id: 'c1', order: 0, number: 1, numberLabel: '第1章', title: 'Mở đầu', url: 'https://example/1', partUrls: ['https://example/1'], isIntroduction: false, selectedByDefault: true },
+        { id: 'c2', order: 1, number: 2, numberLabel: '第2章', title: 'Tiếp theo', url: 'https://example/2', partUrls: ['https://example/2'], isIntroduction: false, selectedByDefault: true },
+      ],
+      defaultSelectedChapterIds: ['c1', 'c2'],
+      verification: 'not-needed' as const,
+      notices: [],
+    };
+    const combinedSource = 'Chương 1: Mở đầu\n\n第一章内容。\n\nChương 2: Tiếp theo\n\n第二章内容。';
+    const harness = installStoryTool({
+      connectionStatus: 'ready',
+      storyAnalysis,
+      storyFetch: {
+        analysisId: storyAnalysis.analysisId,
+        site: storyAnalysis.site,
+        bookId: storyAnalysis.bookId,
+        bookTitle: storyAnalysis.bookTitle,
+        chapters: [],
+        combinedSource,
+        warnings: [],
+      },
+      draft: {
+        source: '',
+        output: '',
+        promptMode: 'period',
+        customPrompt: '',
+        sourceMode: 'link',
+        storyUrl: '',
+        exportDirectory: '',
+        splitConfig: {
+          targetWords: 800,
+          prefix: '',
+          suffix: '',
+          startIndex: 3,
+          inputLanguage: 'vi',
+          autoDetectTitle: true,
+        },
+      },
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
+    fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), {
+      target: { value: storyAnalysis.inputUrl },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
+
+    await screen.findByText(storyAnalysis.bookTitle);
+    expect(screen.getByLabelText('Số chương xuất bắt đầu')).toHaveValue(1);
+    fireEvent.click(screen.getByRole('button', { name: /Chọn thư mục lưu/i }));
+    await waitFor(() => expect(harness.chooseChapterDirectory).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /Kết nối/i }));
+    await screen.findByText('ChatGPT đã kết nối');
+    fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/i }));
+
+    await waitFor(() => expect(harness.startTranslation).toHaveBeenCalledOnce());
+    const request = harness.startTranslation.mock.calls[0]?.[0];
+    expect(request).toEqual(expect.objectContaining({
+      autoExport: expect.objectContaining({ startChapter: 1, endChapter: 2 }),
+    }));
+    expect(request?.autoExport).not.toHaveProperty('outputChapterStart');
+
+    const first = Array.from({ length: 800 }, (_, index) => `mot${index + 1}`).join(' ');
+    const second = Array.from({ length: 800 }, (_, index) => `hai${index + 1}`).join(' ');
+    act(() => harness.emit({
+      jobId: 'job-1',
+      type: 'segment-completed',
+      timestamp: 1,
+      payload: {
+        translatedText: `Chương 1: Mở đầu\n${first}\n\nChương 2: Tiếp theo\n${second}`,
+        job: {
+          status: 'running',
+          autoExport: request?.autoExport,
+          segments: [
+            { id: 'segment-1', index: 0, status: 'completed' },
+            { id: 'segment-2', index: 1, status: 'streaming' },
+          ],
+        },
+      },
+    }));
+    await waitFor(() => expect(harness.exportChapters).toHaveBeenCalled());
+    expect(harness.exportChapters.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+      chapters: expect.arrayContaining([
+        expect.objectContaining({ index: 1, title: 'Chương 1: Mở đầu' }),
+      ]),
+    }));
   });
 
   it('chặn tải và tạo job khi thư mục export từ draft không còn tồn tại', async () => {
@@ -1272,6 +1493,35 @@ describe('App renderer', () => {
     expect(screen.getByText((_content, element) => element?.textContent === '1 chương đã chọn')).toBeInTheDocument();
     expect((screen.getAllByText('作品相關')[0]?.closest('label')?.querySelector('input') as HTMLInputElement).checked).toBe(false);
     expect((screen.getByText('替婚').closest('label')?.querySelector('input') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('liệt kê và nhận diện Novel543 đúng tên nguồn', async () => {
+    const storyAnalysis = {
+      analysisId: 'novel543-analysis',
+      site: 'novel543' as const,
+      inputKind: 'book' as const,
+      inputUrl: 'https://www.novel543.com/1013669909/',
+      bookId: '1013669909',
+      bookTitle: '驚！下鄉的女知青竟是頂級雇傭兵',
+      bookUrl: 'https://www.novel543.com/1013669909/',
+      catalogUrl: 'https://www.novel543.com/1013669909/dir',
+      chapters: [
+        { id: 'novel543:1013669909:8096_1', order: 0, number: 1, numberLabel: '第1章', title: '穿越重生', url: 'https://www.novel543.com/1013669909/8096_1.html', partUrls: ['https://www.novel543.com/1013669909/8096_1.html'], isIntroduction: false, selectedByDefault: true },
+      ],
+      defaultSelectedChapterIds: ['novel543:1013669909:8096_1'],
+      verification: 'not-needed' as const,
+      notices: [],
+    };
+    installStoryTool({ storyAnalysis });
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Website hỗ trợ' }));
+    expect(screen.getByRole('dialog', { name: 'Website được hỗ trợ' })).toHaveTextContent('Novel543');
+    fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
+    expect(screen.getByRole('note')).toHaveTextContent(/Hỗ trợ nhập link truyện:.*Novel543/u);
+    fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), { target: { value: storyAnalysis.inputUrl } });
+    fireEvent.click(screen.getByRole('button', { name: /Phân tích/i }));
+    expect(await screen.findByText(/Novel543 · 1 chương/u)).toBeInTheDocument();
   });
 
   it('chọn khoảng theo vị trí mục lục dù số chương bị nhảy và có phần giới thiệu', async () => {

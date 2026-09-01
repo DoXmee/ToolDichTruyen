@@ -17,7 +17,12 @@ import {
   createOwnershipMarker,
   ownershipMarkerHash,
 } from "./ownershipMarker.js";
-import { CHATGPT_SELECTORS, KIMI_SELECTORS, type ChatWebSelectors } from "./selectors.js";
+import {
+  CHATGPT_SELECTORS,
+  DEEPSEEK_SELECTORS,
+  KIMI_SELECTORS,
+  type ChatWebSelectors,
+} from "./selectors.js";
 
 export type ChatGptWebStatus =
   | "closed"
@@ -131,6 +136,41 @@ const KIMI_CONCURRENCY_DISMISS_SELECTORS = [
   '[role="dialog"] button:has-text("Got it")',
   '.n-modal button:has-text("Got it")',
 ] as const;
+const KIMI_USAGE_LIMIT_SELECTORS = [
+  'text=/Your free quota is used up/i',
+  'text=/free quota.*used up/i',
+  'text=/quota.*refreshes at/i',
+  'text=/免费.*(额度|次数).*(已用完|用完|耗尽)/i',
+  'text=/(额度|次数).*(不足|已用完|用完|耗尽)/i',
+] as const;
+const DEEPSEEK_USAGE_LIMIT_SELECTORS = [
+  'text=/reached.*(?:limit|quota)/i',
+  'text=/(?:limit|quota).*(?:reached|exceeded|used up)/i',
+  'text=/已达到.*(?:上限|限额)/i',
+] as const;
+const DEEPSEEK_TRANSIENT_ERROR_SELECTORS = [
+  'text=/server is busy/i',
+  'text=/service is temporarily unavailable/i',
+  'text=/network error/i',
+  'text=/服务器繁忙/i',
+  'text=/服务暂时不可用/i',
+] as const;
+const DEEPSEEK_INITIAL_RESPONSE_TIMEOUT_MS = 3 * 60_000;
+const DEEPSEEK_RESPONSE_IDLE_TIMEOUT_MS = 3 * 60_000;
+
+// Kimi pauses long answers behind an inline "continue" control instead of
+// finishing the assistant turn.  Without handling it the Stop control is gone
+// but the answer is incomplete, so the adapter waits until the global timeout
+// and retries the whole chapter.  Keep these selectors deliberately narrow so
+// we never click an unrelated navigation or onboarding action.
+const KIMI_CONTINUE_RESPONSE_SELECTORS = [
+  'p.continue-chat-button',
+  '.continue-chat-button',
+  'button:has-text("Continue generating")',
+  'button:has-text("继续生成")',
+] as const;
+
+const MAX_KIMI_RESPONSE_CONTINUATIONS = 6;
 const KIMI_INSTANT_HIGH_SELECTORS = [
   'text=Instant High',
   ':text-is("Instant High")',
@@ -195,11 +235,15 @@ export class ChatGptAutomationShutdownError extends Error {
 }
 
 interface AssistantTurnBaseline {
-  messages: Map<string, { count: number; latestTurnOrdinal?: number }>;
+  messages: Map<string, {
+    count: number;
+    latestTurnOrdinal?: number;
+    latestVirtualItemKey?: string;
+  }>;
 }
 
 function isAuthenticationUrl(url: string): boolean {
-  return /\/(?:auth|login|signup)(?:\/|\?|$)/iu.test(url);
+  return /\/(?:auth|login|signin|sign_in|signup|sign_up)(?:\/|\?|$)/iu.test(url);
 }
 
 function conversationFromUrl(
@@ -218,7 +262,9 @@ function conversationFromUrl(
   if (parsed.origin !== base.origin || parsed.username || parsed.password) return undefined;
   const pattern = provider === "kimi"
     ? /^\/(?:chat|c)\/([a-zA-Z0-9_-]{8,128})\/?$/u
-    : /^\/c\/([a-zA-Z0-9_-]{8,128})\/?$/u;
+    : provider === "deepseek"
+      ? /^\/(?:a\/)?chat\/s\/([a-zA-Z0-9_-]{8,128})\/?$/u
+      : /^\/c\/([a-zA-Z0-9_-]{8,128})\/?$/u;
   const match = pattern.exec(parsed.pathname);
   const id = match?.[1];
   if (!id) return undefined;
@@ -431,6 +477,39 @@ async function firstVisible(page: Page, selectors: readonly string[]): Promise<L
   return undefined;
 }
 
+async function kimiUsageLimitVisible(page: Page): Promise<boolean> {
+  if (await firstVisible(page, KIMI_USAGE_LIMIT_SELECTORS)) return true;
+  // The current landing page paints this notice inside a client component
+  // whose text locator is occasionally not exposed as a visible Playwright
+  // node. A read-only body-text fallback keeps quota detection reliable
+  // without depending on that component's generated class names.
+  if (typeof page.evaluate !== "function") return false;
+  return page.evaluate(() => {
+    const text = document.body?.innerText?.replace(/\s+/gu, " ").trim() ?? "";
+    return /your free quota is used up/iu.test(text)
+      || /free quota.{0,80}used up/iu.test(text)
+      || /quota.{0,80}refreshes at/iu.test(text)
+      || /免费.{0,40}(?:额度|次数).{0,40}(?:已用完|用完|耗尽)/u.test(text)
+      || /(?:额度|次数).{0,40}(?:不足|已用完|用完|耗尽)/u.test(text);
+  }).catch(() => false);
+}
+
+async function deepSeekUsageLimitVisible(page: Page): Promise<boolean> {
+  return Boolean(await firstVisible(page, DEEPSEEK_USAGE_LIMIT_SELECTORS));
+}
+
+function maximumResponseTimeoutMs(provider: AiProvider): number {
+  if (provider === "deepseek") return 30 * 60_000;
+  if (provider === "kimi") return 20 * 60_000;
+  return 10 * 60_000;
+}
+
+function providerStateFile(provider: AiProvider): string {
+  if (provider === "kimi") return "kimi-tool-conversation.json";
+  if (provider === "deepseek") return "deepseek-tool-conversation.json";
+  return "chatgpt-tool-conversation.json";
+}
+
 async function waitForFirstVisible(
   page: Page,
   selectors: readonly string[],
@@ -503,8 +582,14 @@ export class ChatGptWebAdapter {
       ? undefined
       : options.manualLoginFactory ?? (options.browserFactory ? undefined : defaultManualLoginFactory);
     this.baseUrl = options.baseUrl ?? "https://chatgpt.com/";
-    this.provider = options.provider === "kimi" ? "kimi" : "chatgpt";
-    this.selectors = this.provider === "kimi" ? KIMI_SELECTORS : CHATGPT_SELECTORS;
+    this.provider = options.provider === "kimi" || options.provider === "deepseek"
+      ? options.provider
+      : "chatgpt";
+    this.selectors = this.provider === "kimi"
+      ? KIMI_SELECTORS
+      : this.provider === "deepseek"
+        ? DEEPSEEK_SELECTORS
+        : CHATGPT_SELECTORS;
     this.conversationState = options.conversationStateStore === false || (
       options.conversationStateStore === undefined && options.browserFactory !== undefined
     )
@@ -513,7 +598,7 @@ export class ChatGptWebAdapter {
         ?? new FileConversationStateStore(
           path.join(
             path.dirname(options.profileDirectory),
-            this.provider === "kimi" ? "kimi-tool-conversation.json" : "chatgpt-tool-conversation.json",
+            providerStateFile(this.provider),
           ),
         );
     this.conversationUrlTimeoutMs = Math.min(
@@ -758,7 +843,10 @@ export class ChatGptWebAdapter {
       throw new RangeError("Nội dung gửi ChatGPT quá dài sau khi thêm metadata xác minh.");
     }
     throwIfAborted(options.signal);
-    const timeoutMs = Math.min(10 * 60_000, Math.max(10_000, options.timeoutMs ?? 180_000));
+    const timeoutMs = Math.min(
+      maximumResponseTimeoutMs(this.provider),
+      Math.max(10_000, options.timeoutMs ?? 180_000),
+    );
     this.operationInProgress = true;
     this.setStatus("busy");
     let abortStopPromise: Promise<void> | undefined;
@@ -771,18 +859,19 @@ export class ChatGptWebAdapter {
     };
     options.signal?.addEventListener("abort", onAbort, { once: true });
     let messageSubmitted = false;
-    const failedKimiResponses: string[] = [];
-    const onKimiResponse = (response: Response): void => {
-      if (this.provider !== "kimi" || response.status() < 400) return;
+    const failedProviderResponses: string[] = [];
+    const onProviderResponse = (response: Response): void => {
+      if (this.provider === "chatgpt" || response.status() < 400) return;
       try {
         const url = new URL(response.url());
-        if (!url.hostname.endsWith("kimi.ai")) return;
-        failedKimiResponses.push(`${response.status()} ${url.pathname}`);
+        const expectedHost = this.provider === "kimi" ? "kimi.ai" : "deepseek.com";
+        if (!url.hostname.endsWith(expectedHost)) return;
+        failedProviderResponses.push(`${response.status()} ${url.pathname}`);
       } catch {
-        failedKimiResponses.push(String(response.status()));
+        failedProviderResponses.push(String(response.status()));
       }
     };
-    if (this.provider === "kimi") page.on("response", onKimiResponse);
+    if (this.provider !== "chatgpt") page.on("response", onProviderResponse);
 
     try {
       throwIfAborted(options.signal);
@@ -849,7 +938,7 @@ export class ChatGptWebAdapter {
         baseline,
         timeoutMs,
         options.signal,
-        failedKimiResponses,
+        failedProviderResponses,
         submittedConversation,
         ownershipMarkerHash(ownershipMarker),
       );
@@ -866,8 +955,8 @@ export class ChatGptWebAdapter {
       }
       throw error;
     } finally {
-      if (this.provider === "kimi" && typeof page.off === "function") {
-        page.off("response", onKimiResponse);
+      if (this.provider !== "chatgpt" && typeof page.off === "function") {
+        page.off("response", onProviderResponse);
       }
       options.signal?.removeEventListener("abort", onAbort);
       this.operationInProgress = false;
@@ -1715,16 +1804,24 @@ export class ChatGptWebAdapter {
   }
 
   private async captureAssistantTurnBaseline(page: Page): Promise<AssistantTurnBaseline> {
-    const messages = new Map<string, { count: number; latestTurnOrdinal?: number }>();
+    const messages = new Map<string, {
+      count: number;
+      latestTurnOrdinal?: number;
+      latestVirtualItemKey?: string;
+    }>();
     for (const selector of this.selectors.assistantMessages) {
       const locator = page.locator(selector);
       const count = await locator.count();
       const latestTurnOrdinal = count > 0
         ? await this.assistantTurnOrdinal(locator.last())
         : undefined;
+      const latestVirtualItemKey = count > 0 && this.provider === "deepseek"
+        ? await this.assistantVirtualItemKey(locator.last())
+        : undefined;
       messages.set(selector, {
         count,
         ...(latestTurnOrdinal === undefined ? {} : { latestTurnOrdinal }),
+        ...(latestVirtualItemKey === undefined ? {} : { latestVirtualItemKey }),
       });
     }
     return { messages };
@@ -1769,6 +1866,43 @@ export class ChatGptWebAdapter {
     return undefined;
   }
 
+  private async assistantVirtualItemKey(messageLocator: Locator): Promise<string | undefined> {
+    const item = messageLocator.locator(
+      'xpath=ancestor-or-self::*[@data-virtual-list-item-key][1]',
+    );
+    if (await item.count() === 0) return undefined;
+    return (await item.first().getAttribute('data-virtual-list-item-key').catch(() => null))
+      ?? undefined;
+  }
+
+  /**
+   * DeepSeek virtualizes the conversation and can recycle an assistant DOM
+   * node without increasing the visible message count. Pair the ownership
+   * marker of the prompt we just submitted with the immediately following
+   * virtual-list assistant item so an old answer can never satisfy this send.
+   */
+  private async deepSeekResponseForSubmittedTurn(
+    page: Page,
+    submittedOwnershipHash: string,
+  ): Promise<Locator | undefined> {
+    const expectedHashes = new Set([submittedOwnershipHash]);
+    for (const selector of this.selectors.toolConversationUserMessages) {
+      const messages = page.locator(selector);
+      for (let index = (await messages.count()) - 1; index >= 0; index -= 1) {
+        const message = messages.nth(index);
+        const text = await message.innerText().catch(() => "");
+        if (!text || !containsOwnershipHash(text, expectedHashes)) continue;
+        const response = message.locator(
+          'xpath=ancestor-or-self::*[@data-virtual-list-item-key][1]'
+          + '/following-sibling::*[@data-virtual-list-item-key][1]'
+          + '//*[contains(concat(" ", normalize-space(@class), " "), " ds-assistant-message-main-content ")]',
+        );
+        if (await response.count() > 0) return response.last();
+      }
+    }
+    return undefined;
+  }
+
   private async responseTurnHasVisibleCompletionAction(
     responseLocator: Locator,
   ): Promise<boolean> {
@@ -1792,11 +1926,15 @@ export class ChatGptWebAdapter {
     baseline: AssistantTurnBaseline,
     timeoutMs: number,
     signal?: AbortSignal,
-    failedKimiResponses: readonly string[] = [],
+    failedProviderResponses: readonly string[] = [],
     submittedConversation?: ToolCreatedConversation,
     submittedOwnershipHash?: string,
   ): Promise<string> {
-    const deadline = Date.now() + timeoutMs;
+    const startedAt = Date.now();
+    const hardDeadline = startedAt + timeoutMs;
+    let deadline = this.provider === "deepseek"
+      ? Math.min(hardDeadline, startedAt + DEEPSEEK_INITIAL_RESPONSE_TIMEOUT_MS)
+      : hardDeadline;
     let responseLocator: Locator | undefined;
     let responsePage = page;
     let selectedResponseSelector = "";
@@ -1805,10 +1943,47 @@ export class ChatGptWebAdapter {
     let observerPage: Page | undefined;
     let observerVerified = false;
     let nextObserverRefreshAt = Date.now() + 30_000;
+    let kimiResponseContinuations = 0;
+    // Kimi can show the quota banner immediately after accepting the last
+    // available request while that response is still streaming. Give the
+    // accepted request time to expose its Stop control/assistant turn instead
+    // of discarding a valid translation solely because the banner is visible.
+    const kimiUsageLimitGraceDeadline = Date.now() + 15_000;
 
     try {
       while (Date.now() < deadline) {
         if (signal?.aborted) throw signal.reason ?? new Error("Đã hủy thao tác.");
+
+        if (this.provider === "kimi") {
+          const continueResponse = await firstVisible(page, KIMI_CONTINUE_RESPONSE_SELECTORS);
+          if (continueResponse) {
+            if (kimiResponseContinuations >= MAX_KIMI_RESPONSE_CONTINUATIONS) {
+              throw new Error(
+                `Kimi AI đã yêu cầu tiếp tục phản hồi quá ${MAX_KIMI_RESPONSE_CONTINUATIONS} lần.`,
+              );
+            }
+            await continueResponse.click({ timeout: 5_000 });
+            kimiResponseContinuations += 1;
+            stableChecks = 0;
+            // A continuation is a real new generation phase. Give it a fresh
+            // response window instead of letting the original deadline expire
+            // while Kimi is still extending the same answer.
+            deadline = Math.max(deadline, Date.now() + timeoutMs);
+            await delay(750, signal);
+          }
+        }
+        const kimiUsageLimitDetected = this.provider === "kimi"
+          && await kimiUsageLimitVisible(page);
+        const deepSeekUsageLimitDetected = this.provider === "deepseek"
+          && await deepSeekUsageLimitVisible(page);
+        if (
+          this.provider === "deepseek"
+          && !previousText
+          && !await firstVisible(page, this.selectors.stopButton)
+          && await firstVisible(page, DEEPSEEK_TRANSIENT_ERROR_SELECTORS)
+        ) {
+          throw new Error("DeepSeek AI đang bận hoặc gặp lỗi mạng và chưa tạo phản hồi.");
+        }
 
         if (
           this.provider === "kimi"
@@ -1839,6 +2014,18 @@ export class ChatGptWebAdapter {
 
         const candidatePages = observerPage && observerVerified ? [page, observerPage] : [page];
         for (const candidatePage of candidatePages) {
+          if (this.provider === "deepseek" && submittedOwnershipHash) {
+            const pairedResponse = await this.deepSeekResponseForSubmittedTurn(
+              candidatePage,
+              submittedOwnershipHash,
+            );
+            if (pairedResponse) {
+              responseLocator = pairedResponse;
+              selectedResponseSelector = "deepseek-owned-virtual-turn";
+              responsePage = candidatePage;
+              break;
+            }
+          }
           const candidates: Array<{ locator: Locator; selector: string; textLength: number }> = [];
           for (const selector of this.selectors.assistantMessages) {
             const locator = candidatePage.locator(selector);
@@ -1850,7 +2037,12 @@ export class ChatGptWebAdapter {
             const ordinalAdvanced = latestTurnOrdinal !== undefined
               && prior.latestTurnOrdinal !== undefined
               && latestTurnOrdinal > prior.latestTurnOrdinal;
-            if (count > prior.count || ordinalAdvanced) {
+            const latestVirtualItemKey = this.provider === "deepseek"
+              ? await this.assistantVirtualItemKey(candidate)
+              : undefined;
+            const virtualItemAdvanced = latestVirtualItemKey !== undefined
+              && latestVirtualItemKey !== prior.latestVirtualItemKey;
+            if (count > prior.count || ordinalAdvanced || virtualItemAdvanced) {
               const textLength = (await candidate.innerText().catch(() => "")).trim().length;
               candidates.push({ locator: candidate, selector, textLength });
               break;
@@ -1882,6 +2074,9 @@ export class ChatGptWebAdapter {
             );
           if (text && text === previousText && responseComplete) stableChecks += 1;
           else stableChecks = 0;
+          if (this.provider === "deepseek" && text && text !== previousText) {
+            deadline = Math.min(hardDeadline, Date.now() + DEEPSEEK_RESPONSE_IDLE_TIMEOUT_MS);
+          }
           previousText = text;
           if (text && stableChecks >= 3) {
             if (this.provider === "kimi") {
@@ -1896,19 +2091,54 @@ export class ChatGptWebAdapter {
             throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
           }
         }
+
+        if (
+          kimiUsageLimitDetected
+          && Date.now() >= kimiUsageLimitGraceDeadline
+          && !previousText
+          && !await firstVisible(page, this.selectors.stopButton)
+        ) {
+          throw new Error(
+            "Kimi AI đã hết hạn mức sử dụng hiện tại và không tạo phản hồi mới.",
+          );
+        }
+        if (
+          deepSeekUsageLimitDetected
+          && !previousText
+          && !await firstVisible(page, this.selectors.stopButton)
+        ) {
+          throw new Error("DeepSeek AI đã hết hạn mức sử dụng hiện tại và không tạo phản hồi mới.");
+        }
         await delay(500, signal);
       }
     } finally {
       await observerPage?.close().catch(() => undefined);
     }
-    const kimiDiagnostic = this.provider === "kimi"
+    const providerDiagnostic = this.provider === "kimi" || this.provider === "deepseek"
       ? await this.kimiResponseDomDiagnostic(page)
       : "";
-    const failedNetwork = [...new Set(failedKimiResponses)].slice(0, 8).join(", ");
+    const failedNetwork = [...new Set(failedProviderResponses)].slice(0, 8).join(", ");
+    const providerLabel = this.provider === "kimi"
+      ? "Kimi AI"
+      : this.provider === "deepseek"
+        ? "DeepSeek AI"
+        : "ChatGPT";
+    const diagnosticLabel = this.provider === "kimi" ? "Kimi" : "DeepSeek";
+    const diagnosticSuffix =
+      (providerDiagnostic ? ` ${diagnosticLabel} DOM: ${providerDiagnostic}` : "")
+      + (failedNetwork ? ` ${diagnosticLabel} HTTP: ${failedNetwork}` : "");
+    if (this.provider === "deepseek") {
+      const observedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+      throw new ChatGptConversationVerificationError(
+        `DeepSeek AI không phát hiện được phản hồi mới trong ${observedSeconds} giây `
+        + `(giới hạn toàn phản hồi ${Math.round(timeoutMs / 1000)} giây). `
+        + "Tool đã dừng mà không gửi lại để tránh dịch trùng."
+        + diagnosticSuffix,
+      );
+    }
     throw new Error(
-      `ChatGPT không hoàn tất phản hồi trong ${Math.round(timeoutMs / 1000)} giây.`
-      + (kimiDiagnostic ? ` Kimi DOM: ${kimiDiagnostic}` : "")
-      + (failedNetwork ? ` Kimi HTTP: ${failedNetwork}` : ""),
+      `${providerLabel} không hoàn tất phản hồi trong ${Math.round(timeoutMs / 1000)} giây.`
+      + diagnosticSuffix,
     );
   }
 

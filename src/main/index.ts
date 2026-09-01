@@ -35,7 +35,9 @@ function promptRoots(): string[] {
 }
 
 async function bootstrap(): Promise<void> {
-  app.setAppUserModelId("com.local.tooldichtruyen");
+  // Keep the default executable identity on Windows. The transfer package
+  // installs an unpacked app with a native shortcut, so a custom unregistered
+  // AppUserModelID makes Explorer fall back to a generic taskbar icon.
   Menu.setApplicationMenu(null);
   hardenDefaultSession(isDevelopment, devServerUrl);
 
@@ -58,10 +60,21 @@ async function bootstrap(): Promise<void> {
       || process.env.CHATGPT_BROWSER_EXECUTABLE?.trim()
       || undefined,
   });
+  const deepSeekAdapter = new ChatGptWebAdapter({
+    provider: "deepseek",
+    profileDirectory: path.join(dataDirectory, "deepseek-browser-profile"),
+    baseUrl: process.env.DEEPSEEK_BASE_URL?.trim() || "https://chat.deepseek.com/",
+    headless: false,
+    executablePath:
+      process.env.DEEPSEEK_BROWSER_EXECUTABLE?.trim()
+      || process.env.CHATGPT_BROWSER_EXECUTABLE?.trim()
+      || undefined,
+  });
   chatGpt = new AiProviderManager({
     initialProvider: await persistence.getAiProvider(),
     chatgpt: chatGptAdapter,
     kimi: kimiAdapter,
+    deepseek: deepSeekAdapter,
     persistProvider: (provider) => persistence!.setAiProvider(provider),
   });
   translator = new TranslationJobRunner({ chatGpt, persistence });

@@ -15,11 +15,12 @@ export interface AiProviderManagerOptions {
   initialProvider: AiProvider;
   chatgpt: ChatGptWebAdapter;
   kimi: ChatGptWebAdapter;
+  deepseek: ChatGptWebAdapter;
   persistProvider?: (provider: AiProvider) => Promise<unknown>;
 }
 
 function normalizeProvider(provider: AiProvider): AiProvider {
-  if (provider !== "chatgpt" && provider !== "kimi") {
+  if (provider !== "chatgpt" && provider !== "kimi" && provider !== "deepseek") {
     throw new TypeError("Nhà cung cấp AI không hợp lệ.");
   }
   return provider;
@@ -27,11 +28,12 @@ function normalizeProvider(provider: AiProvider): AiProvider {
 
 function providerMessage(provider: AiProvider, message?: string): string | undefined {
   if (!message || provider === "chatgpt") return message;
-  return message.replaceAll("ChatGPT Web", "Kimi AI").replaceAll("ChatGPT", "Kimi AI");
+  const label = provider === "kimi" ? "Kimi AI" : "DeepSeek AI";
+  return message.replaceAll("ChatGPT Web", label).replaceAll("ChatGPT", label);
 }
 
 /**
- * Owns two completely separate persistent browser profiles and exposes the
+ * Owns completely separate persistent browser profiles and exposes the
  * same surface the translation runner already uses. A checkpoint selects its
  * own provider before any browser operation, so resuming can never silently
  * switch an old job to the provider currently shown in the UI.
@@ -43,8 +45,12 @@ export class AiProviderManager {
 
   public constructor(private readonly options: AiProviderManagerOptions) {
     this.provider = normalizeProvider(options.initialProvider);
-    this.adapters = { chatgpt: options.chatgpt, kimi: options.kimi };
-    for (const provider of ["chatgpt", "kimi"] as const) {
+    this.adapters = {
+      chatgpt: options.chatgpt,
+      kimi: options.kimi,
+      deepseek: options.deepseek,
+    };
+    for (const provider of ["chatgpt", "kimi", "deepseek"] as const) {
       this.adapters[provider].onStatus((snapshot) => {
         if (provider !== this.provider) return;
         this.emitter.emit("status", this.decorate(provider, snapshot));
@@ -117,6 +123,7 @@ export class AiProviderManager {
     await Promise.all([
       this.adapters.chatgpt.close(options),
       this.adapters.kimi.close(options),
+      this.adapters.deepseek.close(options),
     ]);
   }
 
@@ -136,8 +143,8 @@ export class AiProviderManager {
     try {
       return await operation(this.current());
     } catch (error) {
-      if (error instanceof Error && this.provider === "kimi") {
-        error.message = providerMessage("kimi", error.message) ?? error.message;
+      if (error instanceof Error && this.provider !== "chatgpt") {
+        error.message = providerMessage(this.provider, error.message) ?? error.message;
       }
       throw error;
     }
