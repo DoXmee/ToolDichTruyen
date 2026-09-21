@@ -419,7 +419,178 @@ textarea:focus-visible {
   align-items: center;
   justify-content: space-between;
   min-height: 52px;
+  position: relative;
   border-bottom: 1px solid rgb(72 78 67 / 12%);
+}
+
+/* Saved accounts: layout B keeps the header clean and drops the list from the
+ * account button in the toolbar. */
+.account-menu {
+  position: relative;
+}
+
+.account-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  /* Above the sticky app notice, which shares the header's stacking order but
+   * comes later in the DOM and would otherwise cover this popover. */
+  z-index: 40;
+  width: min(540px, 92vw);
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.account-panel__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.account-panel__head strong { font-size: 12.5px; }
+
+.account-panel__count {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--green-dark);
+  background: var(--green-soft);
+}
+
+.account-panel__hint { color: var(--muted); font-size: 10.5px; }
+
+.account-panel__bots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 9px 12px 4px;
+}
+
+.account-panel__bots button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  color: var(--muted);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.account-panel__bots button b { color: var(--ink); }
+
+.account-panel__bots button.is-current {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: var(--line-strong);
+}
+
+.account-panel__rows {
+  display: grid;
+  gap: 4px;
+  padding: 6px 8px 2px;
+}
+
+.account-panel__empty {
+  margin: 0;
+  padding: 10px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.account-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+.account-row.is-active {
+  background: var(--green-soft);
+  border-color: var(--line-strong);
+}
+
+.account-row.is-blocked { background: var(--amber-soft); }
+
+.account-row__radio {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 50%;
+}
+
+.account-row__radio.is-on {
+  border-color: var(--green-dark);
+  box-shadow: inset 0 0 0 3px var(--green-dark);
+}
+
+.account-row__who {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.account-row__who b { font-size: 12px; }
+
+.account-row__who input {
+  width: 100%;
+  padding: 2px 6px;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.account-row__who span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-tag {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.account-tag--ok { color: var(--green-dark); background: var(--green-soft); }
+.account-tag--warn { color: var(--amber); background: var(--amber-soft); }
+.account-tag--idle {
+  color: var(--muted);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+}
+
+.account-row__actions { display: flex; gap: 4px; }
+.account-row__actions .button { padding: 4px 6px; }
+
+.account-panel__foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
 }
 
 .supported-sites-button {
@@ -439,7 +610,9 @@ textarea:focus-visible {
 .brand { position: relative; }
 .supported-sites-popover {
   position: absolute;
-  z-index: 20;
+  /* Same reason as the account panel: the sticky notice is later in the DOM and
+   * used to paint over this popover. */
+  z-index: 40;
   top: calc(100% + 8px);
   left: 42px;
   min-width: 260px;
@@ -557,6 +730,10 @@ textarea:focus-visible {
 }
 
 .ai-provider-switch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   min-width: 58px;
   padding: 3px 8px;
   color: var(--muted);
@@ -567,6 +744,19 @@ textarea:focus-visible {
   font-size: 10px;
   font-weight: 750;
   cursor: pointer;
+  white-space: nowrap;
+}
+
+.ai-provider-switch__ok {
+  display: inline-grid;
+  min-width: 13px;
+  height: 13px;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--green-dark);
+  background: var(--green-soft);
+  font-size: 9px;
+  line-height: 1;
 }
 
 .ai-provider-switch button.is-active {
@@ -1278,7 +1468,7 @@ main {
   align-items: center;
   gap: 8px;
   margin: 0;
-  padding: 4px 6px;
+  padding: 3px 5px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-soft);
@@ -1296,8 +1486,20 @@ main {
   align-items: center;
   gap: 5px;
   min-width: 0;
-  font-size: 8px;
+  /* Tahoma/Verdana keep a large x-height and hinted stems, so these labels
+   * stay legible when the workspace zoom shrinks them. The variable-weight UI
+   * font used elsewhere gets muddy at this size. */
+  font-family: Tahoma, Verdana, "Segoe UI", sans-serif;
+  font-size: 9.5px;
   font-weight: 700;
+  letter-spacing: .01em;
+}
+
+.provider-pool__options input[type='checkbox'] {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--green-dark);
 }
 
 .provider-pool:has(input:disabled) { opacity: .68; }
@@ -2596,7 +2798,37 @@ main {
   }
 }
 
+/* The chatbot pool floats on the eyebrow line of the Step 2 heading. Once the
+ * panel narrows, keep it compact enough that it never reaches the step title
+ * underneath; the labels stay at a legible size instead of shrinking to 8px. */
+@media (max-width: 1280px) {
+  .provider-pool {
+    right: 28px;
+    padding: 3px 4px;
+  }
+
+  .provider-pool__options label {
+    gap: 2px;
+    font-size: 9px;
+  }
+
+  .provider-pool__options input[type='checkbox'] {
+    width: 10px;
+    height: 10px;
+  }
+}
+
 @media (max-width: 1120px) {
+  /* The toolbar stays narrow by dropping the account word here; the saved count
+   * lives inside the panel instead of on the button. */
+  .account-menu__label { display: none; }
+  .account-menu .button { padding-inline: 8px; }
+  /* Same treatment the connect button already uses on narrow windows: keep the
+   * glyph, drop the word, so the whole toolbar fits. */
+  .theme-toggle { padding-inline: 8px; font-size: 0; }
+  .theme-toggle > span { font-size: 14px; }
+  .activity-toggle { padding-inline: 8px; font-size: 0; }
+
   .translation-grid {
     grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr);
   }
@@ -2644,6 +2876,8 @@ main {
 
   .app-header {
     align-items: flex-start;
+    flex-wrap: wrap;
+    row-gap: 8px;
     padding: 18px 0;
   }
 

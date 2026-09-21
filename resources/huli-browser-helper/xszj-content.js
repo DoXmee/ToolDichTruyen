@@ -1,3 +1,4 @@
+{
 // This classic content script is deliberately constrained to the fixed
 // XSZJ/爱下电子书 routes below. It never accepts selector/script input and never
 // touches verification UI, CAPTCHA, or Turnstile. The sole page action is the
@@ -19,35 +20,40 @@ function normalizeUrl(rawUrl) {
     || url.port
     || url.username
     || url.password
-    || (!XSZJ_HOSTS.has(host) && !IXDZS_HOSTS.has(host))
   ) {
     throw new TypeError("Unsafe XSZJ/爱下电子书 URL.");
   }
+  const labels = host.split(".");
+  const brand = labels[0] === "www" || labels[0] === "m" ? labels[1] : labels[0];
+  const isXszjHost = XSZJ_HOSTS.has(host) || brand === "xszj";
+  const isIxdzsHost = IXDZS_HOSTS.has(host) || brand === "ixdzs8";
+  if (!isXszjHost && !isIxdzsHost) throw new TypeError("Unsafe XSZJ/爱下电子书 URL.");
 
   const path = url.pathname.replace(/\/{2,}/gu, "/");
   const rawPage = url.searchParams.get("page");
   const page = typeof rawPage === "string" && /^\d+$/u.test(rawPage)
     ? Number.parseInt(rawPage, 10)
     : undefined;
-  if (XSZJ_HOSTS.has(host)) {
+  if (isXszjHost) {
     const book = /^\/b\/(\d+)\/?$/u.exec(path);
     const catalog = /^\/b\/(\d+)\/cs\/(\d+)\/?$/u.exec(path);
     const chapter = /^\/b\/(\d+)\/c\/(\d+)\/?$/u.exec(path);
-    if (book?.[1]) return `https://xszj.org/b/${book[1]}`;
-    if (catalog?.[1] && catalog[2]) return `https://xszj.org/b/${catalog[1]}/cs/${catalog[2]}`;
+    const origin = XSZJ_HOSTS.has(host) ? "https://xszj.org" : `https://${host}`;
+    if (book?.[1]) return `${origin}/b/${book[1]}`;
+    if (catalog?.[1] && catalog[2]) return `${origin}/b/${catalog[1]}/cs/${catalog[2]}`;
     if (chapter?.[1] && chapter[2]) {
       const suffix = Number.isSafeInteger(page) && page > 1 ? `?page=${page}` : "";
-      return `https://xszj.org/b/${chapter[1]}/c/${chapter[2]}${suffix}`;
+      return `${origin}/b/${chapter[1]}/c/${chapter[2]}${suffix}`;
     }
   } else {
     const book = /^\/read\/(\d+)\/?$/u.exec(path);
     const chapter = /^\/read\/(\d+)\/p(\d+)\.html\/?$/u.exec(path);
-    if (book?.[1]) return `https://ixdzs8.com/read/${book[1]}/`;
-    if (chapter?.[1] && chapter[2]) return `https://ixdzs8.com/read/${chapter[1]}/p${chapter[2]}.html`;
+    const origin = IXDZS_HOSTS.has(host) ? "https://ixdzs8.com" : `https://${host}`;
+    if (book?.[1]) return `${origin}/read/${book[1]}/`;
+    if (chapter?.[1] && chapter[2]) return `${origin}/read/${chapter[1]}/p${chapter[2]}.html`;
   }
   throw new TypeError("Unsupported XSZJ/爱下电子书 path.");
 }
-
 function isSupportedCurrentPage() {
   try {
     normalizeUrl(location.href);
@@ -153,7 +159,14 @@ function safeLinks() {
 }
 
 function isIxdzsBook(url) {
-  return /^https:\/\/ixdzs8\.com\/read\/\d+\/$/u.test(url);
+  try {
+    const parsed = new URL(url);
+    const labels = parsed.hostname.toLowerCase().split(".");
+    const brand = labels[0] === "www" || labels[0] === "m" ? labels[1] : labels[0];
+    return brand === "ixdzs8" && /^\/read\/\d+\/$/u.test(parsed.pathname);
+  } catch {
+    return false;
+  }
 }
 
 function visible(element) {
@@ -227,13 +240,16 @@ async function collect(requestedUrl) {
   return snapshot;
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "collect-snapshot") return false;
-  void collect(message.requestedUrl).then(
-    (snapshot) => sendResponse({ ok: true, snapshot }),
-    (error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "XSZJ snapshot failed." }),
-  );
-  return true;
-});
+if (isSupportedCurrentPage()) {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== "collect-snapshot") return false;
+    void collect(message.requestedUrl).then(
+      (snapshot) => sendResponse({ ok: true, snapshot }),
+      (error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "XSZJ snapshot failed." }),
+    );
+    return true;
+  });
 
-connectHeartbeat();
+  connectHeartbeat();
+}
+}

@@ -2,13 +2,14 @@ import React, { useState } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PromptSelector } from '../../src/renderer/features/translation/PromptSelector';
+import type { AiProvider } from '../../src/shared';
 
 function NumberingHarness({ suggestedChapterStart }: { suggestedChapterStart?: number }) {
   const [mode, setMode] = useState<'period' | 'modern' | 'ancient' | 'cultivation' | 'custom'>('period');
   const [outputChapterStart, setOutputChapterStart] = useState<number | undefined>();
   const [omitOutputChapterTitles, setOmitOutputChapterTitles] = useState(false);
   const [exportCombinedSourceChapters, setExportCombinedSourceChapters] = useState(false);
-  const [allowedAiProviders, setAllowedAiProviders] = useState<Array<'chatgpt' | 'kimi' | 'deepseek'>>(['chatgpt', 'kimi', 'deepseek']);
+  const [allowedAiProviders, setAllowedAiProviders] = useState<AiProvider[]>(['chatgpt', 'kimi', 'deepseek', 'gemini']);
 
   return (
     <PromptSelector
@@ -27,7 +28,8 @@ function NumberingHarness({ suggestedChapterStart }: { suggestedChapterStart?: n
         if (current.includes(provider)) {
           return current.length === 1 ? current : current.filter((candidate) => candidate !== provider);
         }
-        return ['chatgpt', 'kimi', 'deepseek'].filter((candidate) => current.includes(candidate as typeof provider) || candidate === provider) as Array<'chatgpt' | 'kimi' | 'deepseek'>;
+        return (['chatgpt', 'kimi', 'deepseek', 'gemini'] as AiProvider[])
+          .filter((candidate) => current.includes(candidate) || candidate === provider);
       })}
       onOmitOutputChapterTitlesChange={setOmitOutputChapterTitles}
       onOutputChapterStartChange={setOutputChapterStart}
@@ -38,20 +40,24 @@ function NumberingHarness({ suggestedChapterStart }: { suggestedChapterStart?: n
 afterEach(() => cleanup());
 
 describe('PromptSelector chapter output numbering', () => {
-  it('mặc định chọn cả 3 chatbot và không cho bỏ lựa chọn cuối cùng', () => {
+  it('mặc định chọn cả 4 chatbot và không cho bỏ lựa chọn cuối cùng', () => {
     render(<NumberingHarness />);
     const chatgpt = screen.getByRole('checkbox', { name: 'ChatGPT' });
     const kimi = screen.getByRole('checkbox', { name: 'Kimi AI' });
     const deepseek = screen.getByRole('checkbox', { name: 'DeepSeek AI' });
+    const gemini = screen.getByRole('checkbox', { name: 'Gemini AI' });
     expect(chatgpt).toBeChecked();
     expect(kimi).toBeChecked();
     expect(deepseek).toBeChecked();
+    expect(gemini).toBeChecked();
 
     fireEvent.click(kimi);
     fireEvent.click(deepseek);
+    fireEvent.click(gemini);
     expect(chatgpt).toBeChecked();
     expect(kimi).not.toBeChecked();
     expect(deepseek).not.toBeChecked();
+    expect(gemini).not.toBeChecked();
     expect(chatgpt).toBeDisabled();
   });
 

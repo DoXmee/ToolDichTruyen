@@ -36,7 +36,13 @@ import {
   TranslationControls,
   type TranslationState,
 } from './features/translation/TranslationControls';
-import { getStoryTool, hasStoryTool, type TranslationEvent } from './ipc';
+import {
+  getStoryTool,
+  hasStoryTool,
+  type AccountsSnapshot,
+  type StoryAccountSummary,
+  type TranslationEvent,
+} from './ipc';
 
 type ConnectionState = 'disconnected' | 'connecting' | 'login-required' | 'connected' | 'error';
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -283,10 +289,46 @@ function loadSplitConfig(value: unknown): SplitConfig {
 function aiProviderLabel(provider: AiProvider): string {
   if (provider === 'kimi') return 'Kimi AI';
   if (provider === 'deepseek') return 'DeepSeek AI';
+  if (provider === 'gemini') return 'Gemini AI';
   return 'ChatGPT';
 }
 
-const ALL_AI_PROVIDERS: AiProvider[] = ['chatgpt', 'kimi', 'deepseek'];
+const ALL_AI_PROVIDERS: AiProvider[] = ['chatgpt', 'kimi', 'deepseek', 'gemini'];
+
+function isAiProvider(value: unknown): value is AiProvider {
+  return typeof value === 'string' && (ALL_AI_PROVIDERS as string[]).includes(value);
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+  const megabytes = bytes / (1024 * 1024);
+  return megabytes >= 1024 ? `${(megabytes / 1024).toFixed(2)} GB` : `${Math.max(1, Math.round(megabytes))} MB`;
+}
+
+/** What the account row shows about the remaining quota, when we know it. */
+function accountQuotaTag(account: StoryAccountSummary): { text: string; tone: 'ok' | 'warn' | 'idle' } {
+  if (account.quotaNotice || account.quotaBlockedUntil) {
+    const until = account.quotaBlockedUntil ? new Date(account.quotaBlockedUntil) : undefined;
+    if (until && !Number.isNaN(until.getTime())) {
+      const when = until.toLocaleString('vi-VN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        day: '2-digit',
+        month: '2-digit',
+      });
+      return { text: `Hết hạn mức tới ${when}`, tone: 'warn' };
+    }
+    return { text: 'Hết hạn mức', tone: 'warn' };
+  }
+  if (account.lastVerifiedAt) return { text: 'Đang hoạt động', tone: 'ok' };
+  return account.lastUsedAt
+    ? { text: 'Đã dùng', tone: 'idle' }
+    : { text: 'Chưa kiểm tra', tone: 'idle' };
+}
+
+function accountUsable(account: StoryAccountSummary): boolean {
+  return Boolean(account.lastVerifiedAt && !account.quotaNotice && !account.quotaBlockedUntil);
+}
 
 function connectionPresentation(state: ConnectionState, provider: AiProvider) {
   const label = aiProviderLabel(provider);
@@ -302,6 +344,16 @@ function connectionPresentation(state: ConnectionState, provider: AiProvider) {
 type ManualVerificationSite = 'huliwang' | 'xszj' | 'novel543';
 
 /**
+ * Host brands that name a different, fully automated source. Their chapter
+ * paths look like the mirror patterns below (TimoTXT uses `/book/chapter.html`
+ * exactly like Huliwang), so they must never fall through to the shape-based
+ * guesses — otherwise a TimoTXT link offers the Huliwang browser helper.
+ */
+const OTHER_SOURCE_BRANDS = new Set([
+  'timotxt', 'qingrenyouxi', 'xbanxia', 'liehuozw', 'uaa002', 'uaa', 'c6k6', 'czbooks',
+]);
+
+/**
  * This is only a renderer convenience guard. The main process validates the
  * URL again before pairing with the OS-default browser. Both verified XSZJ
  * host families are kept explicit; this is not a generic browser gateway.
@@ -310,10 +362,19 @@ function manualVerificationSite(value: string): ManualVerificationSite | undefin
   try {
     const url = new URL(value);
     const hostname = url.hostname.toLowerCase();
+    const labels = hostname.split('.');
+    const brand = (labels[0] === 'www' || labels[0] === 'm' ? labels[1] : labels[0]) ?? '';
+    const path = url.pathname.replace(/\/{2,}/gu, '/');
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
-    if (['huliwang.net', 'm.huliwang.net', 'www.huliwang.net'].includes(hostname)) return 'huliwang';
-    if (['xszj.org', 'www.xszj.org', 'ixdzs8.com', 'www.ixdzs8.com'].includes(hostname)) return 'xszj';
-    if (['novel543.com', 'www.novel543.com'].includes(hostname)) return 'novel543';
+    if (OTHER_SOURCE_BRANDS.has(brand)) return undefined;
+    // Named hosts decide first so a known site is never reclassified by path.
+    if (brand === 'huliwang' || brand === 'ihuliwang') return 'huliwang';
+    if (brand === 'xszj' || brand === 'ixdzs8') return 'xszj';
+    if (brand === 'novel543') return 'novel543';
+    // Unknown mirror: fall back to the shape of the path.
+    if (/^\/(?:dir\/\d+(?:[-_/]\d+)?\.html|\d+\/?|\d+\/\d+(?:\/\d+)?\.html)\/?$/u.test(path)) return 'huliwang';
+    if (/^\/b\/\d+(?:\/(?:cs|c)\/\d+)?\/?$/u.test(path) || /^\/read\/\d+(?:\/p\d+\.html)?\/?$/u.test(path)) return 'xszj';
+    if (/^\/\d{6,20}(?:\/dir|\/\d+_\d+(?:_\d+)?\.html)?\/?$/u.test(path)) return 'novel543';
     return undefined;
   } catch {
     return undefined;
@@ -380,6 +441,12 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectionState>('disconnected');
   const [aiProvider, setAiProvider] = useState<AiProvider>('chatgpt');
   const [allowedAiProviders, setAllowedAiProviders] = useState<AiProvider[]>([...ALL_AI_PROVIDERS]);
+  const [savedAccounts, setSavedAccounts] = useState<StoryAccountSummary[]>([]);
+  const [activeAccountId, setActiveAccountId] = useState<string | undefined>(undefined);
+  const [isAccountsOpen, setIsAccountsOpen] = useState(false);
+  const [accountsBusy, setAccountsBusy] = useState(false);
+  const [editingAccountId, setEditingAccountId] = useState('');
+  const [editingLabel, setEditingLabel] = useState('');
   const [translationState, setTranslationState] = useState<TranslationState>('idle');
   const [activeJobId, setActiveJobId] = useState('');
   const [translationHistory, setTranslationHistory] = useState<TranslationJobSnapshot[]>([]);
@@ -820,7 +887,9 @@ export default function App() {
 
     setTotalSegments(job.totalSegments);
     setCompletedSegments(job.completedSegments);
-    setAiProvider(job.aiProvider);
+    // An older checkpoint may predate a provider field entirely; never let that
+    // blank out the selection the rest of the interface depends on.
+    if (isAiProvider(job.aiProvider)) setAiProvider(job.aiProvider);
     if (job.allowedAiProviders?.length) setAllowedAiProviders([...job.allowedAiProviders]);
     const nextActivityLog = job.activityLog ?? [];
     setActivityLog((current) => {
@@ -1158,7 +1227,7 @@ export default function App() {
     return subscribe((snapshot) => {
       if (
         'provider' in snapshot
-        && (snapshot.provider === 'chatgpt' || snapshot.provider === 'kimi' || snapshot.provider === 'deepseek')
+        && isAiProvider(snapshot.provider)
       ) {
         setAiProvider(snapshot.provider);
       }
@@ -1169,8 +1238,16 @@ export default function App() {
       else if (status === 'error') setConnection('error');
       else if (status === 'closed') setConnection('disconnected');
       if (snapshot.message) setAppNotice(snapshot.message);
+      // A login that finished in the browser is recorded by the main process;
+      // pick it up so the account list and the account line stay current.
+      void refreshAccounts();
     });
   }, [appAvailable]);
+
+  useEffect(() => {
+    if (!appAvailable) return;
+    void refreshAccounts();
+  }, [appAvailable, aiProvider]);
 
   useEffect(() => {
     if (!appAvailable) return;
@@ -1186,7 +1263,18 @@ export default function App() {
         if (snapshot.status === 'ready') setConnection('connected');
         else if (snapshot.status === 'login-required') setConnection('login-required');
         else if (snapshot.status === 'error') setConnection('error');
-        else setConnection('disconnected');
+        else {
+          const accounts = await api.listAccounts?.().catch(() => undefined);
+          if (!alive) return;
+          if (accounts) {
+            applyAccounts(accounts);
+            const active = accounts.accounts.find((account) => account.id === accounts.activeAccountId)
+              ?? accounts.accounts.find((account) => account.provider === accounts.activeProvider && accountUsable(account));
+            setConnection(active && accountUsable(active) ? 'connected' : 'disconnected');
+          } else {
+            setConnection('disconnected');
+          }
+        }
       } catch {
         // Older preload builds retain the ChatGPT-only compatibility path.
       }
@@ -1217,6 +1305,28 @@ export default function App() {
       const status = result.status.toLowerCase();
       if (status.includes('connected') || status.includes('ready')) {
         setConnection('connected');
+        // The tool reads whichever account is signed in and stores it, so a
+        // login the user just performed becomes a saved account.
+        if (api.syncCurrentAccount) {
+          const saved = await api.syncCurrentAccount().catch(() => undefined);
+          if (saved) {
+            applyAccounts(saved);
+            const account = saved.account;
+            if (account) {
+              setAppNotice(
+                account.email
+                  ? `Đã đọc và lưu tài khoản ${aiProviderLabel(aiProvider)}: ${account.label} (${account.email})`
+                  : account.plan
+                    ? `Đã đọc và lưu tài khoản ${aiProviderLabel(aiProvider)}: ${account.label} · gói ${account.plan}`
+                    : `Đã đọc và lưu tài khoản ${aiProviderLabel(aiProvider)}: ${account.label}`,
+              );
+            }
+          } else {
+            await refreshAccounts();
+          }
+        } else {
+          await refreshAccounts();
+        }
       } else {
         setConnection('login-required');
         setAppNotice(result.message || `Hãy hoàn tất đăng nhập trong cửa sổ ${aiProviderLabel(aiProvider)}, sau đó bấm “Kiểm tra kết nối”.`);
@@ -1246,13 +1356,11 @@ export default function App() {
       if (!api.setAiProvider) throw new Error('Bản ứng dụng này chưa hỗ trợ đổi AI.');
       await api.setAiProvider(provider);
       setAiProvider(provider);
-      const snapshot = api.connectAi ? await api.connectAi() : await api.connectChatGPT();
-      const status = snapshot.status.toLowerCase();
-      if (status.includes('ready') || status.includes('connected')) setConnection('connected');
-      else if (status === 'login-required') setConnection('login-required');
-      else if (status === 'error') setConnection('error');
-      else setConnection('connecting');
-      if (snapshot.message) setAppNotice(snapshot.message);
+      // Switching bots only changes the selection. The browser opens when the
+      // user adds an account or when a translation actually starts.
+      setConnection('disconnected');
+      // Load this bot's saved accounts before anything can start.
+      await refreshAccounts();
     } catch (error) {
       setConnection('error');
       setAppNotice(error instanceof Error ? error.message : 'Không thể đổi AI.');
@@ -1270,8 +1378,123 @@ export default function App() {
     if (!next.includes(aiProvider)) void changeAiProvider(next[0]!);
   };
 
+  const applyAccounts = (snapshot: AccountsSnapshot) => {
+    setSavedAccounts(snapshot.accounts);
+    setActiveAccountId(snapshot.activeAccountId);
+    const active = snapshot.accounts.find((account) => account.id === snapshot.activeAccountId)
+      ?? snapshot.accounts.find((account) => account.provider === snapshot.activeProvider && accountUsable(account));
+    if (
+      active
+      && active.provider === snapshot.activeProvider
+      && accountUsable(active)
+      && connection !== 'connecting'
+      && translationState !== 'running'
+      && translationState !== 'cancelling'
+    ) {
+      setConnection('connected');
+    }
+  };
+
+  const refreshAccounts = async () => {
+    const api = getStoryTool();
+    if (!api.listAccounts) return;
+    await api.listAccounts().then(applyAccounts).catch(() => undefined);
+  };
+
+  const chooseAccount = async (id: string) => {
+    const api = getStoryTool();
+    if (!api.selectAccount) return;
+    setAccountsBusy(true);
+    try {
+      applyAccounts(await api.selectAccount(id));
+      const account = savedAccounts.find((candidate) => candidate.id === id);
+      setAppNotice(`Tài khoản "${account?.label ?? ''}" sẽ được dùng cho lượt dịch tiếp theo.`);
+    } catch (error) {
+      setAppNotice(error instanceof Error ? error.message : 'Không chọn được tài khoản.');
+    } finally {
+      setAccountsBusy(false);
+    }
+  };
+
+  const addAccount = async () => {
+    const api = getStoryTool();
+    if (!api.addAccount) return;
+    setAccountsBusy(true);
+    try {
+      applyAccounts(await api.addAccount({ provider: aiProvider }));
+      setAppNotice(
+        `Đã mở cửa sổ ${aiProviderLabel(aiProvider)}. Hãy đăng nhập tài khoản bạn muốn thêm, `
+        + 'rồi đóng cửa sổ đó — tool tự đọc và lưu tài khoản vào danh sách.',
+      );
+    } catch (error) {
+      setAppNotice(error instanceof Error ? error.message : 'Không thêm được tài khoản.');
+    } finally {
+      setAccountsBusy(false);
+    }
+  };
+
+  const removeSavedAccount = async (id: string) => {
+    const api = getStoryTool();
+    if (!api.removeAccount) return;
+    setAccountsBusy(true);
+    try {
+      applyAccounts(await api.removeAccount(id));
+      setAppNotice('Đã xoá tài khoản khỏi danh sách. Dùng "Dọn rác" để giải phóng dung lượng của nó.');
+    } catch (error) {
+      setAppNotice(error instanceof Error ? error.message : 'Không xoá được tài khoản.');
+    } finally {
+      setAccountsBusy(false);
+    }
+  };
+
+  const cleanupJunk = async () => {
+    const api = getStoryTool();
+    if (!api.cleanupJunk) return;
+    setAccountsBusy(true);
+    try {
+      const result = await api.cleanupJunk();
+      setAppNotice(`Đã dọn ${formatBytes(result.freedBytes)} cache. Tài khoản và phiên đăng nhập được giữ nguyên.`);
+    } catch (error) {
+      setAppNotice(error instanceof Error ? error.message : 'Không dọn được cache.');
+    } finally {
+      setAccountsBusy(false);
+    }
+  };
+
+  const saveAccountLabel = async (id: string) => {
+    const api = getStoryTool();
+    const label = editingLabel.trim();
+    setEditingAccountId('');
+    if (!api.renameAccount || !label) return;
+    setAccountsBusy(true);
+    try {
+      applyAccounts(await api.renameAccount(id, label));
+      setAppNotice(`Đã đặt tên tài khoản thành "${label}".`);
+    } catch (error) {
+      setAppNotice(error instanceof Error ? error.message : 'Không đổi được tên tài khoản.');
+    } finally {
+      setAccountsBusy(false);
+    }
+  };
+
   const beginTranslation = async (sourceText: string, automaticExportDirectory = '') => {
     if (!sourceText.trim() || (promptMode === 'custom' && !customPrompt.trim())) return;
+    // Nothing can be translated without a saved login for the selected bot. Ask
+    // the main process rather than trusting the list rendered here: an account
+    // removed a moment ago must not be used. The click stays allowed and instead
+    // explains what to do and opens the panel.
+    const latestAccounts = await getStoryTool().listAccounts?.().catch(() => undefined);
+    if (latestAccounts) applyAccounts(latestAccounts);
+    const knownAccounts = latestAccounts?.accounts ?? savedAccounts;
+    if (!knownAccounts.some((account) => account.provider === aiProvider)) {
+      setAppNotice(
+        `Chưa có tài khoản nào cho ${aiProviderLabel(aiProvider)}. `
+        + 'Hãy bấm "Thêm tài khoản" để đăng nhập trước khi bắt đầu dịch.',
+      );
+      setIsAccountsOpen(true);
+      void refreshAccounts();
+      return;
+    }
     activeJobRef.current = '';
     setActiveJobId('');
     setTranslationState('running');
@@ -1355,7 +1578,9 @@ export default function App() {
             ? 1_200_000
             : aiProvider === 'kimi'
               ? 600_000
-              : 480_000,
+              : aiProvider === 'gemini'
+                ? 1_200_000
+                : 480_000,
         },
         ...(automaticExportDirectory && nextExportRange
           ? {
@@ -2240,6 +2465,9 @@ export default function App() {
 
   const connectionInfo = connectionPresentation(connection, aiProvider);
   const providerLabel = aiProviderLabel(aiProvider);
+  const providerAccounts = savedAccounts.filter((account) => account.provider === aiProvider);
+  const activeAccountRow = savedAccounts.find((account) => account.id === activeAccountId)
+    ?? providerAccounts[0];
   const outputHanCount = useMemo(() => (output.match(/\p{Script=Han}/gu) ?? []).length, [output]);
   const outputWords = useMemo(() => analyzeTextLanguage(output, 'vi').totalWords, [output]);
   const canStart = Boolean(source.trim()) && (promptMode !== 'custom' || Boolean(customPrompt.trim()));
@@ -2262,7 +2490,16 @@ export default function App() {
             <h1>Dịch Truyện</h1>
             <p>Trung <span>→</span> Việt</p>
           </div>
-          <button className="supported-sites-button" type="button" onClick={() => setIsSupportedSitesOpen((open) => !open)} aria-expanded={isSupportedSitesOpen}>
+          <button
+            aria-expanded={isSupportedSitesOpen}
+            className="supported-sites-button"
+            onClick={() => {
+              setIsSupportedSitesOpen((open) => !open);
+              // Only one header popover at a time; they share the same corner.
+              setIsAccountsOpen(false);
+            }}
+            type="button"
+          >
             Website hỗ trợ
           </button>
           {isSupportedSitesOpen && (
@@ -2279,9 +2516,10 @@ export default function App() {
             <div className="connection-box__status-row">
               <StatusPill tone={connectionInfo.tone} pulse={connection === 'connecting'}>{connectionInfo.label}</StatusPill>
               <div className="ai-provider-switch" aria-label="AI dùng để dịch" role="radiogroup">
-                {(['chatgpt', 'kimi', 'deepseek'] as const).map((provider) => {
+                {ALL_AI_PROVIDERS.map((provider) => {
                   const outsideFixedPool = !allowedAiProviders.includes(provider);
                   const canUseOutsidePoolForFailure = translationState === 'error';
+                  const usableAccounts = savedAccounts.filter((account) => account.provider === provider && accountUsable(account)).length;
                   const disabled = !appAvailable
                     || ['running', 'cancelling'].includes(translationState)
                     || (translationState === 'paused' && outsideFixedPool)
@@ -2297,15 +2535,20 @@ export default function App() {
                     type="button"
                   >
                     {aiProviderLabel(provider)}
+                    {usableAccounts > 0 && <span className="ai-provider-switch__ok" aria-label={`${usableAccounts} tài khoản hoạt động`}>{usableAccounts}</span>}
                   </button>
                   );
                 })}
               </div>
             </div>
-            <small>Phiên đăng nhập được lưu cục bộ trên máy này.</small>
+            <small>
+              {activeAccountRow
+                ? `Tài khoản: ${activeAccountRow.label}${activeAccountRow.email ? ` · ${activeAccountRow.email}` : ''}`
+                : 'Phiên đăng nhập được lưu cục bộ trên máy này.'}
+            </small>
           </div>
           <button
-            className="button button--secondary"
+            className="button button--secondary activity-toggle"
             onClick={() => setIsActivityLogOpen((open) => !open)}
             type="button"
           >
@@ -2322,14 +2565,142 @@ export default function App() {
             <span aria-hidden="true">{colorTheme === 'dark' ? '☀' : '☾'}</span>
             {colorTheme === 'dark' ? 'Sáng' : 'Tối'}
           </button>
-          <button className="button button--secondary" disabled={!appAvailable || connection === 'connecting'} onClick={connectAi} type="button">
-            <Icon name="link" />
-            {connection === 'connected' || connection === 'login-required'
-              ? 'Kiểm tra kết nối'
-              : connection === 'connecting'
-                ? 'Đang mở…'
-                : 'Kết nối'}
-          </button>
+          <div className="account-menu">
+            <button
+              aria-expanded={isAccountsOpen}
+              className="button button--secondary"
+              onClick={() => {
+                setIsAccountsOpen((open) => !open);
+                // Only one header popover at a time; they share the same corner.
+                setIsSupportedSitesOpen(false);
+                void refreshAccounts();
+              }}
+              type="button"
+            >
+              <Icon name="book" />
+              <span className="account-menu__label">Tài khoản</span>
+            </button>
+            {isAccountsOpen && (
+              <div className="account-panel" role="dialog" aria-label="Tài khoản đã lưu">
+                <div className="account-panel__head">
+                  <strong>Tài khoản {providerLabel}</strong>
+                  <span className="account-panel__count">{providerAccounts.length} tài khoản</span>
+                  <span className="account-panel__hint">
+                    Xoay vòng theo thứ tự, không quay lại tài khoản đã lỗi
+                  </span>
+                </div>
+                <div className="account-panel__bots">
+                  {ALL_AI_PROVIDERS.map((provider) => (
+                    <button
+                      aria-current={provider === aiProvider}
+                      className={provider === aiProvider ? 'is-current' : ''}
+                      key={provider}
+                      onClick={() => void changeAiProvider(provider)}
+                      type="button"
+                    >
+                      {aiProviderLabel(provider)}
+                      <b>{savedAccounts.filter((account) => account.provider === provider && accountUsable(account)).length}/{savedAccounts.filter((account) => account.provider === provider).length}</b>
+                    </button>
+                  ))}
+                </div>
+                <div className="account-panel__rows">
+                  {providerAccounts.length === 0 && (
+                    <p className="account-panel__empty">
+                      Chưa có tài khoản nào. Bấm “Thêm tài khoản”, đăng nhập trong cửa sổ vừa mở,
+                      rồi đóng cửa sổ đó — tool tự đọc và lưu tài khoản.
+                    </p>
+                  )}
+                  {providerAccounts.map((account) => {
+                    const tag = accountQuotaTag(account);
+                    const detail = [account.email, account.plan].filter(Boolean).join(' · ');
+                    return (
+                      <div
+                        className={`account-row${account.id === activeAccountId ? ' is-active' : ''}${tag.tone === 'warn' ? ' is-blocked' : ''}`}
+                        key={account.id}
+                      >
+                        <span className={`account-row__radio${account.id === activeAccountId ? ' is-on' : ''}`} aria-hidden="true" />
+                        <span className="account-row__who">
+                          {editingAccountId === account.id ? (
+                            <input
+                              aria-label={`Đặt tên cho tài khoản ${account.label}`}
+                              autoFocus
+                              onChange={(event) => setEditingLabel(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') void saveAccountLabel(account.id);
+                                if (event.key === 'Escape') setEditingAccountId('');
+                              }}
+                              value={editingLabel}
+                            />
+                          ) : (
+                            <>
+                              <b>{account.label}</b>
+                              <span>
+                                {detail || (account.id === activeAccountId ? 'đang dùng' : 'đã lưu trên máy')}
+                              </span>
+                            </>
+                          )}
+                        </span>
+                        <span className={`account-tag account-tag--${tag.tone}`}>{tag.text}</span>
+                        <span className="account-row__actions">
+                          <button
+                            aria-label={`Đặt tên cho tài khoản ${account.label}`}
+                            className="button button--ghost"
+                            disabled={accountsBusy}
+                            onClick={() => {
+                              setEditingAccountId(account.id);
+                              setEditingLabel(account.label);
+                            }}
+                            type="button"
+                          >
+                            <Icon name="edit" />
+                          </button>
+                          <button
+                            aria-label={`Chọn tài khoản ${account.label}`}
+                            className="button button--ghost"
+                            disabled={accountsBusy || account.id === activeAccountId}
+                            onClick={() => void chooseAccount(account.id)}
+                            type="button"
+                          >
+                            <Icon name="check" />
+                          </button>
+                          <button
+                            aria-label={`Xoá tài khoản ${account.label}`}
+                            className="button button--ghost"
+                            disabled={accountsBusy}
+                            onClick={() => void removeSavedAccount(account.id)}
+                            type="button"
+                          >
+                            <Icon name="trash" />
+                          </button>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="account-panel__foot">
+                  <button className="button button--primary" disabled={accountsBusy} onClick={() => void addAccount()} type="button">
+                    <Icon name="sparkles" /> Thêm tài khoản
+                  </button>
+                  <button
+                    className="button button--secondary"
+                    disabled={accountsBusy || connection === 'connecting'}
+                    onClick={() => void connectAi()}
+                    type="button"
+                  >
+                    <Icon name="link" /> Kiểm tra kết nối
+                  </button>
+                  <button
+                    className="button button--secondary"
+                    disabled={accountsBusy || translationState === 'running' || translationState === 'cancelling'}
+                    onClick={() => void cleanupJunk()}
+                    type="button"
+                  >
+                    <Icon name="refresh" /> Dọn rác
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 

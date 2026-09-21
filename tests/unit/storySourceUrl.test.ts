@@ -49,6 +49,39 @@ describe("story source URL rules", () => {
     expect(parsed.normalizedUrl).toBe("https://m.c6k6.com/124/124560/");
   });
 
+  it.each([
+    ["https://www.ihuliwang.com/dir/1703891.html", "huliwang", "https://m.ihuliwang.com/dir/1703891.html"],
+    ["https://m.huliwang.ai/1703891/36/3.html", "huliwang", "https://m.huliwang.ai/1703891/36/3.html"],
+    ["https://www.timotxt.net/0108567756/332.html", "timotxt", "https://www.timotxt.net/0108567756/332.html"],
+    ["https://qingrenyouxi.vn/book/115013/33160353.html", "qingrenyouxi", "https://www.qingrenyouxi.vn/book/115013/33160353.html"],
+    ["https://www.xbanxia.xyz/books/143300.html", "xbanxia", "https://www.xbanxia.xyz/books/143300.html"],
+    ["https://xszj.com/b/485734/c/856451?page=2", "xszj", "https://xszj.com/b/485734/c/856451?page=2"],
+    ["https://ixdzs8.ai/read/646225/p1.html", "xszj", "https://ixdzs8.ai/read/646225/p1.html"],
+    ["https://m.liehuozw.net/74/74628/12_2.html", "liehuozw", "https://m.liehuozw.net/74/74628/12_2.html"],
+    ["https://www.uaa002.xyz/novel/read/11306159/8", "uaa002", "https://m.uaa002.xyz/novel/read/11306159/8"],
+    ["https://www.c6k6.ai/book/138252/8.html", "c6k6", "https://m.c6k6.ai/138/138252/8.html"],
+    ["https://czbooks.com/n/pmeef4/8", "czbooks", "https://czbooks.com/n/pmeef4/8"],
+    ["https://novel543.net/1013669909/8096_1_2.html", "novel543", "https://www.novel543.net/1013669909/8096_1_2.html"],
+  ] as const)("accepts changed domain for unchanged %s structure", (url, site, normalizedUrl) => {
+    expect(parseStoryUrl(url)).toMatchObject({ site, normalizedUrl });
+  });
+
+  it.each([
+    ["https://anything.example/dir/1703891.html", "huliwang", "https://m.anything.example/dir/1703891.html"],
+    ["https://reader.example/book12/dir", "timotxt", "https://www.reader.example/book12/dir"],
+    ["https://source.example/book/115013/33160353.html", "qingrenyouxi", "https://www.source.example/book/115013/33160353.html"],
+    ["https://mirror.example/books/143300/28251886.html", "xbanxia", "https://www.mirror.example/books/143300/28251886.html"],
+    ["https://mirror.example/b/485734/c/856451?page=2", "xszj", "https://mirror.example/b/485734/c/856451?page=2"],
+    ["https://archive.example/read/646225/p1.html", "xszj", "https://archive.example/read/646225/p1.html"],
+    ["https://novel.example/74/74628/12_2.html", "liehuozw", "https://m.novel.example/74/74628/12_2.html"],
+    ["https://app.example/novel/read/11306159/8", "uaa002", "https://m.app.example/novel/read/11306159/8"],
+    ["https://books.example/book/138252/8.html", "c6k6", "https://m.books.example/138/138252/8.html"],
+    ["https://reader.example/n/pmeef4/8", "czbooks", "https://reader.example/n/pmeef4/8"],
+    ["https://text.example/1013669909/8096_1_2.html", "novel543", "https://www.text.example/1013669909/8096_1_2.html"],
+  ] as const)("infers %s from unchanged path structure on arbitrary host", (url, site, normalizedUrl) => {
+    expect(parseStoryUrl(url)).toMatchObject({ site, normalizedUrl });
+  });
+
   it("normalizes Novel543 chapters and keeps its verified same-chapter page suffix", () => {
     const parsed = parseStoryUrl("http://novel543.com/1013669909/8096_1_2.html?from=history#chapter");
     expect(parsed).toMatchObject({
@@ -64,14 +97,12 @@ describe("story source URL rules", () => {
   });
 
   it.each([
-    "https://evil.timotxt.com/0108567756/dir",
     "https://www.timotxt.com.evil.test/0108567756/dir",
     "https://user:pass@www.timotxt.com/0108567756/dir",
     "file:///1703891/",
     "https://m.huliwang.net/1703891/36/3.html.evil",
     "https://www.qingrenyouxi.com/list/1.html",
     "https://www.timotxt.com./0108567756/dir",
-    "https://evil.xbanxia.cc/books/143300.html",
     "https://www.xbanxia.cc.evil.test/books/143300.html",
     "https://user:pass@www.xbanxia.cc/books/143300.html",
     "https://www.xbanxia.cc:444/books/143300.html",
@@ -82,7 +113,6 @@ describe("story source URL rules", () => {
     "https://www.xbanxia.cc/books/143300/28251886/extra.html",
     "https://www.xbanxia.cc/books/143300%2F28251886.html",
     "https://www.timotxt.com./0108567756/dir",
-    "https://evil.xbanxia.cc/books/143300.html",
     "https://www.xbanxia.cc.evil.test/books/143300.html",
     "https://user:pass@www.xbanxia.cc/books/143300.html",
     "https://www.xbanxia.cc:444/books/143300.html",
@@ -92,7 +122,6 @@ describe("story source URL rules", () => {
     "https://www.xbanxia.cc/books/143300/not-a-chapter.html",
     "https://www.xbanxia.cc/books/143300/28251886/extra.html",
     "https://www.xbanxia.cc/books/143300%2F28251886.html",
-    "https://evil.novel543.com/1013669909/",
     "https://www.novel543.com.evil.test/1013669909/",
     "https://user:pass@www.novel543.com/1013669909/",
     "https://www.novel543.com:444/1013669909/",

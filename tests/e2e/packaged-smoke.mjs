@@ -34,13 +34,15 @@ try {
 
   const result = await page.evaluate(async () => {
     if (!window.storyTool) throw new Error('Thiếu preload bridge trong bản đóng gói.')
+    const methods = Object.keys(window.storyTool)
     const [version, prompts] = await Promise.all([
       window.storyTool.getVersion(),
       window.storyTool.loadPrompts(),
     ])
     return {
       version,
-      methodCount: Object.keys(window.storyTool).length,
+      methods,
+      methodCount: methods.length,
       periodPromptLength: prompts.period.length,
       modernPromptLength: prompts.modern.length,
       ancientPromptLength: prompts.ancient.length,
@@ -59,8 +61,26 @@ try {
   if (result.version !== expectedVersion) {
     throw new Error(`Sai phiên bản đóng gói: cần ${expectedVersion}, nhận ${result.version}.`)
   }
-  if (result.methodCount !== 47) {
-    throw new Error(`Sai số phương thức preload: cần 47, nhận ${result.methodCount}.`)
+  const requiredMethods = [
+    'loadPrompts',
+    'getVersion',
+    'connectAi',
+    'getAiProvider',
+    'setAiProvider',
+    'listAccounts',
+    'addAccount',
+    'syncCurrentAccount',
+    'startTranslation',
+    'pauseTranslation',
+    'resumeTranslation',
+    'exportChapters',
+    'analyzeStoryUrl',
+    'fetchStoryChapters',
+    'revealHuliBrowserHelper',
+  ]
+  const missing = requiredMethods.filter((method) => !result.methods.includes(method))
+  if (missing.length) {
+    throw new Error(`Thiếu phương thức preload trong bản đóng gói: ${missing.join(', ')}.`)
   }
   if (pageErrors.length) throw new Error(`Renderer lỗi: ${pageErrors.join(' | ')}`)
 

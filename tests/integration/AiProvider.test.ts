@@ -1,7 +1,11 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { AiProviderManager } from '../../src/main/ai/AiProviderManager'
+import { AccountRegistry } from '../../src/main/accounts/AccountRegistry'
 import type { ChatGptWebAdapter, ChatGptStatusSnapshot } from '../../src/main/chatgpt/ChatGptWebAdapter'
-import { DEEPSEEK_SELECTORS, KIMI_SELECTORS } from '../../src/main/chatgpt/selectors'
+import { DEEPSEEK_SELECTORS, GEMINI_SELECTORS, KIMI_SELECTORS } from '../../src/main/chatgpt/selectors'
 import { TranslationJobRunner, type TranslationEvent } from '../../src/main/translation/TranslationJobRunner'
 
 function fakeAdapter(initial: ChatGptStatusSnapshot = { status: 'closed' }) {
@@ -9,12 +13,18 @@ function fakeAdapter(initial: ChatGptStatusSnapshot = { status: 'closed' }) {
   const listeners = new Set<(value: ChatGptStatusSnapshot) => void>()
   const adapter = {
     status: vi.fn(() => ({ ...snapshot })),
+    setManualLoginClosedHandler: vi.fn(),
     onStatus: vi.fn((listener: (value: ChatGptStatusSnapshot) => void) => {
       listeners.add(listener)
       return () => listeners.delete(listener)
     }),
     openLogin: vi.fn(async () => ({ ...snapshot })),
+    openManualLogin: vi.fn(async () => ({ ...snapshot })),
     refreshStatus: vi.fn(async () => ({ ...snapshot })),
+    currentProfileDirectory: vi.fn(() => 'fake-profile'),
+    useProfileDirectory: vi.fn(async (_directory: string, _options?: { authuser?: number }) => undefined),
+    accountHint: vi.fn(() => ({ profileDirectory: 'fake-profile' })),
+    readAccountIdentity: vi.fn(async () => undefined as { label: string; email?: string; plan?: string } | undefined),
     ensureReady: vi.fn(async () => undefined),
     startNewConversation: vi.fn(async () => undefined),
     sendAndWait: vi.fn(async () => 'Bản dịch hoàn chỉnh.'),
@@ -46,16 +56,167 @@ function waitForEvent(
 }
 
 describe('AI provider integration', () => {
+  it('marks the active account verified when a provider connection becomes ready', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'ai-provider-accounts-'))
+    try {
+      const chatgpt = fakeAdapter({ status: 'closed' })
+      const kimi = fakeAdapter({ status: 'closed' })
+      const deepseek = fakeAdapter({ status: 'ready' })
+      const gemini = fakeAdapter({ status: 'closed' })
+      let deepseekProfile = path.join(directory, 'deepseek-browser-profile')
+      deepseek.currentProfileDirectory.mockImplementation(() => deepseekProfile)
+      deepseek.useProfileDirectory.mockImplementation(async (directory) => { deepseekProfile = directory })
+      deepseek.accountHint.mockImplementation(() => ({ profileDirectory: deepseekProfile }))
+      deepseek.readAccountIdentity.mockResolvedValue({ label: 'Thành Đông' })
+      const accounts = new AccountRegistry(directory)
+      const manager = new AiProviderManager({
+        initialProvider: 'deepseek',
+        chatgpt: chatgpt as unknown as ChatGptWebAdapter,
+        kimi: kimi as unknown as ChatGptWebAdapter,
+        deepseek: deepseek as unknown as ChatGptWebAdapter,
+        gemini: gemini as unknown as ChatGptWebAdapter,
+        accounts,
+        accountProfileRoot: path.join(directory, 'accounts'),
+      })
+      await manager.addAccount('deepseek')
+
+      await expect(manager.openLogin()).resolves.toMatchObject({ provider: 'deepseek', status: 'ready' })
+
+      const [account] = await accounts.listFor('deepseek')
+      expect(account).toMatchObject({ label: 'Thành Đông' })
+      expect(Date.parse(account!.lastVerifiedAt ?? '')).not.toBeNaN()
+      expect(manager.activeAccountId('deepseek')).toBe(account!.id)
+    } finally {
+      await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+    }
+  })
+
+  it('does not create a placeholder account before login verification succeeds', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'ai-provider-accounts-'))
+    try {
+      const chatgpt = fakeAdapter({ status: 'closed' })
+      const kimi = fakeAdapter({ status: 'closed' })
+      const deepseek = fakeAdapter({ status: 'ready' })
+      const gemini = fakeAdapter({ status: 'closed' })
+      let deepseekProfile = path.join(directory, 'deepseek-browser-profile')
+      deepseek.currentProfileDirectory.mockImplementation(() => deepseekProfile)
+      deepseek.useProfileDirectory.mockImplementation(async (directory) => { deepseekProfile = directory })
+      deepseek.accountHint.mockImplementation(() => ({ profileDirectory: deepseekProfile }))
+      deepseek.readAccountIdentity.mockResolvedValue(undefined)
+      const accounts = new AccountRegistry(directory)
+      const manager = new AiProviderManager({
+        initialProvider: 'deepseek',
+        chatgpt: chatgpt as unknown as ChatGptWebAdapter,
+        kimi: kimi as unknown as ChatGptWebAdapter,
+        deepseek: deepseek as unknown as ChatGptWebAdapter,
+        gemini: gemini as unknown as ChatGptWebAdapter,
+        accounts,
+        accountProfileRoot: path.join(directory, 'accounts'),
+      })
+
+      await expect(manager.addAccount('deepseek')).resolves.toBeUndefined()
+      expect(await accounts.listFor('deepseek')).toEqual([])
+
+      await expect(manager.openLogin()).resolves.toMatchObject({ provider: 'deepseek', status: 'ready' })
+      expect(await accounts.listFor('deepseek')).toEqual([])
+      expect(manager.activeAccountId('deepseek')).toBeUndefined()
+    } finally {
+      await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+    }
+  })
+
+  it('prepares a separate Gemini profile when adding another Gemini account', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'ai-provider-accounts-'))
+    try {
+      const chatgpt = fakeAdapter({ status: 'closed' })
+      const kimi = fakeAdapter({ status: 'closed' })
+      const deepseek = fakeAdapter({ status: 'closed' })
+      const gemini = fakeAdapter({ status: 'ready' })
+      let geminiProfile = path.join(directory, 'gemini-browser-profile')
+      gemini.currentProfileDirectory.mockImplementation(() => geminiProfile)
+      gemini.useProfileDirectory.mockImplementation(async (directory) => { geminiProfile = directory })
+      gemini.accountHint.mockImplementation(() => ({ profileDirectory: geminiProfile }))
+      gemini.readAccountIdentity.mockResolvedValue({ label: 'Đông Thành', email: 'dong@example.com' })
+      const accounts = new AccountRegistry(directory)
+      const manager = new AiProviderManager({
+        initialProvider: 'gemini',
+        chatgpt: chatgpt as unknown as ChatGptWebAdapter,
+        kimi: kimi as unknown as ChatGptWebAdapter,
+        deepseek: deepseek as unknown as ChatGptWebAdapter,
+        gemini: gemini as unknown as ChatGptWebAdapter,
+        accounts,
+        accountProfileRoot: path.join(directory, 'accounts'),
+      })
+
+      await expect(manager.addAccount('gemini')).resolves.toBeUndefined()
+
+      expect(gemini.useProfileDirectory).toHaveBeenCalledWith(expect.stringContaining(path.join('accounts', 'gemini-')))
+      expect(geminiProfile).not.toBe(path.join(directory, 'gemini-browser-profile'))
+      expect(await accounts.listFor('gemini')).toEqual([])
+
+      await expect(manager.openLogin()).resolves.toMatchObject({ provider: 'gemini', status: 'ready' })
+      const [account] = await accounts.listFor('gemini')
+      expect(account).toMatchObject({
+        label: 'Đông Thành',
+        email: 'dong@example.com',
+        profileDirectory: geminiProfile,
+      })
+      expect(Date.parse(account!.lastVerifiedAt ?? '')).not.toBeNaN()
+    } finally {
+      await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+    }
+  })
+
+  it('does not preserve an internal DeepSeek storage label when verification cannot read a name', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'ai-provider-accounts-'))
+    try {
+      const chatgpt = fakeAdapter({ status: 'closed' })
+      const kimi = fakeAdapter({ status: 'closed' })
+      const deepseek = fakeAdapter({ status: 'ready' })
+      const gemini = fakeAdapter({ status: 'closed' })
+      const profileDirectory = path.join(directory, 'deepseek-browser-profile')
+      deepseek.currentProfileDirectory.mockImplementation(() => profileDirectory)
+      deepseek.accountHint.mockImplementation(() => ({ profileDirectory }))
+      deepseek.readAccountIdentity.mockResolvedValue(undefined)
+      const accounts = new AccountRegistry(directory)
+      const stale = await accounts.register({
+        provider: 'deepseek',
+        label: '__appKit_@ /chat_ca50e4ac-e7cc-4e7b-a083-2c780a3b3793_ Storage',
+        profileDirectory,
+      })
+      await accounts.markVerified(stale.id)
+      const manager = new AiProviderManager({
+        initialProvider: 'deepseek',
+        chatgpt: chatgpt as unknown as ChatGptWebAdapter,
+        kimi: kimi as unknown as ChatGptWebAdapter,
+        deepseek: deepseek as unknown as ChatGptWebAdapter,
+        gemini: gemini as unknown as ChatGptWebAdapter,
+        accounts,
+        accountProfileRoot: path.join(directory, 'accounts'),
+      })
+
+      await expect(manager.openLogin()).resolves.toMatchObject({ provider: 'deepseek', status: 'ready' })
+
+      const [account] = await accounts.listFor('deepseek')
+      expect(account).toMatchObject({ id: stale.id, label: 'DeepSeek AI' })
+      expect(Date.parse(account!.lastVerifiedAt ?? '')).not.toBeNaN()
+    } finally {
+      await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+    }
+  })
+
   it('keeps ChatGPT and Kimi sessions separate and dispatches only to the selected provider', async () => {
     const chatgpt = fakeAdapter({ status: 'ready' })
     const kimi = fakeAdapter({ status: 'closed' })
     const deepseek = fakeAdapter({ status: 'closed' })
+    const gemini = fakeAdapter({ status: 'closed' })
     const persisted: string[] = []
     const manager = new AiProviderManager({
       initialProvider: 'chatgpt',
       chatgpt: chatgpt as unknown as ChatGptWebAdapter,
       kimi: kimi as unknown as ChatGptWebAdapter,
       deepseek: deepseek as unknown as ChatGptWebAdapter,
+      gemini: gemini as unknown as ChatGptWebAdapter,
       persistProvider: async (provider) => { persisted.push(provider) },
     })
 
@@ -75,11 +236,13 @@ describe('AI provider integration', () => {
     const chatgpt = fakeAdapter({ status: 'busy' })
     const kimi = fakeAdapter()
     const deepseek = fakeAdapter()
+    const gemini = fakeAdapter()
     const manager = new AiProviderManager({
       initialProvider: 'chatgpt',
       chatgpt: chatgpt as unknown as ChatGptWebAdapter,
       kimi: kimi as unknown as ChatGptWebAdapter,
       deepseek: deepseek as unknown as ChatGptWebAdapter,
+      gemini: gemini as unknown as ChatGptWebAdapter,
     })
 
     await expect(manager.selectProvider('kimi')).rejects.toThrow(/đang chạy/u)
@@ -97,11 +260,13 @@ describe('AI provider integration', () => {
     const chatgpt = fakeAdapter({ status: 'ready' })
     const kimi = fakeAdapter({ status: 'closed' })
     const deepseek = fakeAdapter({ status: 'closed' })
+    const gemini = fakeAdapter({ status: 'closed' })
     const manager = new AiProviderManager({
       initialProvider: 'chatgpt',
       chatgpt: chatgpt as unknown as ChatGptWebAdapter,
       kimi: kimi as unknown as ChatGptWebAdapter,
       deepseek: deepseek as unknown as ChatGptWebAdapter,
+      gemini: gemini as unknown as ChatGptWebAdapter,
     })
 
     await manager.selectProvider('deepseek')
@@ -226,6 +391,7 @@ describe('AI provider integration', () => {
     const chatgpt = fakeAdapter({ status: 'ready' })
     const kimi = fakeAdapter({ status: 'closed' })
     const deepseek = fakeAdapter({ status: 'ready' })
+    const gemini = fakeAdapter({ status: 'closed' })
     chatgpt.sendAndWait.mockImplementation((
       _message?: string,
       options?: { signal?: AbortSignal },
@@ -248,6 +414,7 @@ describe('AI provider integration', () => {
       chatgpt: chatgpt as unknown as ChatGptWebAdapter,
       kimi: kimi as unknown as ChatGptWebAdapter,
       deepseek: deepseek as unknown as ChatGptWebAdapter,
+      gemini: gemini as unknown as ChatGptWebAdapter,
     })
     const saved = new Map<string, unknown>()
     const runner = new TranslationJobRunner({
@@ -338,5 +505,105 @@ describe('AI provider integration', () => {
     expect(await runner.get(jobId)).toMatchObject({
       status: 'completed', aiProvider: 'chatgpt', allowedAiProviders: ['chatgpt'],
     })
+  })
+
+  it('keeps Gemini selectors separate and dispatches to its own session', async () => {
+    const chatgpt = fakeAdapter({ status: 'ready' })
+    const kimi = fakeAdapter({ status: 'closed' })
+    const deepseek = fakeAdapter({ status: 'closed' })
+    const gemini = fakeAdapter({ status: 'closed' })
+    const persisted: string[] = []
+    const manager = new AiProviderManager({
+      initialProvider: 'chatgpt',
+      chatgpt: chatgpt as unknown as ChatGptWebAdapter,
+      kimi: kimi as unknown as ChatGptWebAdapter,
+      deepseek: deepseek as unknown as ChatGptWebAdapter,
+      gemini: gemini as unknown as ChatGptWebAdapter,
+      persistProvider: async (provider) => { persisted.push(provider) },
+    })
+
+    await manager.selectProvider('gemini')
+    await manager.ensureReady()
+    await manager.sendAndWait('Nội dung Gemini')
+
+    expect(gemini.ensureReady).toHaveBeenCalledOnce()
+    expect(gemini.sendAndWait).toHaveBeenCalledWith('Nội dung Gemini', undefined)
+    expect(chatgpt.sendAndWait).not.toHaveBeenCalled()
+    expect(kimi.sendAndWait).not.toHaveBeenCalled()
+    expect(deepseek.sendAndWait).not.toHaveBeenCalled()
+    expect(persisted).toEqual(['gemini'])
+    expect(manager.status().provider).toBe('gemini')
+    expect(GEMINI_SELECTORS.composer).toContain('div[contenteditable="true"][role="textbox"]')
+    expect(GEMINI_SELECTORS.assistantMessages).toContain('message-content')
+    expect(GEMINI_SELECTORS.loginLink.some((selector) => selector.includes('ServiceLogin'))).toBe(true)
+    expect(GEMINI_SELECTORS.signedInMarkers?.some((selector) => selector.includes('SignOutOptions'))).toBe(true)
+    expect(GEMINI_SELECTORS.assistantTurnContainerFromMessage.some((selector) => selector.includes('model-response'))).toBe(true)
+    expect(GEMINI_SELECTORS.assistantMessages.length).toBeGreaterThan(2)
+  })
+
+  it('labels Gemini errors and status messages as Gemini instead of ChatGPT', async () => {
+    const chatgpt = fakeAdapter({ status: 'ready' })
+    const kimi = fakeAdapter({ status: 'closed' })
+    const deepseek = fakeAdapter({ status: 'closed' })
+    const gemini = fakeAdapter({ status: 'closed' })
+    gemini.ensureReady.mockRejectedValue(
+      new Error('ChatGPT Web chưa sẵn sàng. Hãy đăng nhập ChatGPT.'),
+    )
+    const manager = new AiProviderManager({
+      initialProvider: 'gemini',
+      chatgpt: chatgpt as unknown as ChatGptWebAdapter,
+      kimi: kimi as unknown as ChatGptWebAdapter,
+      deepseek: deepseek as unknown as ChatGptWebAdapter,
+      gemini: gemini as unknown as ChatGptWebAdapter,
+    })
+
+    await expect(manager.ensureReady()).rejects.toThrow(
+      'Gemini AI chưa sẵn sàng. Hãy đăng nhập Gemini AI.',
+    )
+  })
+
+  it('accepts a four-chatbot pool and stores Gemini in the checkpoint', async () => {
+    const selected: string[] = []
+    const saved = new Map<string, unknown>()
+    const runner = new TranslationJobRunner({
+      chatGpt: {
+        selectProvider: async (provider) => { selected.push(provider) },
+        ensureReady: async () => undefined,
+        startNewConversation: async () => undefined,
+        sendAndWait: async () => 'Bản dịch hoàn chỉnh.',
+        cancelGeneration: async () => undefined,
+      },
+      persistence: {
+        saveJob: async (job: { id: string }) => { saved.set(job.id, structuredClone(job)) },
+        loadJob: async <T>(id: string) => (saved.get(id) ?? null) as T | null,
+      },
+      validator: () => ({
+        valid: true,
+        issues: [],
+        hanCharacters: [],
+        metrics: {
+          sourceCharacters: 10,
+          translatedCharacters: 20,
+          sourceHanCharacters: 10,
+          remainingHanCharacters: 0,
+          lengthRatio: 2,
+        },
+      }),
+    })
+    const completion = waitForEvent(runner, (event) => event.type === 'job-completed')
+    const { jobId } = await runner.start({
+      source: '她推开门。',
+      promptMode: 'period',
+      resolvedPrompt: 'Dịch sang tiếng Việt.',
+      aiProvider: 'gemini',
+      allowedAiProviders: ['chatgpt', 'kimi', 'deepseek', 'gemini'],
+    })
+    await completion
+
+    expect(selected).toEqual(['gemini'])
+    expect((saved.get(jobId) as { aiProvider?: string }).aiProvider).toBe('gemini')
+    expect((saved.get(jobId) as { allowedAiProviders?: string[] }).allowedAiProviders).toEqual([
+      'chatgpt', 'kimi', 'deepseek', 'gemini',
+    ])
   })
 })

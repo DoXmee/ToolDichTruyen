@@ -42,6 +42,17 @@ export interface IpcDependencies {
 
 type Handler = (event: IpcMainInvokeEvent, payload?: unknown) => unknown | Promise<unknown>;
 
+/**
+ * The fixed provider pool shared by every IPC entry point. Keeping one list in
+ * the main process means selecting, starting, resuming and retrying all accept
+ * exactly the providers the adapter manager can serve, and nothing else.
+ */
+const ALL_AI_PROVIDERS: readonly AiProvider[] = ["chatgpt", "kimi", "deepseek", "gemini"];
+
+function isAiProvider(value: unknown): value is AiProvider {
+  return typeof value === "string" && (ALL_AI_PROVIDERS as readonly string[]).includes(value);
+}
+
 function objectPayload(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError(`${label} không hợp lệ.`);
@@ -240,7 +251,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   });
   handle(IPC_CHANNELS.aiProviderGet, () => dependencies.chatGpt.activeProvider());
   handle(IPC_CHANNELS.aiProviderSet, async (_event, payload) => {
-    if (payload !== "chatgpt" && payload !== "kimi" && payload !== "deepseek") {
+    if (!isAiProvider(payload)) {
       throw new TypeError("Nhà cung cấp AI không hợp lệ.");
     }
     await dependencies.chatGpt.selectProvider(payload);
@@ -255,14 +266,12 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     const source = stringField(payload, "source", { required: true })!;
     const mode = promptMode(payload.promptMode);
     const customPrompt = stringField(payload, "customPrompt", { max: 100_000 });
-    const aiProvider: AiProvider = payload.aiProvider === "kimi" || payload.aiProvider === "deepseek"
-      ? payload.aiProvider
-      : "chatgpt";
+    const aiProvider: AiProvider = isAiProvider(payload.aiProvider) ? payload.aiProvider : "chatgpt";
     const rawAllowedAiProviders = payload.allowedAiProviders;
     const allowedAiProviders = Array.isArray(rawAllowedAiProviders)
-      ? (["chatgpt", "kimi", "deepseek"] as AiProvider[]).filter((provider) =>
+      ? ALL_AI_PROVIDERS.filter((provider) =>
           rawAllowedAiProviders.includes(provider))
-      : (["chatgpt", "kimi", "deepseek"] as AiProvider[]);
+      : [...ALL_AI_PROVIDERS];
     if (!allowedAiProviders.length) {
       throw new TypeError("Phải chọn ít nhất một AI cho tiến trình.");
     }
@@ -357,11 +366,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   handle(IPC_CHANNELS.translationResume, (_event, rawPayload) => {
     if (typeof rawPayload === "string") return dependencies.translator.resume(rawPayload);
     const payload = objectPayload(rawPayload, "Tác vụ tiếp tục");
-    const provider = payload.aiProvider === "kimi" || payload.aiProvider === "deepseek"
-      ? payload.aiProvider
-      : payload.aiProvider === "chatgpt"
-        ? "chatgpt"
-        : undefined;
+    const provider = isAiProvider(payload.aiProvider) ? payload.aiProvider : undefined;
     return dependencies.translator.resume(
       stringField(payload, "jobId", { required: true, max: 100 })!,
       provider,
@@ -376,7 +381,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     await dependencies.translator.retrySegment({
       jobId: stringField(payload, "jobId", { required: true, max: 100 })!,
       segmentId: stringField(payload, "segmentId", { required: true, max: 100 })!,
-      ...(payload.aiProvider === "chatgpt" || payload.aiProvider === "kimi" || payload.aiProvider === "deepseek"
+      ...(isAiProvider(payload.aiProvider)
         ? { aiProvider: payload.aiProvider }
         : {}),
     });
@@ -555,6 +560,55 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     });
     const model = stringField(payload, "model", { max: 100 });
     return dependencies.gemini.generateTitles({ chapters, ...(model ? { model } : {}) });
+  });
+
+  const accountSnapshot = async () => ({
+    accounts: await dependencies.chatGpt.listAccounts(),
+    activeProvider: dependencies.chatGpt.activeProvider(),
+    activeAccountId: dependencies.chatGpt.activeAccountId(),
+  });
+
+  handle(IPC_CHANNELS.accountsList, () => accountSnapshot());
+  handle(IPC_CHANNELS.accountSelect, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, "Chọn tài khoản");
+    const id = stringField(payload, "id", { required: true, max: 100 })!;
+    await dependencies.chatGpt.activateAccount(id);
+    return accountSnapshot();
+  });
+  handle(IPC_CHANNELS.accountAdd, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, "Thêm tài khoản");
+    if (!isAiProvider(payload.provider)) throw new TypeError("Nhà cung cấp AI không hợp lệ.");
+    const label = stringField(payload, "label", { max: 60 });
+    await dependencies.chatGpt.addAccount(payload.provider, label);
+    // Adding an account is an explicit manual-login flow. Open the ordinary
+    // browser directly; going through openLogin() first would briefly launch
+    // an automation browser, close it, then open this visible login window.
+    await dependencies.chatGpt.openManualLogin().catch(() => undefined);
+    return accountSnapshot();
+  });
+  handle(IPC_CHANNELS.accountRemove, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, "Xoá tài khoản");
+    const id = stringField(payload, "id", { required: true, max: 100 })!;
+    await dependencies.chatGpt.removeAccount(id);
+    return accountSnapshot();
+  });
+  handle(IPC_CHANNELS.accountRename, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, "Đổi tên tài khoản");
+    const id = stringField(payload, "id", { required: true, max: 100 })!;
+    const label = stringField(payload, "label", { required: true, max: 60 })!;
+    await dependencies.chatGpt.renameAccount(id, label);
+    return accountSnapshot();
+  });
+  handle(IPC_CHANNELS.accountSyncCurrent, async () => {
+    const account = await dependencies.chatGpt.syncCurrentAccount();
+    return { account, ...(await accountSnapshot()) };
+  });
+  handle(IPC_CHANNELS.accountsCleanup, async () => {
+    const active = dependencies.translator.activeJobs();
+    if (active.some((job) => ["running", "queued", "paused"].includes(job.status))) {
+      throw new Error("Hãy dừng tiến trình dịch trước khi dọn rác.");
+    }
+    return dependencies.chatGpt.cleanJunk();
   });
 
   const unsubscribeTranslation = dependencies.translator.onEvent((event) =>

@@ -1,6 +1,13 @@
 import type { AiProvider, PromptMode } from '../../../shared';
 import { Icon } from '../../components/Icon';
 
+const AI_PROVIDER_OPTIONS: Array<{ value: AiProvider; label: string; short: string }> = [
+  { value: 'chatgpt', label: 'ChatGPT', short: 'ChatGPT' },
+  { value: 'kimi', label: 'Kimi AI', short: 'Kimi' },
+  { value: 'deepseek', label: 'DeepSeek AI', short: 'DeepSeek' },
+  { value: 'gemini', label: 'Gemini AI', short: 'Gemini' },
+];
+
 interface PromptSelectorProps {
   mode: PromptMode;
   prompts: { period: string; modern: string; ancient: string; cultivation: string };
@@ -81,16 +88,16 @@ export function PromptSelector({
         </div>
         <div aria-label="Chatbot dùng cho tiến trình" className="provider-pool" role="group">
           <div className="provider-pool__options">
-            {(['chatgpt', 'kimi', 'deepseek'] as const).map((provider) => (
-              <label key={provider}>
+            {AI_PROVIDER_OPTIONS.map(({ value, label, short }) => (
+              <label key={value}>
                 <input
-                  aria-label={provider === 'chatgpt' ? 'ChatGPT' : provider === 'kimi' ? 'Kimi AI' : 'DeepSeek AI'}
-                  checked={allowedAiProviders.includes(provider)}
-                  disabled={providerSelectionLocked || (allowedAiProviders.length === 1 && allowedAiProviders[0] === provider)}
-                  onChange={() => onToggleAiProvider(provider)}
+                  aria-label={label}
+                  checked={allowedAiProviders.includes(value)}
+                  disabled={providerSelectionLocked || (allowedAiProviders.length === 1 && allowedAiProviders[0] === value)}
+                  onChange={() => onToggleAiProvider(value)}
                   type="checkbox"
                 />
-                <span>{provider === 'chatgpt' ? 'ChatGPT' : provider === 'kimi' ? 'Kimi' : 'DeepSeek'}</span>
+                <span>{short}</span>
               </label>
             ))}
           </div>

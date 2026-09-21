@@ -13,6 +13,25 @@ import type {
 } from "../shared/types.js";
 import { IPC_CHANNELS } from "./channels.js";
 
+export interface StoryAccountSummary {
+  id: string;
+  provider: AiProvider;
+  label: string;
+  email?: string;
+  plan?: string;
+  authuser?: number;
+  quotaBlockedUntil?: string;
+  quotaNotice?: string;
+  lastVerifiedAt?: string;
+  lastUsedAt?: string;
+}
+
+export interface AccountsSnapshot {
+  accounts: StoryAccountSummary[];
+  activeProvider: AiProvider;
+  activeAccountId?: string;
+}
+
 export interface TranslationEvent {
   jobId: string;
   type: string;
@@ -121,6 +140,13 @@ export interface StoryToolApi {
     chapters: Array<{ id?: string; content: string }>;
     model?: string;
   }): Promise<{ titles: string[]; model: string }>;
+  listAccounts(): Promise<AccountsSnapshot>;
+  selectAccount(id: string): Promise<AccountsSnapshot>;
+  addAccount(request: { provider: AiProvider; label?: string }): Promise<AccountsSnapshot>;
+  removeAccount(id: string): Promise<AccountsSnapshot>;
+  renameAccount(id: string, label: string): Promise<AccountsSnapshot>;
+  syncCurrentAccount(): Promise<AccountsSnapshot & { account?: StoryAccountSummary }>;
+  cleanupJunk(): Promise<{ freedBytes: number; removed: number }>;
 }
 
 function subscribe<T>(channel: string, callback: (payload: T) => void): () => void {
@@ -250,6 +276,24 @@ const storyTool: StoryToolApi = Object.freeze({
       titles: string[];
       model: string;
     }>,
+  listAccounts: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.accountsList) as Promise<AccountsSnapshot>,
+  selectAccount: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.accountSelect, { id }) as Promise<AccountsSnapshot>,
+  addAccount: (request: { provider: AiProvider; label?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.accountAdd, request) as Promise<AccountsSnapshot>,
+  removeAccount: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.accountRemove, { id }) as Promise<AccountsSnapshot>,
+  renameAccount: (id: string, label: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.accountRename, { id, label }) as Promise<AccountsSnapshot>,
+  syncCurrentAccount: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.accountSyncCurrent) as Promise<
+      AccountsSnapshot & { account?: StoryAccountSummary }
+    >,
+  cleanupJunk: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.accountsCleanup) as Promise<
+      { freedBytes: number; removed: number }
+    >,
 });
 
 contextBridge.exposeInMainWorld("storyTool", storyTool);

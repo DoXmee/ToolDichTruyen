@@ -31,6 +31,8 @@ import {
   ChatGptNonRetryableSafetyError,
   type ChatGptWebAdapter,
 } from "../chatgpt/ChatGptWebAdapter.js";
+import { GeminiQuotaExceededError } from "../chatgpt/geminiModel.js";
+import { AiAccountRotatedError } from "../ai/AiProviderManager.js";
 import type { PersistenceService } from "../persistence/PersistenceService.js";
 import { repairLegacyXbanxiaCheckpointSegment } from "../storySources/text.js";
 
@@ -100,7 +102,8 @@ type ProviderFailoverMode =
   | "kimi-primary"
   | "chatgpt-final-rescue"
   | "deepseek-primary"
-  | "chatgpt-deepseek-rescue";
+  | "chatgpt-deepseek-rescue"
+  | "gemini-primary";
 
 interface ProviderFailoverState {
   baseProvider: AiProvider;
@@ -161,6 +164,10 @@ const WEB_RESPONSE_TIMEOUT_MS = 480_000;
 // response at the ChatGPT-oriented eight-minute boundary.
 const KIMI_RESPONSE_TIMEOUT_MS = 15 * 60_000;
 const DEEPSEEK_RESPONSE_TIMEOUT_MS = 20 * 60_000;
+// Gemini answers long-form translations in one pass without the continuation
+// prompts Kimi needs, but its web app is still slower than ChatGPT at the same
+// chapter length. Keep the same long window DeepSeek needs.
+const GEMINI_RESPONSE_TIMEOUT_MS = 20 * 60_000;
 const LEGACY_WEB_RESPONSE_TIMEOUT_MS = 180_000;
 
 function repairLegacyXbanxiaCheckpoint(job: PersistedTranslationJob): number {
@@ -218,10 +225,12 @@ const MAX_CHATGPT_TO_KIMI_RESCUE_CYCLES = 3;
 const SAFETY_REFUSAL_MAXIMUM_ATTEMPTS = 6;
 
 function normalizeAiProvider(provider: unknown): AiProvider {
-  return provider === "kimi" || provider === "deepseek" ? provider : "chatgpt";
+  return provider === "kimi" || provider === "deepseek" || provider === "gemini"
+    ? provider
+    : "chatgpt";
 }
 
-const ALL_AI_PROVIDERS: AiProvider[] = ["chatgpt", "kimi", "deepseek"];
+const ALL_AI_PROVIDERS: AiProvider[] = ["chatgpt", "kimi", "deepseek", "gemini"];
 
 function normalizeAllowedAiProviders(value: unknown, preferred?: AiProvider): AiProvider[] {
   const requested = Array.isArray(value)
@@ -234,17 +243,21 @@ function normalizeAllowedAiProviders(value: unknown, preferred?: AiProvider): Ai
 function aiProviderLabel(provider: AiProvider): string {
   if (provider === "kimi") return "Kimi AI";
   if (provider === "deepseek") return "DeepSeek AI";
+  if (provider === "gemini") return "Gemini AI";
   return "ChatGPT";
 }
+
+const PRIMARY_FAILOVER_MODES: Record<AiProvider, ProviderFailoverMode> = {
+  chatgpt: "primary-chatgpt",
+  kimi: "kimi-primary",
+  deepseek: "deepseek-primary",
+  gemini: "gemini-primary",
+};
 
 function initialProviderFailover(provider: AiProvider): ProviderFailoverState {
   return {
     baseProvider: provider,
-    mode: provider === "chatgpt"
-      ? "primary-chatgpt"
-      : provider === "kimi"
-        ? "kimi-primary"
-        : "deepseek-primary",
+    mode: PRIMARY_FAILOVER_MODES[provider],
     chatgptRescueCycles: 0,
   };
 }
@@ -260,6 +273,7 @@ function normalizedProviderFailover(
     "chatgpt-final-rescue",
     "deepseek-primary",
     "chatgpt-deepseek-rescue",
+    "gemini-primary",
   ];
   if (!value || !validModes.includes(value.mode)) return initialProviderFailover(provider);
   const baseProvider = normalizeAiProvider(value.baseProvider);
@@ -662,10 +676,23 @@ function isKimiSilentSafetyTimeout(provider: AiProvider, error: unknown): boolea
     && !message.includes("kimi http:");
 }
 
-function isProviderUsageExhaustedError(provider: AiProvider, error: unknown): boolean {
-  if (provider !== "kimi") return false;
-  return errorMessage(error).toLocaleLowerCase("vi-VN")
-    .includes("kimi ai đã hết hạn mức sử dụng hiện tại");
+/**
+ * Explains an exhausted provider quota, or undefined when this is an ordinary
+ * failure. Gemini reports it as a typed error carrying the reset time; Kimi
+ * only exposes a message.
+ */
+function providerUsageExhaustedNotice(provider: AiProvider, error: unknown): string | undefined {
+  for (const item of errorChain(error)) {
+    if (item instanceof GeminiQuotaExceededError) return item.notice;
+  }
+  if (
+    provider === "kimi"
+    && errorMessage(error).toLocaleLowerCase("vi-VN")
+      .includes("kimi ai đã hết hạn mức sử dụng hiện tại")
+  ) {
+    return "Kimi AI đã hết hạn mức sử dụng hiện tại. Hãy thử lại sau khi Kimi cho phép.";
+  }
+  return undefined;
 }
 
 /** Kimi can acknowledge a sensitive request by echoing almost the whole
@@ -719,6 +746,9 @@ function responseTimeoutForProvider(job: PersistedTranslationJob): number {
   }
   if (job.aiProvider === "deepseek") {
     return Math.max(job.settings.responseTimeoutMs, DEEPSEEK_RESPONSE_TIMEOUT_MS);
+  }
+  if (job.aiProvider === "gemini") {
+    return Math.max(job.settings.responseTimeoutMs, GEMINI_RESPONSE_TIMEOUT_MS);
   }
   return job.settings.responseTimeoutMs;
 }
@@ -775,6 +805,8 @@ export class TranslationJobRunner {
   private readonly running = new Map<string, Promise<void>>();
   private readonly pauseRequests = new Set<string>();
   private readonly cancelRequests = new Set<string>();
+  /** Exhausted-quota notices keyed by segment, used to pause instead of fail. */
+  private readonly quotaNotices = new Map<string, string>();
   private readonly abortControllers = new Map<string, AbortController>();
   private readonly chunker: typeof chunkSourceText;
   private readonly validator: typeof validateTranslation;
@@ -1694,6 +1726,8 @@ export class TranslationJobRunner {
       let conversationVerificationFailed = false;
       let safetyRefusalDetected = false;
       let crossChapterRepetitionDetected = false;
+      let exhaustedQuotaNotice: string | undefined;
+      let accountRotatedTo: string | undefined;
       try {
         segment.status = "streaming";
         this.logActivity(job, `${aiProviderLabel(job.aiProvider)} đang tạo bản dịch cho đoạn ${segment.index + 1}/${job.segments.length}.`, "info", segment);
@@ -1773,6 +1807,13 @@ export class TranslationJobRunner {
         if (this.shouldStop(job, signal) || isAbortError(error)) return false;
         adapterErrorOccurred = true;
         segment.error = errorMessage(error);
+        exhaustedQuotaNotice = providerUsageExhaustedNotice(job.aiProvider, error);
+        if (error instanceof AiAccountRotatedError) {
+          // The manager already moved to another saved account, so this attempt
+          // is given back: every account gets exactly one try per segment.
+          accountRotatedTo = error.accountLabel;
+          segment.attempts = Math.max(0, segment.attempts - 1);
+        }
         this.logActivity(job, `Lỗi khi chờ ${aiProviderLabel(job.aiProvider)}: ${segment.error}`, "warning", segment);
         safetyRefusalDetected = isKimiSilentSafetyTimeout(job.aiProvider, error);
         freshChatRecoveryRequested = isSafeForFreshChatRecovery(error);
@@ -1791,14 +1832,31 @@ export class TranslationJobRunner {
       }
 
       if (this.shouldStop(job, signal)) return false;
+      if (accountRotatedTo) {
+        this.logActivity(
+          job,
+          `Đã chuyển sang tài khoản "${accountRotatedTo}" của ${aiProviderLabel(job.aiProvider)}; gửi lại đoạn ${segment.index + 1}/${job.segments.length} bằng tài khoản mới.`,
+          "warning",
+          segment,
+        );
+        job.updatedAt = nowIso();
+        await this.checkpoint(job);
+        segment.error = undefined;
+        continue;
+      }
       if (this.isManualProviderRescue(job, segment)) {
         await this.queueReturnAfterManualProviderRescue(job, segment, false);
         return false;
       }
-      if (adapterErrorOccurred && isProviderUsageExhaustedError(job.aiProvider, segment.error)) {
+      if (adapterErrorOccurred && exhaustedQuotaNotice) {
+        // Retrying the same account cannot help until the quota resets, so move
+        // straight to the hand-off decision: another allowed AI can finish the
+        // job, and a job with no other AI is paused with the reset time instead
+        // of being marked failed.
+        this.quotaNotices.set(segment.id, exhaustedQuotaNotice);
         this.logActivity(
           job,
-          "Kimi AI đã hết hạn mức; chuyển ngay sang ChatGPT thay vì lặp lại trên tài khoản đã hết quota.",
+          exhaustedQuotaNotice,
           "warning",
           segment,
         );
@@ -2576,9 +2634,10 @@ export class TranslationJobRunner {
       : [];
     if (!attemptedProviders.includes(failedProvider)) attemptedProviders.push(failedProvider);
     const preferredTargets: Record<AiProvider, AiProvider[]> = {
-      chatgpt: ["kimi", "deepseek"],
-      kimi: ["chatgpt", "deepseek"],
-      deepseek: ["chatgpt", "kimi"],
+      chatgpt: ["kimi", "deepseek", "gemini"],
+      kimi: ["chatgpt", "deepseek", "gemini"],
+      deepseek: ["chatgpt", "kimi", "gemini"],
+      gemini: ["chatgpt", "kimi", "deepseek"],
     };
     const availableTargets = preferredTargets[failedProvider].filter(
       (provider) => allowedProviders.includes(provider) && !attemptedProviders.includes(provider),
@@ -2611,11 +2670,7 @@ export class TranslationJobRunner {
       nextMode = "chatgpt-final-rescue";
       message = `Kimi AI đã dùng hết retry cho đoạn ${segment.index + 1} (${failure}). Chuyển sang ChatGPT cứu đoạn này lần cuối; chỉ chốt lỗi nếu ChatGPT cũng thất bại.`;
     } else {
-      nextMode = target === "chatgpt"
-        ? "primary-chatgpt"
-        : target === "kimi"
-          ? "kimi-primary"
-          : "deepseek-primary";
+      nextMode = PRIMARY_FAILOVER_MODES[target];
       message = `${aiProviderLabel(failedProvider)} đã dùng hết retry cho đoạn ${segment.index + 1} (${failure}). Chuyển sang ${aiProviderLabel(target)} trong nhóm AI đã chọn.`;
     }
 
@@ -2656,7 +2711,34 @@ export class TranslationJobRunner {
     signal: AbortSignal,
   ): Promise<false> {
     if (await this.tryQueueProviderFailover(job, segment, signal)) return false;
+    const quotaNotice = this.quotaNotices.get(segment.id);
+    if (quotaNotice) return this.pauseForExhaustedQuota(job, segment, quotaNotice);
     return this.failSegment(job, segment, signal);
+  }
+
+  /**
+   * No other AI is allowed to answer this job, and the current one is out of
+   * quota. A paused checkpoint keeps every finished segment and lets the user
+   * continue with one click once the provider allows the model again, which is
+   * far more useful than a terminal failure.
+   */
+  private async pauseForExhaustedQuota(
+    job: PersistedTranslationJob,
+    segment: TranslationSegment,
+    notice: string,
+  ): Promise<false> {
+    this.quotaNotices.delete(segment.id);
+    segment.status = "queued";
+    segment.attempts = 0;
+    delete segment.error;
+    job.status = "paused";
+    job.error = notice;
+    job.currentSegmentIndex = segment.index;
+    this.logActivity(job, `${notice} Tiến trình đã tạm dừng và sẽ chạy lại đoạn ${segment.index + 1} khi bạn bấm Tiếp tục.`, "warning", segment);
+    job.updatedAt = nowIso();
+    await this.checkpoint(job);
+    this.emit(job.id, "job-status", { status: job.status, error: notice });
+    return false;
   }
 
   /** After a rescue succeeds, return to the configured long-running AI. */

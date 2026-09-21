@@ -46,4 +46,11 @@ export const IPC_CHANNELS = Object.freeze({
   geminiGetConfig: "story-tool:gemini:get-config",
   geminiSetConfig: "story-tool:gemini:set-config",
   geminiGenerateTitles: "story-tool:gemini:generate-titles",
+  accountsList: "story-tool:accounts:list",
+  accountSelect: "story-tool:accounts:select",
+  accountAdd: "story-tool:accounts:add",
+  accountRemove: "story-tool:accounts:remove",
+  accountRename: "story-tool:accounts:rename",
+  accountSyncCurrent: "story-tool:accounts:sync-current",
+  accountsCleanup: "story-tool:accounts:cleanup",
 });

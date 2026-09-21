@@ -17,6 +17,7 @@ export type IconName =
   | 'sparkles'
   | 'split'
   | 'stop'
+  | 'trash'
   | 'wand';
 
 interface IconProps extends SVGProps<SVGSVGElement> {
@@ -25,6 +26,7 @@ interface IconProps extends SVGProps<SVGSVGElement> {
 }
 
 const paths: Record<IconName, ReactNode> = {
+  trash: <><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /></>,
   alert: <><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.7 2.2 18a2 2 0 0 0 1.8 3h16a2 2 0 0 0 1.8-3L13.7 3.7a2 2 0 0 0-3.4 0Z" /></>,
   book: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" /><path d="M8 7h8M8 11h6" /></>,
   check: <path d="m5 12 4 4L19 6" />,

@@ -92,7 +92,9 @@ export function TranslationControls({
 
       <div className="action-row">
         {!active && (
-          <button className="button button--primary button--large" disabled={!canStart || !connected} onClick={onStart} type="button">
+          // The browser connects on demand when the job starts, so a saved
+          // account is what matters here, not a separate connect step.
+          <button className="button button--primary button--large" disabled={!canStart} onClick={onStart} type="button">
             <Icon name={state === 'complete' || state === 'cancelled' || state === 'error' ? 'refresh' : 'sparkles'} />
             {state === 'complete' || state === 'cancelled' || state === 'error' ? 'Dịch lại từ đầu' : 'Bắt đầu dịch'}
           </button>
@@ -118,7 +120,9 @@ export function TranslationControls({
           </button>
         )}
         <span className={`action-hint${connected ? ' action-hint--connected' : ''}`}>
-          {connected ? `${providerLabel} đang kết nối.` : `Kết nối ${providerLabel} trước khi bắt đầu.`}
+          {connected
+            ? `${providerLabel} đang kết nối.`
+            : `Dùng tài khoản đã lưu của ${providerLabel}; tool tự kết nối khi bắt đầu dịch.`}
         </span>
       </div>
 

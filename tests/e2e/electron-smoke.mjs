@@ -65,6 +65,22 @@ try {
   await page.waitForFunction(() => window.storyTool?.getAiProvider?.().then((provider) => provider === 'chatgpt'))
   await page.waitForFunction(() => document.querySelector('[role="radio"][aria-checked="true"]')?.textContent?.trim() === 'ChatGPT')
 
+  const geminiChoice = page.getByRole('radio', { name: 'Gemini AI' })
+  await page.waitForFunction(() => {
+    const button = [...document.querySelectorAll('[role="radio"]')]
+      .find((candidate) => candidate.textContent?.trim() === 'Gemini AI')
+    return button instanceof HTMLButtonElement && !button.disabled
+  }, { timeout: 10_000 })
+  await page.evaluate(() => window.storyTool?.setAiProvider?.('gemini'))
+  await page.waitForFunction(() => window.storyTool?.getAiProvider?.().then((provider) => provider === 'gemini'))
+  await page.waitForFunction(() => document.querySelector('[role="radio"][aria-checked="true"]')?.textContent?.trim() === 'Gemini AI')
+  if (await geminiChoice.getAttribute('aria-checked') !== 'true') {
+    throw new Error('Ô chọn Gemini AI không cập nhật trạng thái giao diện.')
+  }
+  await page.evaluate(() => window.storyTool?.setAiProvider?.('chatgpt'))
+  await page.waitForFunction(() => window.storyTool?.getAiProvider?.().then((provider) => provider === 'chatgpt'))
+  await page.waitForFunction(() => document.querySelector('[role="radio"][aria-checked="true"]')?.textContent?.trim() === 'ChatGPT')
+
   const sourceEditor = page.getByLabel('Nội dung tiếng Trung cần dịch')
   const outputEditor = page.getByLabel('Nội dung truyện đã dịch')
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1366, 720))

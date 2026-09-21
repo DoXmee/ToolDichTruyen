@@ -3,6 +3,7 @@ import path from "node:path";
 import { AiProviderManager } from "./ai/AiProviderManager.js";
 import { ChatGptWebAdapter } from "./chatgpt/ChatGptWebAdapter.js";
 import { GeminiTitleService } from "./gemini/GeminiTitleService.js";
+import { AccountRegistry } from "./accounts/AccountRegistry.js";
 import { registerIpcHandlers } from "./ipc.js";
 import { PersistenceService } from "./persistence/PersistenceService.js";
 import { PromptLoader } from "./prompts.js";
@@ -43,6 +44,7 @@ async function bootstrap(): Promise<void> {
 
   const dataDirectory = app.getPath("userData");
   persistence = new PersistenceService(dataDirectory, safeStorage);
+  const accounts = new AccountRegistry(dataDirectory);
   const prompts = new PromptLoader(promptRoots());
   const chatGptAdapter = new ChatGptWebAdapter({
     profileDirectory: path.join(dataDirectory, "chatgpt-browser-profile"),
@@ -70,13 +72,36 @@ async function bootstrap(): Promise<void> {
       || process.env.CHATGPT_BROWSER_EXECUTABLE?.trim()
       || undefined,
   });
+  const geminiAdapter = new ChatGptWebAdapter({
+    provider: "gemini",
+    profileDirectory: path.join(dataDirectory, "gemini-browser-profile"),
+    baseUrl: process.env.GEMINI_BASE_URL?.trim() || "https://gemini.google.com/app",
+    headless: false,
+    executablePath:
+      process.env.GEMINI_BROWSER_EXECUTABLE?.trim()
+      || process.env.CHATGPT_BROWSER_EXECUTABLE?.trim()
+      || undefined,
+  });
   chatGpt = new AiProviderManager({
     initialProvider: await persistence.getAiProvider(),
     chatgpt: chatGptAdapter,
     kimi: kimiAdapter,
     deepseek: deepSeekAdapter,
+    gemini: geminiAdapter,
+    accounts,
+    accountProfileRoot: path.join(dataDirectory, "accounts"),
     persistProvider: (provider) => persistence!.setAiProvider(provider),
   });
+  // The profiles from earlier versions keep working: each becomes the first
+  // saved account of its bot, so nobody has to sign in again.
+  for (const [provider, label] of [
+    ["chatgpt", "Tài khoản 1"],
+    ["kimi", "Tài khoản 1"],
+    ["deepseek", "Tài khoản 1"],
+    ["gemini", "Tài khoản 1"],
+  ] as const) {
+    await chatGpt.adoptProfile(provider, label).catch(() => undefined);
+  }
   translator = new TranslationJobRunner({ chatGpt, persistence });
   // Restoring years of large checkpoints must not delay the first window.
   // Start it in parallel; the runner coalesces any renderer discovery call

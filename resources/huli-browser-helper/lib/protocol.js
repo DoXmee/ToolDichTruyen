@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "1.0.7";
+export const EXTENSION_VERSION = "1.0.8";
 export const HEARTBEAT_PORT_NAME = "huli-heartbeat";
 export const PAIR_FRAGMENT_PREFIX = "#tdt-pair=";
 export const POLL_DELAY_MS = 800;
@@ -23,7 +23,7 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/u;
 const SESSION_ID = /^[A-Za-z0-9_-]{16,128}$/u;
 const TOKEN = /^[A-Za-z0-9_-]{32,256}$/u;
 const COMMAND_ID = /^[A-Za-z0-9_-]{1,128}$/u;
-const HULI_HOSTS = new Set(["m.huliwang.net", "www.huliwang.net"]);
+const HULI_HOSTS = new Set(["m.huliwang.net", "www.huliwang.net", "m.ihuliwang.net", "www.ihuliwang.net"]);
 const XSZJ_HOSTS = new Set(["xszj.org", "www.xszj.org"]);
 const IXDZS_HOSTS = new Set(["ixdzs8.com", "www.ixdzs8.com"]);
 const NOVEL543_HOSTS = new Set(["novel543.com", "www.novel543.com"]);
@@ -32,6 +32,24 @@ const XSZJ_CATALOG_PATH = /^\/b\/(\d+)\/cs\/(\d+)\/?$/u;
 const XSZJ_CHAPTER_PATH = /^\/b\/(\d+)\/c\/(\d+)\/?$/u;
 const IXDZS_BOOK_PATH = /^\/read\/(\d+)\/?$/u;
 const IXDZS_CHAPTER_PATH = /^\/read\/(\d+)\/p(\d+)\.html\/?$/u;
+
+function hostBrand(hostname) {
+  const labels = hostname.toLowerCase().split(".");
+  return labels[0] === "www" || labels[0] === "m" ? labels[1] : labels[0];
+}
+
+function withSubdomain(hostname, subdomain) {
+  const labels = hostname.toLowerCase().split(".");
+  if (labels[0] === "www" || labels[0] === "m") labels[0] = subdomain;
+  else labels.unshift(subdomain);
+  return labels.join(".");
+}
+
+function isLegacyRootSubdomain(hostname, roots) {
+  const labels = hostname.toLowerCase().split(".");
+  const hostLabels = labels[0] === "www" || labels[0] === "m" ? labels.slice(1) : labels;
+  return roots.some((root) => hostLabels.length > root.length && root.every((label, index) => hostLabels[index] === label));
+}
 
 export function bridgeOriginFromLoopbackUrl(rawUrl) {
   const url = new URL(rawUrl);
@@ -105,8 +123,10 @@ export function validatePairingCredentials(sessionId, token) {
 export function normalizeHuliUrl(rawUrl) {
   if (typeof rawUrl !== "string") throw new TypeError("Huliwang URL must be a string.");
   const url = new URL(rawUrl);
-  if (url.protocol !== "https:" || !HULI_HOSTS.has(url.hostname.toLowerCase()) || url.port || url.username || url.password) {
-    throw new TypeError("Only exact HTTPS Huliwang hosts are allowed.");
+  const host = url.hostname.toLowerCase();
+  const brand = hostBrand(host);
+  if (url.protocol !== "https:" || (!HULI_HOSTS.has(host) && brand !== "huliwang" && brand !== "ihuliwang") || isLegacyRootSubdomain(host, [["huliwang", "net"], ["ihuliwang", "net"]]) || url.port || url.username || url.password) {
+    throw new TypeError("Only supported HTTPS Huliwang hosts are allowed.");
   }
   if (url.href.length > 2_048 || !/^\/(?:dir\/\d+(?:[-_/]\d+)?\.html|\d+\/?|\d+\/\d+(?:\/\d+)?\.html)\/?$/u.test(url.pathname)) {
     throw new TypeError("Unsupported Huliwang path.");
@@ -118,7 +138,7 @@ export function normalizeHuliUrl(rawUrl) {
 
 export function huliPageIdentity(rawUrl) {
   const normalized = new URL(normalizeHuliUrl(rawUrl));
-  normalized.hostname = "m.huliwang.net";
+  normalized.hostname = withSubdomain(normalized.hostname, "m");
   const catalog = /^\/dir\/(\d+)(?:[-_/](\d+))?\.html$/u.exec(normalized.pathname);
   if (catalog?.[1]) {
     const page = catalog[2] ? Number.parseInt(catalog[2], 10) : 1;
@@ -142,13 +162,16 @@ export function normalizeXszjUrl(rawUrl) {
   if (typeof rawUrl !== "string") throw new TypeError("XSZJ URL must be a string.");
   const url = new URL(rawUrl);
   const host = url.hostname.toLowerCase();
+  const brand = hostBrand(host);
+  const isXszjHost = (XSZJ_HOSTS.has(host) || brand === "xszj") && !isLegacyRootSubdomain(host, [["xszj", "org"]]);
+  const isIxdzsHost = (IXDZS_HOSTS.has(host) || brand === "ixdzs8") && !isLegacyRootSubdomain(host, [["ixdzs8", "com"]]);
   if (
     url.href.length > 2_048
     || url.protocol !== "https:"
     || url.port
     || url.username
     || url.password
-    || (!XSZJ_HOSTS.has(host) && !IXDZS_HOSTS.has(host))
+    || (!isXszjHost && !isIxdzsHost)
   ) {
     throw new TypeError("Only exact HTTPS XSZJ/爱下电子书 hosts are allowed.");
   }
@@ -161,21 +184,23 @@ export function normalizeXszjUrl(rawUrl) {
     ? Number.parseInt(sourcePage, 10)
     : undefined;
 
-  if (XSZJ_HOSTS.has(host)) {
+  if (isXszjHost) {
+    const origin = XSZJ_HOSTS.has(host) ? "https://xszj.org" : `https://${host}`;
     const book = XSZJ_BOOK_PATH.exec(path);
     const catalog = XSZJ_CATALOG_PATH.exec(path);
     const chapter = XSZJ_CHAPTER_PATH.exec(path);
-    if (book?.[1]) return `https://xszj.org/b/${book[1]}`;
-    if (catalog?.[1] && catalog[2]) return `https://xszj.org/b/${catalog[1]}/cs/${catalog[2]}`;
+    if (book?.[1]) return `${origin}/b/${book[1]}`;
+    if (catalog?.[1] && catalog[2]) return `${origin}/b/${catalog[1]}/cs/${catalog[2]}`;
     if (chapter?.[1] && chapter[2]) {
       const page = Number.isSafeInteger(safePage) && safePage > 1 ? `?page=${safePage}` : "";
-      return `https://xszj.org/b/${chapter[1]}/c/${chapter[2]}${page}`;
+      return `${origin}/b/${chapter[1]}/c/${chapter[2]}${page}`;
     }
   } else {
+    const origin = IXDZS_HOSTS.has(host) ? "https://ixdzs8.com" : `https://${host}`;
     const book = IXDZS_BOOK_PATH.exec(path);
     const chapter = IXDZS_CHAPTER_PATH.exec(path);
-    if (book?.[1]) return `https://ixdzs8.com/read/${book[1]}/`;
-    if (chapter?.[1] && chapter[2]) return `https://ixdzs8.com/read/${chapter[1]}/p${chapter[2]}.html`;
+    if (book?.[1]) return `${origin}/read/${book[1]}/`;
+    if (chapter?.[1] && chapter[2]) return `${origin}/read/${chapter[1]}/p${chapter[2]}.html`;
   }
   throw new TypeError("Unsupported XSZJ/爱下电子书 path.");
 }
@@ -184,23 +209,26 @@ export function normalizeNovel543Url(rawUrl) {
   if (typeof rawUrl !== "string") throw new TypeError("Novel543 URL must be a string.");
   const url = new URL(rawUrl);
   const host = url.hostname.toLowerCase();
+  const brand = hostBrand(host);
   if (
     url.href.length > 2_048
     || url.protocol !== "https:"
     || url.port
     || url.username
     || url.password
-    || !NOVEL543_HOSTS.has(host)
+    || (!NOVEL543_HOSTS.has(host) && brand !== "novel543")
+    || isLegacyRootSubdomain(host, [["novel543", "com"]])
   ) throw new TypeError("Only exact HTTPS Novel543 hosts are allowed.");
+  const origin = NOVEL543_HOSTS.has(host) ? "https://www.novel543.com" : `https://${withSubdomain(host, "www")}`;
   const path = url.pathname.replace(/\/{2,}/gu, "/");
   const book = /^\/(\d{6,20})\/?$/u.exec(path);
   const catalog = /^\/(\d{6,20})\/dir\/?$/u.exec(path);
   const chapter = /^\/(\d{6,20})\/(\d+_\d+)(?:_(\d+))?\.html$/u.exec(path);
-  if (book?.[1]) return `https://www.novel543.com/${book[1]}/`;
-  if (catalog?.[1]) return `https://www.novel543.com/${catalog[1]}/dir`;
+  if (book?.[1]) return `${origin}/${book[1]}/`;
+  if (catalog?.[1]) return `${origin}/${catalog[1]}/dir`;
   if (chapter?.[1] && chapter[2]) {
     const part = chapter[3] && Number.parseInt(chapter[3], 10) > 1 ? `_${Number.parseInt(chapter[3], 10)}` : "";
-    return `https://www.novel543.com/${chapter[1]}/${chapter[2]}${part}.html`;
+    return `${origin}/${chapter[1]}/${chapter[2]}${part}.html`;
   }
   throw new TypeError("Unsupported Novel543 path.");
 }

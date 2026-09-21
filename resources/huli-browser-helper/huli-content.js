@@ -1,5 +1,6 @@
+{
 const SELECTORS = ["h1", "h2", ".title", "#pt_h1", ".readTitle", ".info", ".meta-dir", "#nr_title", "#nr", ".chaplist", ".chaplist .all", ".nr_page", "#bookIntro", "[rel=author]", ".author", "#chapterList", ".chapter-list", "#pagination", ".pagination"];
-const HOSTS = new Set(["m.huliwang.net", "www.huliwang.net"]);
+const HOSTS = new Set(["m.huliwang.net", "www.huliwang.net", "m.ihuliwang.net", "www.ihuliwang.net"]);
 const HEARTBEAT_PORT_NAME = "huli-heartbeat";
 // This remains shorter than the worker's SNAPSHOT_TIMEOUT_MS. It only waits
 // for Huliwang's own list render; it never reloads, navigates, or interacts
@@ -25,8 +26,15 @@ function connectHeartbeat() {
 
 function normalizeUrl(raw) {
   const url = new URL(raw);
-  if (url.protocol !== "https:" || !HOSTS.has(url.hostname.toLowerCase()) || url.port || url.username || url.password || !/^\/(?:dir\/\d+(?:[-_/]\d+)?\.html|\d+\/?|\d+\/\d+(?:\/\d+)?\.html)\/?$/u.test(url.pathname)) throw new TypeError("Unsafe Huliwang URL.");
+  const labels = url.hostname.toLowerCase().split(".");
+  const brand = labels[0] === "www" || labels[0] === "m" ? labels[1] : labels[0];
+  const flexibleHost = brand === "huliwang" || brand === "ihuliwang";
+  if (url.protocol !== "https:" || (!HOSTS.has(url.hostname.toLowerCase()) && !flexibleHost) || url.port || url.username || url.password || !/^\/(?:dir\/\d+(?:[-_/]\d+)?\.html|\d+\/?|\d+\/\d+(?:\/\d+)?\.html)\/?$/u.test(url.pathname)) throw new TypeError("Unsafe Huliwang URL.");
   url.search = ""; url.hash = ""; return url.href;
+}
+
+function isSupportedCurrentPage() {
+  try { normalizeUrl(location.href); return true; } catch { return false; }
 }
 
 const STORY_NOISE_SELECTOR = 'script,style,iframe,ins,figure,.adBlock,.gadBlock,.cf-unit,#comment,.bh-rec-embed,.recommend-wrap,[class^="ad-"],[class*=" ad-"]';
@@ -407,4 +415,5 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 // The paired tab is replaced during navigation, so every Huli document opens
 // its own Port from this content script immediately after it loads.
-connectHeartbeat();
+if (isSupportedCurrentPage()) connectHeartbeat();
+}

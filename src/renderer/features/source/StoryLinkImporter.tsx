@@ -57,11 +57,18 @@ function siteLabel(site: StorySourceAnalysis['site']): string {
 
 function manualVerificationLabel(url: string): string {
   try {
-    const hostname = new URL(url).hostname.toLowerCase();
-    if (['novel543.com', 'www.novel543.com'].includes(hostname)) return 'Novel543';
-    return ['xszj.org', 'www.xszj.org', 'ixdzs8.com', 'www.ixdzs8.com'].includes(hostname)
-      ? 'XSZJ/爱下电子书'
-      : 'Huliwang';
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+    const labels = hostname.split('.');
+    const brand = labels[0] === 'www' || labels[0] === 'm' ? labels[1] : labels[0];
+    const path = parsed.pathname.replace(/\/{2,}/gu, '/');
+    if (brand === 'novel543' || /^\/\d{6,20}(?:\/dir|\/\d+_\d+(?:_\d+)?\.html)?\/?$/u.test(path)) return 'Novel543';
+    return brand === 'xszj'
+      || brand === 'ixdzs8'
+      || /^\/b\/\d+(?:\/(?:cs|c)\/\d+)?\/?$/u.test(path)
+      || /^\/read\/\d+(?:\/p\d+\.html)?\/?$/u.test(path)
+        ? 'XSZJ/爱下电子书'
+        : 'Huliwang';
   } catch {
     return 'Huliwang';
   }

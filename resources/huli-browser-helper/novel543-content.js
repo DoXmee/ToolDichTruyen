@@ -1,3 +1,4 @@
+{
 // Strict Novel543 snapshot reader. It never clicks CAPTCHA/Turnstile or runs caller-provided code.
 const NOVEL543_HOSTS = new Set(["novel543.com", "www.novel543.com"]);
 const HEARTBEAT_PORT_NAME = "huli-heartbeat";
@@ -8,22 +9,24 @@ let heartbeatReconnects = 0;
 function normalizeUrl(rawUrl) {
   const url = new URL(rawUrl);
   const host = url.hostname.toLowerCase();
-  if (url.href.length > 2_048 || url.protocol !== "https:" || url.port || url.username || url.password || !NOVEL543_HOSTS.has(host)) {
+  const labels = host.split(".");
+  const brand = labels[0] === "www" || labels[0] === "m" ? labels[1] : labels[0];
+  if (url.href.length > 2_048 || url.protocol !== "https:" || url.port || url.username || url.password || (!NOVEL543_HOSTS.has(host) && brand !== "novel543")) {
     throw new TypeError("Unsafe Novel543 URL.");
   }
+  const origin = NOVEL543_HOSTS.has(host) ? "https://www.novel543.com" : `https://${labels[0] === "www" ? host : `www.${host}`}`;
   const path = url.pathname.replace(/\/{2,}/gu, "/");
   const book = /^\/(\d{6,20})\/?$/u.exec(path);
   const catalog = /^\/(\d{6,20})\/dir\/?$/u.exec(path);
   const chapter = /^\/(\d{6,20})\/(\d+_\d+)(?:_(\d+))?\.html$/u.exec(path);
-  if (book?.[1]) return `https://www.novel543.com/${book[1]}/`;
-  if (catalog?.[1]) return `https://www.novel543.com/${catalog[1]}/dir`;
+  if (book?.[1]) return `${origin}/${book[1]}/`;
+  if (catalog?.[1]) return `${origin}/${catalog[1]}/dir`;
   if (chapter?.[1] && chapter[2]) {
     const part = chapter[3] && Number.parseInt(chapter[3], 10) > 1 ? `_${Number.parseInt(chapter[3], 10)}` : "";
-    return `https://www.novel543.com/${chapter[1]}/${chapter[2]}${part}.html`;
+    return `${origin}/${chapter[1]}/${chapter[2]}${part}.html`;
   }
   throw new TypeError("Unsupported Novel543 path.");
 }
-
 function isSupportedCurrentPage() { try { normalizeUrl(location.href); return true; } catch { return false; } }
 function connectHeartbeat() {
   if (heartbeatPort || heartbeatReconnects >= 3 || !isSupportedCurrentPage()) return;
@@ -116,12 +119,15 @@ async function collect(requestedUrl) {
   return snapshot;
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "collect-snapshot") return false;
-  void collect(message.requestedUrl).then(
-    (snapshot) => sendResponse({ ok: true, snapshot }),
-    (error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "Novel543 snapshot failed." }),
-  );
-  return true;
-});
-connectHeartbeat();
+if (isSupportedCurrentPage()) {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== "collect-snapshot") return false;
+    void collect(message.requestedUrl).then(
+      (snapshot) => sendResponse({ ok: true, snapshot }),
+      (error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "Novel543 snapshot failed." }),
+    );
+    return true;
+  });
+  connectHeartbeat();
+}
+}

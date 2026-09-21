@@ -134,7 +134,7 @@ export class PersistenceService {
               createdAt: job.createdAt,
               updatedAt: job.updatedAt,
               status: job.status,
-              aiProvider: job.aiProvider === 'kimi' || job.aiProvider === 'deepseek'
+              aiProvider: job.aiProvider === 'kimi' || job.aiProvider === 'deepseek' || job.aiProvider === 'gemini'
                 ? job.aiProvider
                 : 'chatgpt',
               totalSegments: job.segments.length,
@@ -192,11 +192,18 @@ export class PersistenceService {
 
   public async getAiProvider(): Promise<AiProvider> {
     const provider = (await this.settingsStore.read(EMPTY_SETTINGS)).aiProvider;
-    return provider === "kimi" || provider === "deepseek" ? provider : "chatgpt";
+    return provider === "kimi" || provider === "deepseek" || provider === "gemini"
+      ? provider
+      : "chatgpt";
   }
 
   public async setAiProvider(provider: AiProvider): Promise<AiProvider> {
-    if (provider !== "chatgpt" && provider !== "kimi" && provider !== "deepseek") {
+    if (
+      provider !== "chatgpt"
+      && provider !== "kimi"
+      && provider !== "deepseek"
+      && provider !== "gemini"
+    ) {
       throw new TypeError("Nhà cung cấp AI không hợp lệ.");
     }
     const settings = { ...(await this.settingsStore.read(EMPTY_SETTINGS)), aiProvider: provider };

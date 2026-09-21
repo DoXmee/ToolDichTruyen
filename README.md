@@ -28,7 +28,8 @@ Tool Dịch Truyện gom toàn bộ quy trình dịch truyện dài vào một �
 - Hỗ trợ các nguồn đã kiểm thử trong adapter: Huliwang, XSZJ/爱下电子书, TimoTXT, Qingrenyouxi, Xbanxia và Novel543.
 - Ghép đủ các trang con của cùng một chương và loại bỏ footer/navigation đã nhận diện theo từng website.
 - Chọn bốn prompt đóng gói sẵn: `Truyện niên đại`, `Truyện hiện đại`, `Truyện cổ trang`, `Truyện tu tiên`; hoặc dùng prompt `Khác`.
-- Chọn nhóm cố định gồm một, hai hoặc cả ba chatbot ChatGPT/Kimi/DeepSeek; mặc định dùng cả ba.
+- Chọn nhóm cố định gồm một đến bốn chatbot ChatGPT/Kimi/DeepSeek/Gemini; mặc định dùng cả bốn.
+- Dịch trực tiếp bằng Gemini Web ngang hàng ChatGPT/Kimi/DeepSeek, dùng profile trình duyệt riêng và cùng cơ chế checkpoint.
 - Lưu checkpoint, nhóm chatbot, nhật ký hoạt động và tiếp tục đúng đoạn lỗi sau khi app/trình duyệt bị gián đoạn.
 - Retry có kiểm tra chữ Hán còn sót, lặp nội dung, tiêu đề và phản hồi an toàn; tự chuyển trong nhóm chatbot đã chọn theo loại lỗi.
 - Khi tiến trình lỗi, cho phép dùng một chatbot ngoài nhóm để cứu đúng một lượt; sau thành công hoặc thất bại đều quay lại nhóm cố định mà không lặp bot cứu.
@@ -74,7 +75,7 @@ Tool điều khiển giao diện web của ChatGPT, Kimi và DeepSeek bằng tr�
 - Node.js `>= 22`.
 - `pnpm` tương thích với lockfile của dự án.
 - Microsoft Edge hoặc Google Chrome đã cài trên máy.
-- Tài khoản của ít nhất một chatbot ChatGPT, Kimi hoặc DeepSeek có thể đăng nhập bằng trình duyệt.
+- Tài khoản của ít nhất một chatbot ChatGPT, Kimi, DeepSeek hoặc Gemini có thể đăng nhập bằng trình duyệt.
 
 ### Để dùng tính năng đặt tên chương
 
@@ -106,11 +107,47 @@ Lệnh `start` chỉ phù hợp sau khi output cần thiết đã tồn tại.
 
 ### 1. Chọn và kết nối chatbot
 
-1. Chọn ChatGPT, Kimi AI hoặc DeepSeek AI trên thanh chatbot rồi bấm `Kết nối`.
+1. Chọn ChatGPT, Kimi AI, DeepSeek AI hoặc Gemini AI trên thanh chatbot rồi bấm `Kết nối`.
 2. Nếu trạng thái yêu cầu đăng nhập, đăng nhập thủ công trong cửa sổ trình duyệt vừa mở.
 3. Hoàn tất CAPTCHA hoặc xác thực hai bước nếu dịch vụ yêu cầu.
 4. Quay lại ứng dụng và bấm `Kiểm tra kết nối` nếu trạng thái chưa tự cập nhật.
-5. Chọn nhóm chatbot được phép dùng cho tiến trình (mặc định cả ba) và chỉ bắt đầu dịch khi chatbot hiện tại đã kết nối.
+5. Chọn nhóm chatbot được phép dùng cho tiến trình (mặc định cả bốn) và chỉ bắt đầu dịch khi chatbot hiện tại đã kết nối.
+
+Gemini Web dùng profile trình duyệt riêng (`gemini-browser-profile`) và phiên đăng nhập Google độc lập với ba chatbot còn lại. Đăng nhập một lần trong cửa sổ do ứng dụng mở, sau đó phiên được giữ lại trên máy.
+
+Đã đo bằng chạy thật: chương ngắn khoảng 13 giây, chương 1.700 chữ Hán khoảng 72 giây. Gemini có giai đoạn "suy nghĩ" vài giây trước khi trả lời; tool chờ đúng cờ hoàn tất của trang nên không cắt sớm phản hồi.
+
+**Model dùng để dịch:** tool tự chuyển về bản **Pro mới nhất** trước mỗi lượt gửi (bỏ qua Flash, Flash-Lite và chế độ "Tư duy mở rộng" vì chế độ đó không tự nhận là Pro).
+
+Nếu tài khoản không có model Pro nào, tool **dừng và báo lỗi** kèm danh sách model nó nhìn thấy, thay vì âm thầm dịch bằng model khác. Bảng chọn không mở được hoặc chọn xong mà Gemini không đổi model cũng báo lỗi tương tự. Đây là chủ ý: model khác nhau cho ra cách dùng từ và mức lọc an toàn khác nhau, nên dịch nhầm model còn tệ hơn là báo lỗi.
+
+**Chống lặp đoạn đầu:** với chương dài, Gemini đôi khi bỏ dở đoạn mở đầu rồi viết lại từ đầu trong cùng một phản hồi. Tool phát hiện tiêu đề chương bị lặp sát đầu văn bản và chỉ giữ lại bản viết hoàn chỉnh.
+
+**Khi Gemini hết hạn mức:** Gemini khoá các model cao và ghi mốc đặt lại hạn mức ngay trong bảng chọn. Tool đọc mốc đó và xử lý như sau:
+
+- Nếu tiến trình còn AI khác trong nhóm đã chọn (ChatGPT / Kimi / DeepSeek), tool **tự chuyển sang AI đó** và dịch tiếp, không đốt thêm lượt thử trên tài khoản đã hết hạn mức.
+- Nếu tiến trình chỉ có Gemini, tool **tạm dừng** và hiển thị thông báo dạng *"Gemini đã hết hạn mức dùng model cao (3.1 Pro). Hạn mức sẽ được đặt lại vào 15:13 20 thg 9. Hãy thử lại sau thời điểm đó…"*. Các đoạn đã dịch được giữ nguyên; bấm `Tiếp tục` sau mốc đó là chạy tiếp, không mất công.
+
+### Quản lý nhiều tài khoản
+
+Nút `Tài khoản (n)` trên thanh công cụ mở danh sách tài khoản đã lưu của bot đang chọn:
+
+Thanh công cụ **không còn nút `Kết nối`** — nút `Tài khoản` nằm ở vị trí đó. Chọn chatbot chỉ đổi lựa chọn và không mở trình duyệt; chỉ nút `Thêm tài khoản` mới mở trình duyệt. Sau khi đăng nhập, hãy **đóng cửa sổ đó**, tool tự đọc và lưu tài khoản. Nếu chưa có tài khoản mà bấm `Bắt đầu dịch`, tool sẽ nhắc thêm tài khoản và tự mở bảng này.
+
+- Mỗi dòng hiển thị tên, email hoặc gói, và trạng thái hạn mức (`Còn hạn mức` / `Hết hạn mức tới 15:13 20/09` / `Chưa dùng`). Ô nhỏ phía trên là số tài khoản của từng bot.
+- Bấm nút dấu tick để dùng tài khoản đó cho lượt dịch tiếp theo.
+- `Thêm tài khoản` mở trình duyệt để bạn đăng nhập; sau khi đăng nhập, bấm `Kiểm tra kết nối` để tool tự đọc và lưu tài khoản đó. Gemini đọc được email, ChatGPT đọc được tên và gói; Kimi và DeepSeek không hiển thị tài khoản trong trang nên bạn tự đặt tên.
+- Nút hình thùng rác xoá tài khoản khỏi danh sách. Profile của tài khoản đó được để lại và sẽ được dọn ở bước sau.
+- `Dọn rác` chỉ xoá cache của mọi profile trình duyệt — **không xoá tài khoản và không làm mất phiên đăng nhập**.
+
+Thứ tự xoay vòng khi hết hạn mức: tài khoản 1 → 2 → 3, **không quay lại tài khoản đã lỗi**. Hết cả danh sách thì tool chuyển sang chatbot khác nếu tiến trình có chọn, còn nếu chỉ có một bot thì tạm dừng kèm mốc đặt lại hạn mức. Mỗi tài khoản chỉ tiêu tốn đúng một lượt thử cho mỗi đoạn.
+
+Gemini dùng chung một profile cho nhiều tài khoản (Google cho đăng nhập nhiều tài khoản trong cùng trình duyệt). ChatGPT, Kimi và DeepSeek mỗi tài khoản một profile riêng vì các trang đó chỉ giữ một phiên cho mỗi profile.
+
+**Chat Gemini được nhận diện bằng dấu sở hữu, không bằng URL:** Google đã ngừng đưa ID hội thoại vào địa chỉ trang, nên tool dùng chính dấu ẩn nó gắn vào prompt để biết chat nào là của mình. Hai hệ quả cần biết:
+
+- Tool **không tự xoá** chat Gemini sau khi dịch; các chat do tool tạo sẽ nằm lại trong lịch sử Gemini và bạn tự xoá nếu muốn.
+- Nếu bạn tắt app giữa chừng rồi mở lại, tool sẽ **mở chat mới và gửi lại prompt gốc** thay vì quay về đúng chat cũ. Các đoạn đã dịch vẫn được giữ trong checkpoint.
 
 Không mở đồng thời nhiều phiên Tool dịch truyện dùng chung profile trình duyệt.
 
@@ -136,7 +173,7 @@ Bốn prompt mặc định được đọc dưới dạng UTF-8 khi ứng dụng
 5. Khi một đoạn không vượt qua kiểm tra sau số lần thử cho phép, dùng nút `Tiếp tục từ đoạn lỗi` của đúng đoạn đó; các đoạn đã hoàn tất vẫn được giữ nguyên.
 6. Kết quả hợp lệ được ghép vào ô `Nội dung đã dịch`; người dùng có thể sửa trực tiếp trước khi xuất.
 
-Trong lúc tiến trình chạy, nhóm chatbot được khóa. Khi tiến trình lỗi, cả ba lựa chọn chatbot được mở để người dùng chọn bot cứu đoạn. Bot ngoài nhóm chỉ chạy một lượt cho đúng đoạn lỗi, không tự retry, rồi tiến trình quay về nhóm chatbot ban đầu.
+Trong lúc tiến trình chạy, nhóm chatbot được khóa. Khi tiến trình lỗi, cả bốn lựa chọn chatbot được mở để người dùng chọn bot cứu đoạn. Bot ngoài nhóm chỉ chạy một lượt cho đúng đoạn lỗi, không tự retry, rồi tiến trình quay về nhóm chatbot ban đầu.
 
 Việc sửa nội dung nguồn sau khi tác vụ đã bắt đầu không thay đổi snapshot nguồn của tác vụ đang chạy.
 
@@ -178,6 +215,8 @@ Preview chỉ cắt tại ranh giới đoạn xuống dòng, không cắt giữa
 | `GOOGLE_API_KEY` | Tên biến dự phòng cho Gemini API key. |
 | `GEMINI_MODEL` | Model Gemini mặc định nếu chưa lưu model trong cài đặt. |
 | `CHATGPT_BASE_URL` | Ghi đè URL ChatGPT cho môi trường kiểm thử/phát triển; không nên đổi trong sử dụng thông thường. |
+| `GEMINI_BASE_URL` | Ghi đè URL Gemini Web cho môi trường kiểm thử/phát triển; không nên đổi trong sử dụng thông thường. |
+| `GEMINI_BROWSER_EXECUTABLE` | Đường dẫn tuyệt đối tới `msedge.exe` hoặc `chrome.exe` riêng cho phiên Gemini nếu cần. |
 | `TOOL_DICH_TRUYEN_USER_DATA` | Ghi đè thư mục dữ liệu người dùng cho test cô lập. |
 
 Ví dụ chỉ định Chrome trong PowerShell cho phiên terminal hiện tại:
@@ -297,6 +336,13 @@ ChatGPT có thể vừa thay đổi DOM hoặc đang chạy một biến thể g
 - Xác minh quota và quyền dùng model của tài khoản Google.
 - Dịch và chia chương vẫn dùng được khi bỏ qua chức năng Gemini.
 
+### Luôn hiện “Chờ đăng nhập Gemini AI” khi dịch bằng Gemini
+
+- Đăng nhập Google trong đúng cửa sổ Gemini do ứng dụng mở, không phải một cửa sổ trình duyệt khác.
+- Hoàn tất xác minh hai bước nếu tài khoản yêu cầu, rồi quay lại ứng dụng và bấm `Kiểm tra kết nối`.
+- Gemini Web có thể đổi DOM thường xuyên hơn ba chatbot còn lại. Nếu ô nhập hiện diện nhưng tool không gửi được, ghi lại screenshot và cập nhật `GEMINI_SELECTORS` trong `src/main/chatgpt/selectors.ts`.
+- Không dùng chung profile với phiên ChatGPT/Kimi/DeepSeek; mỗi chatbot có thư mục profile riêng.
+
 ### Bản dịch còn chữ Hán
 
 - Xem đoạn lỗi tương ứng và dùng `Thử lại` nếu tác vụ đã đánh dấu lỗi.
@@ -305,7 +351,7 @@ ChatGPT có thể vừa thay đổi DOM hoặc đang chạy một biến thể g
 
 ## Dữ liệu và quyền riêng tư
 
-- Draft, cấu hình và profile đăng nhập ChatGPT được lưu trong thư mục dữ liệu người dùng của ứng dụng trên máy.
+- Draft, cấu hình và profile đăng nhập của từng chatbot (ChatGPT, Kimi, DeepSeek, Gemini) được lưu riêng trong thư mục dữ liệu người dùng của ứng dụng trên máy.
 - Nội dung nguồn được gửi tới website chatbot đang được chọn khi bắt đầu dịch.
 - Trích đoạn chương được gửi tới Gemini chỉ khi dùng tính năng đặt tên AI.
 - Tệp TXT chỉ được ghi tới vị trí người dùng chọn.

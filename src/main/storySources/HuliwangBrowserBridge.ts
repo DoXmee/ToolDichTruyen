@@ -23,9 +23,9 @@ export const HULIWANG_COMPANION_EXTENSION_ORIGIN =
  * expose the narrowly scoped `catalog-next` command, so pairing them would
  * otherwise fail later with a misleading empty/partial catalog error.
  */
-// Version 1.0.7 adds Novel543's strict URL/snapshot surface. Older helpers
-// cannot read that host and must be reloaded before pairing.
-export const HULIWANG_COMPANION_MINIMUM_VERSION = "1.0.7";
+// Version 1.0.8 isolates broad-match content scripts and accepts Huliwang's
+// ihuliwang.com migration. Older helpers can pair but cannot read that host.
+export const HULIWANG_COMPANION_MINIMUM_VERSION = "1.0.8";
 
 export type BrowserCompanionSite = "huliwang" | "xszj" | "novel543";
 
@@ -163,23 +163,19 @@ function stringArray(value: unknown, name: string, maximumItems: number, maximum
 function assertCompanionHttpsUrl(value: unknown, name: string, site: BrowserCompanionSite): string {
   const raw = boundedString(value, name, 2_048, false);
   let parsed: URL;
+  let storyUrl;
   try {
     parsed = new URL(raw);
+    storyUrl = parseStoryUrl(raw);
   } catch {
     throw new TypeError(`${name} is not a valid URL.`);
   }
-  const host = parsed.hostname.toLowerCase();
-  const allowedHosts = site === "huliwang"
-    ? ["huliwang.net", "www.huliwang.net", "m.huliwang.net"]
-    : site === "xszj"
-      ? ["xszj.org", "www.xszj.org", "ixdzs8.com", "www.ixdzs8.com"]
-      : ["novel543.com", "www.novel543.com"];
   if (
     parsed.protocol !== "https:"
     || parsed.username
     || parsed.password
     || parsed.port
-    || !allowedHosts.includes(host)
+    || storyUrl.site !== site
   ) {
     throw new TypeError(`${name} is outside the companion allow-list.`);
   }

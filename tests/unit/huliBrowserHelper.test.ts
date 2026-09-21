@@ -17,24 +17,14 @@ function encode(value: unknown): string {
 }
 
 describe("Huli normal-browser helper", () => {
-  it("has a narrowly scoped MV3 manifest with a stable extension id key", async () => {
+  it("has a domain-flexible MV3 manifest with a stable extension id key", async () => {
     const manifest = JSON.parse(await readFile(resolve(root, "manifest.json"), "utf8"));
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("1.0.7");
+    expect(manifest.version).toBe("1.0.8");
     expect(manifest.name).toBe("Tool Dịch Truyện - Browser Helper");
     expect(manifest.description).toContain("Novel543");
     expect(manifest.permissions).toEqual(["storage"]);
-    expect(manifest.host_permissions).toEqual([
-      "https://m.huliwang.net/*",
-      "https://www.huliwang.net/*",
-      "https://xszj.org/*",
-      "https://www.xszj.org/*",
-      "https://ixdzs8.com/*",
-      "https://www.ixdzs8.com/*",
-      "https://novel543.com/*",
-      "https://www.novel543.com/*",
-      "http://127.0.0.1/*",
-    ]);
+    expect(manifest.host_permissions).toEqual(["https://*/*", "http://127.0.0.1/*"]);
     expect(manifest.permissions).not.toEqual(expect.arrayContaining(["cookies", "history", "debugger", "webRequest", "scripting"]));
     expect(manifest.key).toMatch(/^MIIB/);
     const digest = createHash("sha256").update(Buffer.from(manifest.key, "base64")).digest("hex").slice(0, 32);
@@ -75,7 +65,9 @@ describe("Huli normal-browser helper", () => {
   it("allow-lists only supported HTTPS Huli book/catalog/chapter URLs", () => {
     expect(protocol.normalizeHuliUrl("https://www.huliwang.net/1703891/36/3.html?q=x#y")).toBe("https://www.huliwang.net/1703891/36/3.html");
     expect(protocol.normalizeHuliUrl("https://m.huliwang.net/dir/1703891.html")).toBe("https://m.huliwang.net/dir/1703891.html");
-    for (const url of ["http://m.huliwang.net/1703891/1.html", "https://huliwang.net/1703891/1.html", "https://m.huliwang.net.evil.test/1703891/1.html", "https://m.huliwang.net/not-supported"]) {
+    expect(protocol.normalizeHuliUrl("https://www.ihuliwang.com/1703891/1.html")).toBe("https://www.ihuliwang.com/1703891/1.html");
+    expect(protocol.normalizeHuliUrl("https://huliwang.ai/1703891/1.html")).toBe("https://huliwang.ai/1703891/1.html");
+    for (const url of ["http://m.huliwang.net/1703891/1.html", "https://m.huliwang.net.evil.test/1703891/1.html", "https://m.huliwang.net/not-supported"]) {
       expect(() => protocol.normalizeHuliUrl(url)).toThrow();
     }
   });
@@ -84,6 +76,7 @@ describe("Huli normal-browser helper", () => {
     expect(protocol.normalizeNovel543Url("https://novel543.com/1013669909/?from=x#y")).toBe("https://www.novel543.com/1013669909/");
     expect(protocol.normalizeNovel543Url("https://www.novel543.com/1013669909/dir?q=x")).toBe("https://www.novel543.com/1013669909/dir");
     expect(protocol.normalizeNovel543Url("https://novel543.com/1013669909/8096_1_2.html#x")).toBe("https://www.novel543.com/1013669909/8096_1_2.html");
+    expect(protocol.normalizeNovel543Url("https://novel543.net/1013669909/8096_1_2.html#x")).toBe("https://www.novel543.net/1013669909/8096_1_2.html");
     expect(protocol.companionSite("https://www.novel543.com/1013669909/dir")).toBe("novel543");
     for (const url of [
       "http://novel543.com/1013669909/",
@@ -307,6 +300,34 @@ describe("Huli normal-browser helper", () => {
     expect(response.snapshot.elements["#nr"]).toEqual(["正文内容足够长\n第二段"]);
     expect(response.snapshot.challenge).toBe("none");
     expect(portConnects).toBe(1);
+  });
+
+  it("registers only the matching broad-host content script on an ihuliwang page", async () => {
+    const url = "https://m.ihuliwang.com/1703891/1.html";
+    const dom = new JSDOM("<!doctype html><html><head><title>Chương 1</title></head><body><div id='nr_title'>第1章</div><div id='nr'>正文内容足够长<br>第二段</div></body></html>", {
+      url,
+      runScripts: "outside-only",
+    });
+    const listeners: Array<(message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean> = [];
+    let portConnects = 0;
+    Object.defineProperty(dom.window, "TextEncoder", { value: TextEncoder });
+    Object.defineProperty(dom.window, "chrome", { value: { runtime: {
+      connect: (options: unknown) => {
+        expect(options).toEqual({ name: "huli-heartbeat" });
+        portConnects += 1;
+        return { onDisconnect: { addListener: () => undefined } };
+      },
+      onMessage: { addListener: (value: (message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean) => { listeners.push(value); } },
+    } } });
+    for (const file of ["novel543-content.js", "huli-content.js", "xszj-content.js"]) {
+      dom.window.eval(await readFile(resolve(root, file), "utf8"));
+    }
+    expect(listeners).toHaveLength(1);
+    expect(portConnects).toBe(1);
+    let response: any;
+    expect(listeners[0]?.({ type: "collect-snapshot", requestedUrl: url }, {}, (value) => { response = value; })).toBe(false);
+    expect(response.ok).toBe(true);
+    expect(response.snapshot.url).toBe(url);
   });
 
   it("waits asynchronously for a safe Huli catalog list before taking its first snapshot", async () => {

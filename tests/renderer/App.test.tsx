@@ -7,11 +7,20 @@ import type {
   TranslationEvent,
   TranslationRequest,
 } from '../../src/renderer/ipc';
-import type { TranslationJobSnapshot } from '../../src/shared';
+import type { AiProvider, TranslationJobSnapshot } from '../../src/shared';
 import {
   chapterContentFingerprint,
   combinedChapterContentFingerprint,
 } from '../../src/shared/exportIntegrity';
+
+/**
+ * Connecting is no longer a toolbar button: the toolbar opens the account panel
+ * and the connect action lives inside it, next to the saved accounts.
+ */
+async function connectViaAccountPanel() {
+  fireEvent.click(await screen.findByRole('button', { name: 'Tài khoản' }));
+  fireEvent.click(await screen.findByRole('button', { name: /Kiểm tra kết nối/u }));
+}
 
 interface StoryToolHarness {
   api: StoryToolApi;
@@ -44,6 +53,8 @@ function installStoryTool(options: {
   activeTranslations?: TranslationJobSnapshot[];
   storyAnalysis?: import('../../src/shared').StorySourceAnalysis;
   storyFetch?: import('../../src/shared').StoryFetchResult;
+  /** Defaults to one saved login for the active bot. Use [] for the empty case. */
+  accounts?: Array<{ id: string; provider: string; label: string }>;
 } = {}): StoryToolHarness {
   let eventListener: ((event: TranslationEvent) => void) | undefined;
   const loadPrompts = vi.fn(async () => ({
@@ -53,8 +64,8 @@ function installStoryTool(options: {
     cultivation: 'Prompt tu tiên mặc định',
   }));
   const connectChatGPT = vi.fn(async () => ({ status: options.connectionStatus ?? 'ready' }));
-  let aiProvider: 'chatgpt' | 'kimi' | 'deepseek' = 'chatgpt';
-  const setAiProvider = vi.fn(async (provider: 'chatgpt' | 'kimi' | 'deepseek') => {
+  let aiProvider: AiProvider = 'chatgpt';
+  const setAiProvider = vi.fn(async (provider: AiProvider) => {
     aiProvider = provider;
     return { provider, status: 'closed' };
   });
@@ -63,13 +74,34 @@ function installStoryTool(options: {
       const result = await connectChatGPT();
       return { provider: aiProvider, ...result };
     }
+    // Tests that opt into a ready connection also get a ready session for the
+    // non-ChatGPT providers, so start-translation flows can be exercised.
+    if (options.connectionStatus === 'ready') {
+      return { provider: aiProvider, status: 'ready' };
+    }
     return {
       provider: aiProvider,
       status: 'login-required',
-      message: `Hãy đăng nhập ${aiProvider === 'kimi' ? 'Kimi AI' : 'DeepSeek AI'}.`,
+      message: `Hãy đăng nhập ${
+        aiProvider === 'kimi' ? 'Kimi AI' : aiProvider === 'deepseek' ? 'DeepSeek AI' : 'Gemini AI'
+      }.`,
     };
   });
   const startTranslation = vi.fn(async (_request: TranslationRequest) => ({ jobId: 'job-1' }));
+  // A saved login per bot: the app refuses to start a translation without one,
+  // which is exactly what the account flow is for.
+  const listAccounts = vi.fn(async () => ({
+    accounts: options.accounts ?? [{
+      id: `${aiProvider}-saved`,
+      provider: aiProvider,
+      label: 'Tài khoản 1',
+      profileDirectory: `profile-${aiProvider}`,
+      createdAt: '2026-09-19T00:00:00.000Z',
+    }],
+    activeProvider: aiProvider,
+    activeAccountId: options.accounts?.length === 0 ? undefined : `${aiProvider}-saved`,
+  }));
+  const addAccount = vi.fn(async () => listAccounts());
   const cancelTranslation = vi.fn(async () => undefined);
   const discardTranslation = vi.fn(async () => undefined);
   const restartTranslation = vi.fn(async () => ({ jobId: 'job-restarted' }));
@@ -157,6 +189,8 @@ function installStoryTool(options: {
     connectChatGPT,
     getAiProvider: vi.fn(async () => aiProvider),
     setAiProvider,
+    listAccounts,
+    addAccount,
     connectAi,
     getAiStatus: vi.fn(async () => ({ provider: aiProvider, status: 'closed' })),
     startTranslation,
@@ -231,7 +265,7 @@ afterEach(() => {
 });
 
 describe('App renderer', () => {
-  it('đổi sang Kimi AI thì mở ngay phiên đăng nhập riêng và cập nhật nhãn', async () => {
+  it('đổi chatbot chỉ đổi lựa chọn, không mở trình duyệt', async () => {
     const harness = installStoryTool();
     render(<App />);
 
@@ -241,23 +275,83 @@ describe('App renderer', () => {
 
     await waitFor(() => {
       expect(harness.api.setAiProvider).toHaveBeenCalledWith('kimi');
-      expect(harness.api.connectAi).toHaveBeenCalledOnce();
       expect(kimi).toHaveAttribute('aria-checked', 'true');
-      expect(screen.getByText('Chờ đăng nhập Kimi AI')).toBeInTheDocument();
     });
+    // Switching bots must never open a browser window; only adding an account
+    // or starting a translation may do that.
+    expect(harness.api.connectAi).not.toHaveBeenCalled();
+    expect(screen.getByText('Chưa kết nối Kimi AI')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('radio', { name: 'ChatGPT' }));
     await waitFor(() => {
       expect(harness.api.setAiProvider).toHaveBeenLastCalledWith('chatgpt');
       expect(screen.getByRole('radio', { name: 'ChatGPT' })).toHaveAttribute('aria-checked', 'true');
-      expect(screen.getByText('ChatGPT đã kết nối')).toBeInTheDocument();
     });
+    expect(harness.api.connectAi).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('radio', { name: 'DeepSeek AI' }));
     await waitFor(() => {
       expect(harness.api.setAiProvider).toHaveBeenLastCalledWith('deepseek');
       expect(screen.getByRole('radio', { name: 'DeepSeek AI' })).toHaveAttribute('aria-checked', 'true');
-      expect(screen.getByText('Chờ đăng nhập DeepSeek AI')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Gemini AI' }));
+    await waitFor(() => {
+      expect(harness.api.setAiProvider).toHaveBeenLastCalledWith('gemini');
+      expect(screen.getByRole('radio', { name: 'Gemini AI' })).toHaveAttribute('aria-checked', 'true');
+    });
+    expect(harness.api.connectAi).not.toHaveBeenCalled();
+  });
+
+  it('yêu cầu thêm tài khoản trước khi dịch khi chưa có tài khoản nào', async () => {
+    const harness = installStoryTool({ accounts: [] });
+    render(<App />);
+
+    fireEvent.change(await screen.findByLabelText('Nội dung tiếng Trung cần dịch'), {
+      target: { value: '第一章。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Bắt đầu dịch' }));
+
+    expect(await screen.findByText(/Chưa có tài khoản nào cho/u)).toBeInTheDocument();
+    // The panel opens by itself so the missing login can be added right away.
+    expect(await screen.findByRole('dialog', { name: 'Tài khoản đã lưu' })).toBeInTheDocument();
+    expect(harness.startTranslation).not.toHaveBeenCalled();
+  });
+
+  it('chỉ nút Thêm tài khoản mới mở trình duyệt', async () => {
+    const harness = installStoryTool({ accounts: [] });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Tài khoản' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Thêm tài khoản/u }));
+
+    await waitFor(() => expect(harness.api.addAccount).toHaveBeenCalledOnce());
+    expect(harness.api.connectAi).not.toHaveBeenCalled();
+  });
+
+  it('gửi Gemini và nhóm bốn chatbot khi bắt đầu dịch bằng Gemini', async () => {
+    const harness = installStoryTool({ connectionStatus: 'ready' });
+    render(<App />);
+
+    const source = '她推开门，看见庭院里的白梅。';
+    fireEvent.change(await screen.findByLabelText('Nội dung tiếng Trung cần dịch'), {
+      target: { value: source },
+    });
+
+    const gemini = await screen.findByRole('radio', { name: 'Gemini AI' });
+    await waitFor(() => expect(gemini).toBeEnabled());
+    fireEvent.click(gemini);
+    await waitFor(() => expect(harness.api.setAiProvider).toHaveBeenLastCalledWith('gemini'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Bắt đầu dịch' }));
+
+    await waitFor(() => {
+      expect(harness.startTranslation).toHaveBeenCalledWith(expect.objectContaining({
+        aiProvider: 'gemini',
+        allowedAiProviders: ['chatgpt', 'kimi', 'deepseek', 'gemini'],
+        source,
+        settings: expect.objectContaining({ responseTimeoutMs: 1_200_000 }),
+      }));
     });
   });
 
@@ -369,10 +463,11 @@ describe('App renderer', () => {
 
     fireEvent.click(await screen.findByRole('checkbox', { name: 'Kimi AI' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'DeepSeek AI' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Gemini AI' }));
     fireEvent.change(screen.getByLabelText('Nội dung tiếng Trung cần dịch'), {
       target: { value: '第一章。' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /Kết nối/u }));
+    await connectViaAccountPanel();
     await screen.findByText('ChatGPT đã kết nối');
     fireEvent.click(screen.getByRole('button', { name: 'Bắt đầu dịch' }));
     await waitFor(() => expect(harness.startTranslation).toHaveBeenCalledWith(
@@ -526,14 +621,14 @@ describe('App renderer', () => {
     fireEvent.change(await screen.findByLabelText('Nội dung tiếng Trung cần dịch'), {
       target: { value: source },
     });
-    fireEvent.click(screen.getByRole('button', { name: /Kết nối/i }));
+    await connectViaAccountPanel();
 
     expect(await screen.findByText('ChatGPT đã kết nối')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Bắt đầu dịch' }));
 
     await waitFor(() => {
       expect(harness.startTranslation).toHaveBeenCalledWith({
-        allowedAiProviders: ['chatgpt', 'kimi', 'deepseek'],
+        allowedAiProviders: ['chatgpt', 'kimi', 'deepseek', 'gemini'],
         source,
         promptMode: 'period',
         customPrompt: undefined,
@@ -555,7 +650,7 @@ describe('App renderer', () => {
     fireEvent.change(await screen.findByLabelText('Nội dung tiếng Trung cần dịch'), {
       target: { value: '月色很好，她终于回家了。' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /Kết nối/i }));
+    await connectViaAccountPanel();
     await screen.findByText('ChatGPT đã kết nối');
     fireEvent.click(screen.getByRole('button', { name: 'Bắt đầu dịch' }));
     await waitFor(() => expect(harness.startTranslation).toHaveBeenCalledOnce());
@@ -625,7 +720,7 @@ describe('App renderer', () => {
     fireEvent.change(await screen.findByLabelText('Nội dung tiếng Trung cần dịch'), {
       target: { value: '第一段。第二段。' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /Kết nối/i }));
+    await connectViaAccountPanel();
     await screen.findByText('ChatGPT đã kết nối');
     fireEvent.click(screen.getByRole('button', { name: 'Bắt đầu dịch' }));
     await waitFor(() => expect(harness.startTranslation).toHaveBeenCalledOnce());
@@ -891,7 +986,7 @@ describe('App renderer', () => {
     fireEvent.change(await screen.findByLabelText('Nội dung tiếng Trung cần dịch'), {
       target: { value: source },
     });
-    fireEvent.click(screen.getByRole('button', { name: /Kết nối/i }));
+    await connectViaAccountPanel();
     await screen.findByText('ChatGPT đã kết nối');
     fireEvent.click(screen.getByRole('button', { name: 'Bắt đầu dịch' }));
 
@@ -983,7 +1078,7 @@ describe('App renderer', () => {
     await screen.findByText(storyAnalysis.bookTitle);
     fireEvent.click(screen.getByRole('button', { name: /(?:Chọn|Đổi) thư mục lưu/u }));
     await waitFor(() => expect(harness.chooseChapterDirectory).toHaveBeenCalledOnce());
-    fireEvent.click(screen.getByRole('button', { name: /^Kết nối$/u }));
+    await connectViaAccountPanel();
     await screen.findByText('ChatGPT đã kết nối');
     fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/u }));
 
@@ -1043,7 +1138,7 @@ describe('App renderer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Chọn thư mục lưu/i }));
     await waitFor(() => expect(harness.chooseChapterDirectory).toHaveBeenCalledOnce());
-    fireEvent.click(screen.getByRole('button', { name: /Kết nối/i }));
+    await connectViaAccountPanel();
     await screen.findByText('ChatGPT đã kết nối');
     fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/i }));
 
@@ -1117,7 +1212,7 @@ describe('App renderer', () => {
     expect(screen.getByLabelText('Số chương xuất bắt đầu')).toHaveValue(1);
     fireEvent.click(screen.getByRole('button', { name: /Chọn thư mục lưu/i }));
     await waitFor(() => expect(harness.chooseChapterDirectory).toHaveBeenCalledOnce());
-    fireEvent.click(screen.getByRole('button', { name: /Kết nối/i }));
+    await connectViaAccountPanel();
     await screen.findByText('ChatGPT đã kết nối');
     fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/i }));
 
@@ -1177,7 +1272,7 @@ describe('App renderer', () => {
     fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
     fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
     await screen.findByText(storyAnalysis.bookTitle);
-    fireEvent.click(screen.getByRole('button', { name: /^Kết nối$/u }));
+    await connectViaAccountPanel();
     await screen.findByText('ChatGPT đã kết nối');
     fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/u }));
 
@@ -1354,6 +1449,29 @@ describe('App renderer', () => {
     expect(screen.queryByRole('button', { name: 'Kết nối trình duyệt mặc định' })).not.toBeInTheDocument();
   });
 
+  it.each([
+    ['https://www.timotxt.com/1509589610/13.html', false],
+    ['https://www.timotxt.com/0108567756/dir', false],
+    ['https://www.qingrenyouxi.com/1234567/12.html', false],
+    ['https://www.novel543.com/1013669909/8096_1_2.html', true],
+    ['https://xszj.org/b/123456/c/1', true],
+    ['https://m.huliwang.net/1703891/1.html', true],
+    // Unknown mirror host: the path shape is the only available signal.
+    ['https://mirror.example/1703891/1.html', true],
+  ])('phân loại nguồn cần xác minh thủ công cho %s', async (url, expected) => {
+    const harness = installStoryTool();
+    harness.analyzeStoryUrl.mockRejectedValueOnce(new Error('Cloudflare chưa hoàn tất xác minh thụ động.'));
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
+    fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), { target: { value: url } });
+    fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
+
+    await screen.findByText(/Cloudflare chưa hoàn tất xác minh thụ động/u);
+    const button = screen.queryByRole('button', { name: 'Kết nối trình duyệt mặc định' });
+    expect(button !== null).toBe(expected);
+  });
+
   it('hiện lại kết nối trình duyệt khi companion Huliwang mất giữa lúc tải', async () => {
     const huliwangUrl = 'https://m.huliwang.net/1703891/1.html';
     const storyAnalysis = {
@@ -1378,7 +1496,7 @@ describe('App renderer', () => {
     expect(await screen.findByText('Huliwang')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Chọn thư mục lưu/i }));
     await waitFor(() => expect(harness.chooseChapterDirectory).toHaveBeenCalledOnce());
-    fireEvent.click(screen.getByRole('button', { name: /Kết nối/i }));
+    await connectViaAccountPanel();
     await screen.findByText('ChatGPT đã kết nối');
     fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/i }));
 
@@ -1859,7 +1977,7 @@ describe('App renderer', () => {
     fireEvent.click(screen.getByRole('button', { name: /Phân tích/i }));
     await screen.findByText(storyAnalysis.bookTitle);
     fireEvent.click(screen.getByRole('button', { name: /Chọn thư mục lưu/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Kết nối/i }));
+    await connectViaAccountPanel();
     await screen.findByText('ChatGPT đã kết nối');
     fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/i }));
 

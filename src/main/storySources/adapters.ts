@@ -82,11 +82,6 @@ function linkInScope(link: StoryPageLink, scopes: string[]): boolean {
 
 function canonicalChapterUrl(parsed: ParsedStoryUrl): string {
   if (!parsed.chapterKey) throw new StorySourceError("SOURCE_CHANGED", "Liên kết chương không có ID.");
-  if (parsed.site === "huliwang") return `https://m.huliwang.net/${parsed.bookId}/${parsed.chapterKey}.html`;
-  if (parsed.site === "timotxt") return `https://www.timotxt.com/${parsed.bookId}/${parsed.chapterKey}.html`;
-  if (parsed.site === "qingrenyouxi") return `https://www.qingrenyouxi.com/book/${parsed.bookId}/${parsed.chapterKey}.html`;
-  if (parsed.site === "xbanxia") return `https://www.xbanxia.cc/books/${parsed.bookId}/${parsed.chapterKey}.html`;
-  if (parsed.site === "novel543") return parsed.normalizedUrl;
   return parsed.normalizedUrl;
 }
 

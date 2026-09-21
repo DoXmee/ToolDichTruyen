@@ -220,7 +220,7 @@ export interface TranslationAutoExportBinding {
 }
 
 /** AI web service selected for a translation job. */
-export type AiProvider = 'chatgpt' | 'kimi' | 'deepseek';
+export type AiProvider = 'chatgpt' | 'kimi' | 'deepseek' | 'gemini';
 
 export interface TranslationJob {
   id: string;

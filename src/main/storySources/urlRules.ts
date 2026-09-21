@@ -14,7 +14,7 @@ export interface ParsedStoryUrl {
 }
 
 const HOSTS: Readonly<Record<StorySite, ReadonlySet<string>>> = {
-  huliwang: new Set(["huliwang.net", "www.huliwang.net", "m.huliwang.net"]),
+  huliwang: new Set(["huliwang.net", "www.huliwang.net", "m.huliwang.net", "ihuliwang.net", "www.ihuliwang.net", "m.ihuliwang.net"]),
   timotxt: new Set(["timotxt.com", "www.timotxt.com"]),
   qingrenyouxi: new Set(["qingrenyouxi.com", "www.qingrenyouxi.com"]),
   xbanxia: new Set(["xbanxia.cc", "www.xbanxia.cc"]),
@@ -24,6 +24,32 @@ const HOSTS: Readonly<Record<StorySite, ReadonlySet<string>>> = {
   c6k6: new Set(["c6k6.com", "www.c6k6.com", "m.c6k6.com"]),
   czbooks: new Set(["czbooks.net", "www.czbooks.net", "m.czbooks.net"]),
   novel543: new Set(["novel543.com", "www.novel543.com"]),
+};
+
+const FLEXIBLE_HOST_LABELS: Readonly<Record<StorySite, readonly string[]>> = {
+  huliwang: ["huliwang", "ihuliwang"],
+  timotxt: ["timotxt"],
+  qingrenyouxi: ["qingrenyouxi"],
+  xbanxia: ["xbanxia"],
+  xszj: ["xszj", "ixdzs8"],
+  liehuozw: ["liehuozw"],
+  uaa002: ["uaa002", "uaa"],
+  c6k6: ["c6k6"],
+  czbooks: ["czbooks"],
+  novel543: ["novel543"],
+};
+
+const LEGACY_ROOT_LABELS: Readonly<Record<StorySite, readonly string[][]>> = {
+  huliwang: [["huliwang", "net"], ["ihuliwang", "net"]],
+  timotxt: [["timotxt", "com"]],
+  qingrenyouxi: [["qingrenyouxi", "com"]],
+  xbanxia: [["xbanxia", "cc"]],
+  xszj: [["xszj", "org"], ["ixdzs8", "com"]],
+  liehuozw: [["liehuozw", "com"]],
+  uaa002: [["uaa002", "com"], ["uaa", "com"]],
+  c6k6: [["c6k6", "com"]],
+  czbooks: [["czbooks", "net"]],
+  novel543: [["novel543", "com"]],
 };
 
 function safeUrl(raw: string): URL {
@@ -48,7 +74,26 @@ function safeUrl(raw: string): URL {
   return parsed;
 }
 
-function canonicalOrigin(site: StorySite): string {
+function replaceSubdomain(hostname: string, subdomain: "m" | "www"): string {
+  const labels = hostname.toLowerCase().split(".");
+  if (labels[0] === "m" || labels[0] === "www") labels[0] = subdomain;
+  else labels.unshift(subdomain);
+  return labels.join(".");
+}
+
+function canonicalOrigin(site: StorySite, input?: URL): string {
+  const inputHost = input?.hostname.toLowerCase();
+  const knownLegacyHost = inputHost ? HOSTS[site].has(inputHost) : false;
+  if (input && !knownLegacyHost) {
+    if (site === "huliwang") return `https://${replaceSubdomain(input.hostname, "m")}`;
+    if (site === "liehuozw") return `https://${replaceSubdomain(input.hostname, "m")}`;
+    if (site === "uaa002") return `https://${replaceSubdomain(input.hostname, "m")}`;
+    if (site === "c6k6") return `https://${replaceSubdomain(input.hostname, "m")}`;
+    if (site === "timotxt" || site === "qingrenyouxi" || site === "xbanxia" || site === "novel543") {
+      return `https://${replaceSubdomain(input.hostname, "www")}`;
+    }
+    return `https://${input.hostname.toLowerCase()}`;
+  }
   if (site === "huliwang") return "https://m.huliwang.net";
   if (site === "timotxt") return "https://www.timotxt.com";
   if (site === "qingrenyouxi") return "https://www.qingrenyouxi.com";
@@ -63,25 +108,72 @@ function canonicalOrigin(site: StorySite): string {
 
 export function siteForHostname(hostname: string): StorySite | undefined {
   const normalized = hostname.toLowerCase();
-  return (Object.keys(HOSTS) as StorySite[]).find((site) => HOSTS[site].has(normalized));
+  if (normalized.endsWith(".")) return undefined;
+  const exact = (Object.keys(HOSTS) as StorySite[]).find((site) => HOSTS[site].has(normalized));
+  if (exact) return exact;
+  const labels = normalized.split(".");
+  const hostLabels = labels[0] === "www" || labels[0] === "m" ? labels.slice(1) : labels;
+  const brandLabel = hostLabels[0];
+  return (Object.keys(FLEXIBLE_HOST_LABELS) as StorySite[]).find((site) => {
+    const allowed = FLEXIBLE_HOST_LABELS[site];
+    if (typeof brandLabel !== "string" || !allowed.includes(brandLabel)) return false;
+    return !LEGACY_ROOT_LABELS[site].some((root) => {
+      if (hostLabels.length <= root.length) return false;
+      return root.every((label, index) => hostLabels[index] === label);
+    });
+  });
+}
+
+function siteForPathStructure(path: string, input: URL): StorySite | undefined {
+  const hasPageQuery = /^\d+$/u.test(input.searchParams.get("page") ?? "");
+  const hasNovelQuery = input.searchParams.has("id") || input.searchParams.has("novelId") || input.searchParams.has("novel_id");
+  const hasChapterQuery = input.searchParams.has("chapter") || input.searchParams.has("chapterId") || input.searchParams.has("cid");
+  if (/^\/book\/\d+\/\d{6,}\.html\/?$/u.test(path)) return "qingrenyouxi";
+  if (/^\/book\/\d+(?:\/\d+)?\.html\/?$/u.test(path) || /^\/book\/\d+(?:\/\d+)?\/?$/u.test(path)) return "c6k6";
+  if (/^\/books\/\d+(?:\/\d+)?\.html\/?$/u.test(path)) return "xbanxia";
+  if (/^\/book\/\d+(?:\/\d+)?\.html\/?$/u.test(path)) return "qingrenyouxi";
+  if (/^\/b\/\d+(?:\/(?:cs|c)\/\d+)?\/?$/u.test(path) || /^\/read\/\d+(?:\/p\d+\.html)?\/?$/u.test(path)) return "xszj";
+  if (/^\/novel\/(?:intro|read|chapter)(?:\/\d+(?:\/\d+)?)?\/?$/iu.test(path) || hasNovelQuery || hasChapterQuery) return "uaa002";
+  if (/^\/n\/[a-z0-9]+(?:\/[a-z0-9]+)?\/?$/iu.test(path)) return "czbooks";
+  if (/^\/dir\/\d+(?:[-_/]\d+)?\.html\/?$/u.test(path)) return "huliwang";
+  if (/^\/\d{6,20}\/dir\/?$/u.test(path) || /^\/\d{6,20}\/\d+_\d+(?:_\d+)?\.html\/?$/u.test(path)) return "novel543";
+  if (/^\/\d{1,5}\/\d{3,10}(?:\/all(?:_\d+)?|\/\d+(?:_\d+)?\.html)?\/?$/u.test(path)) return "liehuozw";
+  if (/^\/[a-zA-Z0-9]{4,24}\/dir\/?$/u.test(path) || /^\/[a-zA-Z0-9]{4,24}\/\d+_\d+\.html\/?$/u.test(path)) return "timotxt";
+  const numericChapter = /^\/(\d{4,24})\/(\d+)\.html\/?$/u.exec(path);
+  if (numericChapter?.[1]) return numericChapter[1].length >= 9 ? "timotxt" : "huliwang";
+  const numericBook = /^\/(\d{4,20})\/?$/u.exec(path);
+  if (numericBook?.[1]) return numericBook[1].length >= 9 ? "novel543" : "huliwang";
+  if (hasPageQuery && /^\/\d+\/\d+\/?$/u.test(path)) return "xszj";
+  return undefined;
+}
+
+function hasSpoofedLegacyRoot(hostname: string): boolean {
+  const labels = hostname.toLowerCase().split(".");
+  const hostLabels = labels[0] === "www" || labels[0] === "m" ? labels.slice(1) : labels;
+  return (Object.keys(LEGACY_ROOT_LABELS) as StorySite[]).some((site) => (
+    LEGACY_ROOT_LABELS[site].some((root) => (
+      hostLabels.length > root.length && root.every((label, index) => hostLabels[index] === label)
+    ))
+  ));
 }
 
 export function parseStoryUrl(raw: string): ParsedStoryUrl {
   const input = safeUrl(raw);
-  const site = siteForHostname(input.hostname);
+  const path = input.pathname.replace(/\/{2,}/gu, "/");
+  const hostnameSite = siteForHostname(input.hostname);
+  const site = hostnameSite ?? (hasSpoofedLegacyRoot(input.hostname) ? undefined : siteForPathStructure(path, input));
   if (!site) {
     throw new StorySourceError(
       "UNSUPPORTED_URL",
-      "Chỉ hỗ trợ các nguồn: huliwang.net, timotxt.com, qingrenyouxi.com, xbanxia.cc, xszj.org/ixdzs8.com, liehuozw.com, uaa002.com, c6k6.com, czbooks.net và novel543.com.",
+      "Chỉ hỗ trợ URL có cấu trúc khớp các nguồn: Huliwang, TimoTXT, Qingrenyouxi, Xbanxia, XSZJ/IXDZS8, Liehuo, UAA002, C6K6, CZBooks và Novel543.",
     );
   }
-  const path = input.pathname.replace(/\/{2,}/gu, "/");
   const sourcePage = input.searchParams.get("page");
   const sourceNovelId = input.searchParams.get("id") ?? input.searchParams.get("novelId") ?? input.searchParams.get("novel_id");
   const sourceChapterId = input.searchParams.get("chapter") ?? input.searchParams.get("chapterId") ?? input.searchParams.get("cid");
   const sourcePageId = input.searchParams.get("id");
   input.search = "";
-  const origin = canonicalOrigin(site);
+  const origin = canonicalOrigin(site, input);
 
   if (site === "huliwang") {
     const catalog = /^\/dir\/(\d+)(?:[-_/](\d+))?\.html\/?$/u.exec(path);
@@ -157,7 +249,9 @@ export function parseStoryUrl(raw: string): ParsedStoryUrl {
     const bookId = xszjBook?.[1] ?? xszjCatalog?.[1] ?? xszjChapter?.[1] ?? ixdzsBook?.[1] ?? ixdzsChapter?.[1];
     if (!bookId) throwUnsupportedPath(site);
     const isNative = Boolean(xszjBook ?? xszjCatalog ?? xszjChapter);
-    const origin = isNative ? "https://xszj.org" : "https://ixdzs8.com";
+    const origin = HOSTS.xszj.has(input.hostname.toLowerCase())
+      ? (isNative ? "https://xszj.org" : "https://ixdzs8.com")
+      : `https://${input.hostname.toLowerCase()}`;
     const chapterKey = xszjChapter?.[2] ?? ixdzsChapter?.[2];
     const catalogPage = xszjCatalog?.[2];
     const page = chapterKey && isNative && sourcePage && /^\d+$/u.test(sourcePage)
@@ -235,7 +329,9 @@ export function parseStoryUrl(raw: string): ParsedStoryUrl {
     // 1064 -> 1), which is also the structure used by every accepted mobile
     // URL. Canonicalize both variants to that same verified mobile surface.
     const mobileSection = mobile?.[1] ?? String(Math.floor(Number.parseInt(bookId, 10) / 1_000));
-    const mobileOrigin = "https://m.c6k6.com";
+    const mobileOrigin = HOSTS.c6k6.has(input.hostname.toLowerCase())
+      ? "https://m.c6k6.com"
+      : `https://${replaceSubdomain(input.hostname, "m")}`;
     const normalizedUrl = chapterKey
       ? `${mobileOrigin}/${mobileSection}/${bookId}/${chapterKey}.html`
       : `${mobileOrigin}/${mobileSection}/${bookId}/`;

@@ -11,7 +11,7 @@ Tiện ích này cho phép Tool Dịch Truyện đọc đúng trang Huliwang, XS
 
 ## Sau khi cập nhật tool
 
-Nếu Browser Helper đã được tải trước đó, mở trang tiện ích của trình duyệt và bấm **Tải lại / Reload** ở thẻ `Tool Dịch Truyện - Browser Helper` trước khi dùng lại. Bản 1.0.7 bổ sung Novel543 với hai domain chính xác; không cần cài lại nhưng trình duyệt có thể yêu cầu xác nhận quyền đọc hai domain mới.
+Nếu Browser Helper đã được tải trước đó, mở trang tiện ích của trình duyệt và bấm **Tải lại / Reload** ở thẻ `Tool Dịch Truyện - Browser Helper` trước khi dùng lại. Bản 1.0.8 hỗ trợ domain đổi như `ihuliwang.com` và cô lập content script khi tiện ích cần quyền đọc domain linh hoạt; trình duyệt có thể yêu cầu xác nhận quyền đọc mới.
 
 ## Edge
 

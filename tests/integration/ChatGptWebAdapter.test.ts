@@ -63,6 +63,9 @@ interface FakePageOptions {
   deleteRedirectUrl?: string;
   renderUserMessage?: (message: string) => string;
   kimiUsageLimit?: boolean;
+  kimiIdentityCandidates?: string[];
+  chatGptIdentityCandidates?: string[];
+  deepSeekIdentityCandidates?: string[];
 }
 
 const STORED_TOOL_MARKER = 'TDTOWN_0123456789abcdef0123456789abcdef'
@@ -154,6 +157,14 @@ function createFakeBrowser(options: FakePageOptions = {}) {
       || selector.includes('chat-message.user')
       || selector.includes('ds-collapsible-text')
     const isLogin = selector.includes('auth/login') || selector.includes('Log in') || selector.includes('Đăng nhập')
+    const isProfileButton = selector.includes('accounts-profile-button')
+      || selector.includes('profile-button')
+      || selector.includes('profile')
+      || selector.includes('hồ sơ')
+      || selector.includes('account')
+      || selector.includes('tài khoản')
+      || selector.includes('avatar')
+      || selector.includes('user')
     const isKimiUsageLimit = selector.includes('free quota')
       || selector.includes('quota.*refreshes')
       || selector.includes('免费')
@@ -195,6 +206,7 @@ function createFakeBrowser(options: FakePageOptions = {}) {
       (isUserMessage && userMessages.length > 0) ||
       (isKimiUsageLimit && options.kimiUsageLimit === true) ||
       (isLogin && Boolean(options.login)) ||
+      (isProfileButton && Boolean(options.chatGptIdentityCandidates?.length || options.kimiIdentityCandidates?.length || options.deepSeekIdentityCandidates?.length)) ||
       (isConversationMenu && currentUrl.includes('/c/') && options.deleteMenuAvailable !== false) ||
       (isDeleteAction && menuOpen && options.deleteActionAvailable !== false) ||
       (isDeleteConfirm && deleteDialogOpen && options.deleteConfirmAvailable !== false)
@@ -208,6 +220,7 @@ function createFakeBrowser(options: FakePageOptions = {}) {
         const sidebarMenu = options.sidebarPersonalConversationMenu && !isMainScopedMenu ? 1 : 0
         return currentMenu + sidebarMenu
       }
+      if (isProfileButton) return exists() ? 1 : 0
       return exists() ? 1 : 0
     }
     const performClick = async () => {
@@ -342,6 +355,12 @@ function createFakeBrowser(options: FakePageOptions = {}) {
     },
     bringToFront: async () => undefined,
     locator: (selector: string) => locatorFor(selector),
+    evaluate: async () => {
+      if (options.chatGptIdentityCandidates) return options.chatGptIdentityCandidates
+      if (options.kimiIdentityCandidates) return options.kimiIdentityCandidates
+      if (options.deepSeekIdentityCandidates) return options.deepSeekIdentityCandidates
+      throw new Error('page.evaluate unavailable in fake page')
+    },
     isClosed: () => closed,
     on: (_event: string, listener: () => void) => statusListeners.push(listener),
     keyboard: {
@@ -430,6 +449,140 @@ afterEach(async () => {
 })
 
 describe('ChatGptWebAdapter', () => {
+  it('đọc tên email và gói ChatGPT từ menu hồ sơ', async () => {
+    const fake = createFakeBrowser({
+      composer: true,
+      chatGptIdentityCandidates: [
+        'Mở menu hồ sơ',
+        'Nguyễn Văn A\nnguyenvana@example.com\nPlus\nSettings\nLog out',
+      ],
+    })
+    const adapter = new ChatGptWebAdapter({
+      profileDirectory: 'fake-profile',
+      browserFactory: async () => fake.context,
+    })
+
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
+    await expect(adapter.readAccountIdentity()).resolves.toEqual({
+      label: 'Nguyễn Văn A',
+      email: 'nguyenvana@example.com',
+      plan: 'plus',
+    })
+    await adapter.close()
+  })
+
+  it('đọc tên tài khoản DeepSeek từ giao diện profile mặc định', async () => {
+    const fake = createFakeBrowser({
+      composer: true,
+      initialUrl: 'https://chat.deepseek.com/',
+      deepSeekIdentityCandidates: [
+        'DeepSeek',
+        'Thành Đông\nSettings\nLog out',
+      ],
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'deepseek',
+      profileDirectory: 'fake-deepseek-profile',
+      baseUrl: 'https://chat.deepseek.com/',
+      browserFactory: async () => fake.context,
+    })
+
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
+    await expect(adapter.readAccountIdentity()).resolves.toEqual({ label: 'Thành Đông' })
+    await adapter.close()
+  })
+
+  it('đọc tên tài khoản Kimi từ khu vực profile', async () => {
+    const fake = createFakeBrowser({
+      composer: true,
+      initialUrl: 'https://www.kimi.com/',
+      kimiIdentityCandidates: [
+        'New chat\nCtrl K\nMy Kimi\nPlugins\nLog in',
+        'Kimi\nThành Đông\nSettings\nLog out',
+      ],
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'kimi',
+      profileDirectory: 'fake-kimi-profile',
+      baseUrl: 'https://www.kimi.com/',
+      browserFactory: async () => fake.context,
+    })
+
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
+    await expect(adapter.readAccountIdentity()).resolves.toEqual({ label: 'Thành Đông' })
+    await adapter.close()
+  })
+
+  it('bỏ qua key storage nội bộ khi đọc tên tài khoản DeepSeek', async () => {
+    const fake = createFakeBrowser({
+      composer: true,
+      initialUrl: 'https://chat.deepseek.com/',
+      deepSeekIdentityCandidates: [
+        '__appKit_@ /chat_ca50e4ac-e7cc-4e7b-a083-2c780a3b3793_ Storage',
+        '{"user":{"name":"Thành Đông"}}',
+        'DeepSeek\nThành Đông\nSettings\nLog out',
+      ],
+    })
+    const adapter = new ChatGptWebAdapter({
+      provider: 'deepseek',
+      profileDirectory: 'fake-deepseek-profile',
+      baseUrl: 'https://chat.deepseek.com/',
+      browserFactory: async () => fake.context,
+    })
+
+    await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
+    await expect(adapter.readAccountIdentity()).resolves.toEqual({ label: 'Thành Đông' })
+    await adapter.close()
+  })
+
+  it('mở đăng nhập thủ công trực tiếp khi thêm tài khoản, không bật browser automation trước', async () => {
+    const browserFactory = vi.fn(async () => createFakeBrowser({ composer: false, login: true }).context)
+    const manualLoginFactory = vi.fn(async () => ({
+      closed: new Promise<void>(() => undefined),
+      isRunning: () => true,
+      close: async () => undefined,
+    }))
+    const adapter = new ChatGptWebAdapter({
+      profileDirectory: 'fake-profile',
+      browserFactory,
+      manualLoginFactory,
+    })
+
+    await expect(adapter.openManualLogin()).resolves.toMatchObject({
+      status: 'login-required',
+      message: expect.stringContaining('Đăng nhập ChatGPT'),
+    })
+    expect(browserFactory).not.toHaveBeenCalled()
+    expect(manualLoginFactory).toHaveBeenCalledOnce()
+    await adapter.close()
+  })
+
+  it('đọc account sau khi đóng cửa sổ login bằng browser ẩn rồi đóng ngay', async () => {
+    const fake = createFakeBrowser({
+      composer: true,
+      chatGptIdentityCandidates: [
+        'Nguyễn Văn A\nnguyenvana@example.com\nPlus',
+      ],
+    })
+    const browserFactory = vi.fn(async () => fake.context)
+    const adapter = new ChatGptWebAdapter({
+      profileDirectory: 'fake-profile',
+      browserFactory,
+    })
+
+    await expect(adapter.readAccountAfterManualLogin()).resolves.toEqual({
+      label: 'Nguyễn Văn A',
+      email: 'nguyenvana@example.com',
+      plan: 'plus',
+    })
+    expect(browserFactory).toHaveBeenCalledWith(expect.objectContaining({
+      profileDirectory: 'fake-profile',
+      headless: true,
+    }))
+    expect(fake.page.isClosed()).toBe(true)
+    await adapter.close()
+  })
+
   it('điền composer, gửi và chỉ nhận assistant message mới khi nội dung ổn định', async () => {
     vi.useFakeTimers()
     const fake = createFakeBrowser({ composer: true, response: 'Cô khẽ gật đầu rồi bước ra ngoài.' })
@@ -2191,9 +2344,12 @@ describe('ChatGptWebAdapter', () => {
     await adapter.close()
   })
 
-  it('Kiểm tra kết nối đóng manual Edge còn chạy nền rồi xác minh lại cùng profile', async () => {
+  it('Kiểm tra kết nối đóng manual Edge đang mở rồi đọc account bằng browser ẩn', async () => {
     const loginBrowser = createFakeBrowser({ composer: false, login: true })
-    const readyBrowser = createFakeBrowser({ composer: true })
+    const readyBrowser = createFakeBrowser({
+      composer: true,
+      chatGptIdentityCandidates: ['Alexander Bryant\nalex@example.com\nFree'],
+    })
     const browserFactory = vi
       .fn()
       .mockResolvedValueOnce(loginBrowser.context)
@@ -2218,14 +2374,21 @@ describe('ChatGptWebAdapter', () => {
 
     await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'login-required' })
     await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'ready' })
+    await expect(adapter.readAccountIdentity()).resolves.toEqual({
+      label: 'Alexander Bryant',
+      email: 'alex@example.com',
+      plan: 'free',
+    })
 
     expect(close).toHaveBeenCalledOnce()
     expect(manualLoginFactory).toHaveBeenCalledOnce()
     expect(browserFactory).toHaveBeenCalledTimes(2)
+    expect(browserFactory).toHaveBeenLastCalledWith(expect.objectContaining({ headless: true }))
     await adapter.close()
   })
 
-  it('không mở browser tự động chồng profile nếu manual Edge thật sự chưa dừng', async () => {
+  it('báo rõ nếu Kiểm tra kết nối chưa đóng được manual Edge', async () => {
+    vi.useFakeTimers()
     const loginBrowser = createFakeBrowser({ composer: false, login: true })
     const browserFactory = vi.fn(async () => loginBrowser.context)
     const close = vi.fn(async () => undefined)
@@ -2241,7 +2404,9 @@ describe('ChatGptWebAdapter', () => {
     })
 
     await expect(adapter.openLogin()).resolves.toMatchObject({ status: 'login-required' })
-    await expect(adapter.openLogin()).resolves.toMatchObject({
+    const verification = adapter.openLogin()
+    await vi.advanceTimersByTimeAsync(9_000)
+    await expect(verification).resolves.toMatchObject({
       status: 'login-required',
       message: expect.stringContaining('chưa đóng hoàn toàn'),
     })

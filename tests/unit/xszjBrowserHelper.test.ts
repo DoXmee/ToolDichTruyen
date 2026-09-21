@@ -28,7 +28,7 @@ function installChrome(dom: JSDOM) {
 
 describe("XSZJ normal-browser helper", () => {
   it("normalizes only the fixed XSZJ and 爱下电子书 URL families", () => {
-    expect(protocol.EXTENSION_VERSION).toBe("1.0.7");
+    expect(protocol.EXTENSION_VERSION).toBe("1.0.8");
     expect(protocol.normalizeXszjUrl("https://www.xszj.org/b/485734/c/856451?page=2&utm=no#x"))
       .toBe("https://xszj.org/b/485734/c/856451?page=2");
     expect(protocol.normalizeXszjUrl("https://xszj.org/b/485734/cs/2"))

@@ -118,6 +118,32 @@ export interface StoryToolApi {
     apiKey?: string | null;
     model?: string;
   }): Promise<{ hasApiKey: boolean; model: string }>;
+  listAccounts?(): Promise<AccountsSnapshot>;
+  selectAccount?(id: string): Promise<AccountsSnapshot>;
+  addAccount?(request: { provider: AiProvider; label?: string }): Promise<AccountsSnapshot>;
+  removeAccount?(id: string): Promise<AccountsSnapshot>;
+  renameAccount?(id: string, label: string): Promise<AccountsSnapshot>;
+  syncCurrentAccount?(): Promise<AccountsSnapshot & { account?: StoryAccountSummary }>;
+  cleanupJunk?(): Promise<{ freedBytes: number; removed: number }>;
+}
+
+export interface StoryAccountSummary {
+  id: string;
+  provider: AiProvider;
+  label: string;
+  email?: string;
+  plan?: string;
+  authuser?: number;
+  quotaBlockedUntil?: string;
+  quotaNotice?: string;
+  lastVerifiedAt?: string;
+  lastUsedAt?: string;
+}
+
+export interface AccountsSnapshot {
+  accounts: StoryAccountSummary[];
+  activeProvider: AiProvider;
+  activeAccountId?: string;
 }
 
 export function getStoryTool(): StoryToolApi {
