@@ -643,6 +643,35 @@ describe('App renderer', () => {
     expect(await screen.findByText('ChatGPT đang dịch')).toBeInTheDocument();
   });
 
+  it('cho phép bắt đầu dịch khi chọn chế độ Khác mà để trống prompt tùy chỉnh', async () => {
+    const harness = installStoryTool({ connectionStatus: 'ready' });
+    render(<App />);
+
+    const source = '她推开门，看见庭院里的白梅。';
+    fireEvent.change(await screen.findByLabelText('Nội dung tiếng Trung cần dịch'), {
+      target: { value: source },
+    });
+    await connectViaAccountPanel();
+
+    const customRadio = await screen.findByRole('radio', { name: /^Khác/i });
+    fireEvent.click(customRadio);
+    expect(customRadio).toBeChecked();
+
+    const startButton = screen.getByRole('button', { name: 'Bắt đầu dịch' });
+    expect(startButton).not.toBeDisabled();
+    fireEvent.click(startButton);
+
+    await waitFor(() => {
+      expect(harness.startTranslation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source,
+          promptMode: 'custom',
+          customPrompt: undefined,
+        }),
+      );
+    });
+  });
+
   it('ghép segment-completed và chuyển sang hoàn tất khi nhận job-completed', async () => {
     const harness = installStoryTool({ connectionStatus: 'ready' });
     render(<App />);
@@ -1148,6 +1177,78 @@ describe('App renderer', () => {
     }));
     await waitFor(() => expect(harness.startTranslation).toHaveBeenCalledWith(expect.objectContaining({
       source: combinedSource,
+    })));
+  });
+
+  it('tải chương và chuyển sang dịch thành công ngay cả khi promptMode là custom nhưng để trống prompt', async () => {
+    const storyAnalysis = {
+      analysisId: 'analysis-custom-empty',
+      site: 'qingrenyouxi' as const,
+      inputKind: 'book' as const,
+      inputUrl: 'https://www.qingrenyouxi.com/book/114551.html',
+      bookId: '114551',
+      bookTitle: '七零新婚夜',
+      bookUrl: 'https://www.qingrenyouxi.com/book/114551.html',
+      catalogUrl: 'https://www.qingrenyouxi.com/book/114551.html',
+      chapters: [
+        { id: 'c1', order: 1, number: 1, numberLabel: '第1章', title: '重回新婚夜', url: 'https://example/1', partUrls: ['https://example/1'], isIntroduction: false, selectedByDefault: true },
+        { id: 'c2', order: 2, number: 2, numberLabel: '第2章', title: '想退婚还来得及', url: 'https://example/2', partUrls: ['https://example/2'], isIntroduction: false, selectedByDefault: true },
+      ],
+      defaultSelectedChapterIds: ['c1', 'c2'],
+      verification: 'not-needed' as const,
+      notices: [],
+    };
+    const combinedSource = 'Chương 1: Mở đầu\n\nBạch Mai mở cửa.';
+    const harness = installStoryTool({
+      connectionStatus: 'ready',
+      storyAnalysis,
+      storyFetch: {
+        analysisId: storyAnalysis.analysisId,
+        site: 'qingrenyouxi',
+        bookId: '114551',
+        bookTitle: storyAnalysis.bookTitle,
+        chapters: [
+          {
+            id: 'c1',
+            number: 1,
+            title: 'Mở đầu',
+            sourceText: 'Bạch Mai mở cửa.',
+            warnings: [],
+            extractedMemory: { characters: [], terms: [], locations: [], plotNodes: [] },
+          },
+        ],
+        combinedSource,
+        warnings: [],
+      },
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
+    fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), {
+      target: { value: storyAnalysis.inputUrl },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Phân tích/i }));
+
+    expect(await screen.findByText('七零新婚夜')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Chọn thư mục lưu/i }));
+    await waitFor(() => expect(harness.chooseChapterDirectory).toHaveBeenCalledOnce());
+    await connectViaAccountPanel();
+    await screen.findByText('ChatGPT đã kết nối');
+
+    const customRadio = await screen.findByRole('radio', { name: /^Khác/i });
+    fireEvent.click(customRadio);
+    expect(customRadio).toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/i }));
+
+    await waitFor(() => expect(harness.fetchStoryChapters).toHaveBeenCalledWith({
+      analysisId: 'analysis-custom-empty',
+      chapterIds: expect.arrayContaining(['c1', 'c2']),
+    }));
+    await waitFor(() => expect(harness.startTranslation).toHaveBeenCalledWith(expect.objectContaining({
+      source: combinedSource,
+      promptMode: 'custom',
+      customPrompt: undefined,
     })));
   });
 

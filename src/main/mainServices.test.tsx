@@ -42,9 +42,11 @@ describe("PromptLoader", () => {
     await expect(loader.resolve("custom", "  Prompt riêng  ")).resolves.toBe("Prompt riêng");
   });
 
-  it("rejects an empty custom prompt", async () => {
+  it("falls back to universal default prompt for an empty custom prompt", async () => {
     const loader = new PromptLoader([await temporaryDirectory()]);
-    await expect(loader.resolve("custom", "  ")).rejects.toThrow(/prompt tùy chỉnh/iu);
+    const resolved = await loader.resolve("custom", "  ");
+    expect(resolved).toContain("VĂN PHONG THUẦN VIỆT");
+    expect(resolved).toContain("không để sót bất kỳ chữ Hán nào");
   });
 });
 

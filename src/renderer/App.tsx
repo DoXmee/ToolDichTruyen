@@ -1089,7 +1089,8 @@ export default function App() {
         // Binding an old completed checkpoint as the active job makes the UI hydrate
         // multi-megabyte text, triggering redundant re-export cycles, conflict recovery,
         // and severe UI lag. Sever the stale auto-export link so a new job may begin smoothly.
-        if (job.status === 'cancelled' || job.status === 'failed' || job.status === 'completed') {
+        const hasFinishedExports = exportedRecords.length > 0 || combinedExport?.status === 'saved';
+        if (job.status === 'cancelled' || job.status === 'failed' || (job.status === 'completed' && hasFinishedExports)) {
           if (autoExportJobRef.current === job.id) autoExportJobRef.current = '';
           activeJobRef.current = '';
           setAutoExportJobId('');
@@ -1508,7 +1509,7 @@ export default function App() {
   };
 
   const beginTranslation = async (sourceText: string, automaticExportDirectory = '') => {
-    if (!sourceText.trim() || (promptMode === 'custom' && !customPrompt.trim())) return;
+    if (!sourceText.trim()) return;
     // Nothing can be translated without a saved login for the selected bot. Ask
     // the main process rather than trusting the list rendered here: an account
     // removed a moment ago must not be used. The click stays allowed and instead
@@ -1598,7 +1599,7 @@ export default function App() {
         promptMode,
         ...(aiProvider === 'chatgpt' ? {} : { aiProvider }),
         allowedAiProviders: [...allowedAiProviders],
-        customPrompt: promptMode === 'custom' ? customPrompt.trim() : undefined,
+        customPrompt: promptMode === 'custom' && customPrompt.trim().length > 0 ? customPrompt.trim() : undefined,
         ...(storyMemory ? { memory: storyMemory } : {}),
         // Link imports preserve an ordinary source chapter in one request;
         // only unusually long chapters are split by the runner.
@@ -2552,7 +2553,7 @@ export default function App() {
     ?? providerAccounts[0];
   const outputHanCount = useMemo(() => (output.match(/\p{Script=Han}/gu) ?? []).length, [output]);
   const outputWords = useMemo(() => analyzeTextLanguage(output, 'vi').totalWords, [output]);
-  const canStart = Boolean(source.trim()) && (promptMode !== 'custom' || Boolean(customPrompt.trim()));
+  const canStart = Boolean(source.trim());
 
   return (
     <div className="app-shell" data-theme={colorTheme}>
