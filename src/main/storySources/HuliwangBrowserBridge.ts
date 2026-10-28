@@ -56,12 +56,13 @@ export interface HuliwangCompanionSession {
   readonly pairingUrl: string;
   readonly client: StoryPageClient;
   waitUntilPaired(signal?: AbortSignal): Promise<void>;
+  closeTab?(timeoutMs?: number): Promise<void>;
   close(): Promise<void>;
 }
 
 export type HuliwangCompanionFactory = () => Promise<HuliwangCompanionSession>;
 
-type PendingCommandType = "visit" | "catalog-next" | "chapter-next";
+type PendingCommandType = "visit" | "catalog-next" | "chapter-next" | "close-tab";
 
 interface PendingCommand {
   id: string;
@@ -567,8 +568,50 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
     });
   }
 
+  public async closeTab(timeoutMs = 4_000): Promise<void> {
+    if (this.closed || !this.paired) return;
+    const effectiveTimeout = this.pollWaiters.size > 0 ? timeoutMs : Math.min(timeoutMs, 600);
+    const commandId = randomUUID();
+    await new Promise<void>((resolve) => {
+      let resolved = false;
+      const done = (): void => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve();
+        }
+      };
+
+      const timer = setTimeout(() => {
+        if (this.pending?.id === commandId) {
+          this.consumePending();
+        }
+        done();
+      }, effectiveTimeout);
+
+      const command: PendingCommand = {
+        id: commandId,
+        type: "close-tab",
+        url: "",
+        delivered: false,
+        resolve: () => done(),
+        reject: () => done(),
+        timer,
+      };
+
+      if (this.pending) {
+        this.rejectPending(new StorySourceError("CANCELLED", "Đang đóng tab đọc truyện."));
+      }
+      this.pending = command;
+      this.flushCommandToPoller();
+    });
+  }
+
   public async close(): Promise<void> {
     if (this.closed) return;
+    if (this.paired && this.pollWaiters.size > 0) {
+      await this.closeTab(2_000).catch(() => undefined);
+    }
     this.closed = true;
     const error = new StorySourceError("CANCELLED", "Cầu nối trình duyệt đã đóng.");
     for (const waiter of [...this.pairWaiters]) waiter.reject(error);
@@ -912,6 +955,14 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
     const pending = this.pending;
     if (!pending || !pending.delivered || pending.id !== commandId) {
       return this.sendText(response, 409, "Unknown command.");
+    }
+
+    if (pending.type === "close-tab") {
+      this.consumePending();
+      pending.resolve({} as StoryPageSnapshot);
+      response.statusCode = 204;
+      response.end();
+      return;
     }
 
     if (!body.ok) {

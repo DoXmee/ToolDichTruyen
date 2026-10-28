@@ -383,6 +383,9 @@ export class StorySourceService implements StorySourceServiceApi {
       // analysis and the fully checked fetched text stay in memory; a later
       // Analyze/Tải operation lazily opens a fresh source context.
       await this.releasePageClient();
+      if (this.huliwangCompanion?.closeTab) {
+        await this.huliwangCompanion.closeTab().catch(() => undefined);
+      }
       return result;
     } catch (error) {
       this.emitTerminalError(analysis.analysisId, error);
@@ -403,11 +406,7 @@ export class StorySourceService implements StorySourceServiceApi {
     this.active?.controller.abort(new StorySourceError("CANCELLED", "Dịch vụ nguồn truyện đã đóng."));
     const client = this.pageClient;
     this.pageClient = undefined;
-    const companion = this.huliwangCompanion;
-    this.huliwangCompanion = undefined;
-    this.huliwangCompanionSite = undefined;
-    this.huliwangCompanionReady = false;
-    await Promise.all([client?.close?.(), companion?.close()]);
+    await Promise.all([client?.close?.(), this.releaseCompanion()]);
     this.emitter.removeAllListeners();
     this.analyses.clear();
   }
@@ -496,6 +495,19 @@ export class StorySourceService implements StorySourceServiceApi {
     const client = this.pageClient;
     this.pageClient = undefined;
     await client?.close?.().catch(() => undefined);
+  }
+
+  private async releaseCompanion(): Promise<void> {
+    const companion = this.huliwangCompanion;
+    this.huliwangCompanion = undefined;
+    this.huliwangCompanionSite = undefined;
+    this.huliwangCompanionReady = false;
+    if (companion) {
+      if (typeof companion.closeTab === "function") {
+        await companion.closeTab().catch(() => undefined);
+      }
+      await companion.close().catch(() => undefined);
+    }
   }
 
   private async visit(url: string, signal: AbortSignal, analysisId: string) {

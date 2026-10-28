@@ -604,4 +604,23 @@ describe("HuliwangBrowserBridge", () => {
     await expect(fetch(`${bridge.bridgeOrigin}/v1/pair`)).rejects.toBeInstanceOf(Error);
     expect(data.token).toHaveLength(43);
   });
+
+  it("dispatches close-tab command and completes safely", async () => {
+    const bridge = await new HuliwangBrowserBridge().start();
+    try {
+      const data = await pair(bridge);
+      const closePromise = bridge.closeTab(2_000);
+      const cmd = await command(bridge, data);
+      expect(cmd.type).toBe("close-tab");
+      const res = await fetch(`${bridge.bridgeOrigin}/v1/extension/results`, {
+        method: "POST",
+        headers: headers(data.token),
+        body: JSON.stringify({ sessionId: data.sessionId, commandId: cmd.id, ok: true }),
+      });
+      expect(res.status).toBe(204);
+      await closePromise;
+    } finally {
+      await bridge.close();
+    }
+  });
 });

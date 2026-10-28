@@ -349,8 +349,11 @@ export function validateVisitCommand(value) {
 export function validateCompanionCommand(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Invalid command.");
   if (Object.keys(value).sort().join(",") !== "id,type,url") throw new TypeError("Command has unknown fields.");
-  if (!COMMAND_ID.test(value.id) || !["visit", "catalog-next", "chapter-next"].includes(value.type)) {
+  if (!COMMAND_ID.test(value.id) || !["visit", "catalog-next", "chapter-next", "close-tab"].includes(value.type)) {
     throw new TypeError("Unsupported command.");
+  }
+  if (value.type === "close-tab") {
+    return { id: value.id, type: "close-tab", url: "" };
   }
   const url = normalizeCompanionUrl(value.url);
   const site = companionSite(url);

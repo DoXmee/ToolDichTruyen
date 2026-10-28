@@ -76,6 +76,9 @@ export class PromptLoader {
         }
         return stripBom(customPrompt);
       }
+      if (customPrompt !== undefined) {
+        throw new TypeError("Vui lòng nhập prompt tùy chỉnh.");
+      }
       return DEFAULT_UNIVERSAL_PROMPT;
     }
     return this.loadBuiltIn(mode);

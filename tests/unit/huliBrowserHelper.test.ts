@@ -184,6 +184,7 @@ describe("Huli normal-browser helper", () => {
     expect(protocol.validateVisitCommand({ id: "cmd_1", type: "visit", url: "https://m.huliwang.net/1703891/1.html" })).toEqual({ id: "cmd_1", type: "visit", url: "https://m.huliwang.net/1703891/1.html" });
     expect(protocol.validateCompanionCommand({ id: "cmd_2", type: "catalog-next", url: "https://m.huliwang.net/dir/1703891.html" })).toEqual({ id: "cmd_2", type: "catalog-next", url: "https://m.huliwang.net/dir/1703891.html" });
     expect(protocol.validateCompanionCommand({ id: "cmd_2b", type: "chapter-next", url: "https://m.huliwang.net/1703891/50/2.html" })).toEqual({ id: "cmd_2b", type: "chapter-next", url: "https://m.huliwang.net/1703891/50/2.html" });
+    expect(protocol.validateCompanionCommand({ id: "cmd_close", type: "close-tab", url: "" })).toEqual({ id: "cmd_close", type: "close-tab", url: "" });
     expect(protocol.validateVisitCommand({ id: "cmd_n", type: "visit", url: "https://novel543.com/1013669909/8096_1_2.html" })).toEqual({ id: "cmd_n", type: "visit", url: "https://www.novel543.com/1013669909/8096_1_2.html" });
     expect(protocol.validateVisitCommand({ id: "cmd_t", type: "visit", url: "https://timotxt.com/1509589610/13.html" })).toEqual({ id: "cmd_t", type: "visit", url: "https://www.timotxt.com/1509589610/13.html" });
     expect(() => protocol.validateCompanionCommand({ id: "cmd_n2", type: "chapter-next", url: "https://www.novel543.com/1013669909/8096_1.html" })).toThrow();

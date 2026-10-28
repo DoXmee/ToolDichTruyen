@@ -243,6 +243,19 @@ async function advanceChapterNavigation(tabId, currentUrl) {
 }
 
 async function execute(pairing, command) {
+  if (command.type === "close-tab") {
+    try {
+      await sendResult(pairing, { commandId: command.id, ok: true });
+    } catch {}
+    let tab;
+    try { tab = await chrome.tabs.get(pairing.tabId); } catch { tab = undefined; }
+    if (tab?.id) {
+      try { await chrome.tabs.remove(tab.id); } catch {}
+    }
+    await clearPairing(pairing, "Đã hoàn thành lấy chương và đóng tab.");
+    return { reportedError: false };
+  }
+
   await setSessionStatus(pairing, "working", `Đang đọc ${command.url}`);
   try {
     await assertCurrentPairing(pairing);
