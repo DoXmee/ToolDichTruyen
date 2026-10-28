@@ -727,6 +727,11 @@ textarea:focus-visible {
   gap: 12px;
 }
 
+.connection-box .button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 
 .connection-box > div {
   display: grid;
