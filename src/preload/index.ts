@@ -60,6 +60,7 @@ export interface StoryToolApi {
   minimizeWindow?(): Promise<void>;
   toggleMaximizeWindow?(): Promise<void>;
   closeWindow?(): Promise<void>;
+  openExternalUrl?(url: string): Promise<void>;
   loadPrompts(): Promise<{ period: string; modern: string; ancient: string; cultivation: string }>;
   getDraft(): Promise<unknown | null>;
   saveDraft(draft: unknown): Promise<void>;
@@ -166,6 +167,7 @@ const storyTool: StoryToolApi = Object.freeze({
   minimizeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.windowMinimize) as Promise<void>,
   toggleMaximizeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.windowToggleMaximize) as Promise<void>,
   closeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.windowClose) as Promise<void>,
+  openExternalUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.openExternalUrl, url) as Promise<void>,
   loadPrompts: () =>
     ipcRenderer.invoke(IPC_CHANNELS.promptsLoadAll) as Promise<{ period: string; modern: string; ancient: string; cultivation: string }>,
   getDraft: () => ipcRenderer.invoke(IPC_CHANNELS.draftLoad) as Promise<unknown | null>,

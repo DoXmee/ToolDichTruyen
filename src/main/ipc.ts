@@ -1,4 +1,4 @@
-import { nativeTheme, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent } from "electron";
+import { nativeTheme, shell, type BrowserWindow, type IpcMain, type IpcMainInvokeEvent } from "electron";
 import { access } from "node:fs/promises";
 import path from "node:path";
 import type { AiProvider, FinalChapterExportInput, PromptMode, StoryExportIdentity } from "../shared/types.js";
@@ -232,6 +232,11 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   handle(IPC_CHANNELS.windowClose, () => {
     const window = dependencies.mainWindow();
     if (window && !window.isDestroyed()) window.close();
+  });
+  handle(IPC_CHANNELS.openExternalUrl, async (_event, payload) => {
+    if (typeof payload === 'string' && (payload.startsWith('https://') || payload.startsWith('http://'))) {
+      await shell.openExternal(payload);
+    }
   });
   handle(IPC_CHANNELS.promptsLoadAll, async () => dependencies.prompts.loadCatalog());
   handle(IPC_CHANNELS.draftLoad, () => dependencies.persistence.loadRendererDraft());

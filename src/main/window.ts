@@ -1,4 +1,4 @@
-import { BrowserWindow, screen, session } from "electron";
+import { BrowserWindow, screen, session, shell } from "electron";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -119,7 +119,12 @@ export async function createMainWindow(options: CreateMainWindowOptions = {}): P
     pendingZoomTimer = setTimeout(applyCompactWorkspaceZoom, delay);
   };
 
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("https://") || url.startsWith("http://")) {
+      void shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
   window.webContents.on("before-input-event", (event, input) => {
     if (input.type === "keyDown" && (input.control || input.meta) && input.key.toLowerCase() === "r") {
       event.preventDefault();

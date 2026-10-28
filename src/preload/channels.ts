@@ -4,6 +4,7 @@ export const IPC_CHANNELS = Object.freeze({
   windowMinimize: "story-tool:window:minimize",
   windowToggleMaximize: "story-tool:window:toggle-maximize",
   windowClose: "story-tool:window:close",
+  openExternalUrl: "story-tool:app:open-external-url",
   promptsLoadAll: "story-tool:prompts:load-all",
   draftLoad: "story-tool:draft:load",
   draftSave: "story-tool:draft:save",

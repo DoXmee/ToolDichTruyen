@@ -2561,6 +2561,24 @@ export default function App() {
         <span className="window-titlebar__title">
           Dịch Truyện · Trung → Việt <span className="window-titlebar__version">v1.3.0</span>
         </span>
+        <div className="window-titlebar__center">
+          <span>Phát triển bởi</span>
+          <button
+            type="button"
+            className="window-titlebar__author-link"
+            title="Mở GitHub: DoXmee/ToolDichTruyen"
+            onClick={() => {
+              const url = 'https://github.com/DoXmee/ToolDichTruyen';
+              if (getStoryTool().openExternalUrl) {
+                void getStoryTool().openExternalUrl!(url);
+              } else {
+                window.open(url, '_blank');
+              }
+            }}
+          >
+            ThanhDongg (DoXmee)
+          </button>
+        </div>
         <div className="window-titlebar__controls" aria-label="Điều khiển cửa sổ">
           <button aria-label="Thu nhỏ" className="window-titlebar__control" onClick={() => void getStoryTool().minimizeWindow?.()} type="button"><span aria-hidden="true" className="window-control-icon window-control-icon--minimize" /></button>
           <button aria-label="Phóng to hoặc khôi phục" className="window-titlebar__control" onClick={() => void getStoryTool().toggleMaximizeWindow?.()} type="button"><span aria-hidden="true" className="window-control-icon window-control-icon--maximize" /></button>
@@ -3083,7 +3101,7 @@ export default function App() {
 
       <footer className="app-footer">
         <span>Dữ liệu bản thảo được lưu trên thiết bị của bạn.</span>
-        <span>Phát triển bởi <b>ThanhDongg (DoXmee)</b></span>
+        <span>{providerLabel} chỉ nhận nội dung khi bạn bắt đầu dịch.</span>
       </footer>
 
       <StoryMemoryModal

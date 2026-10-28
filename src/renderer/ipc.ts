@@ -40,6 +40,7 @@ export interface StoryToolApi {
   minimizeWindow?(): Promise<void>;
   toggleMaximizeWindow?(): Promise<void>;
   closeWindow?(): Promise<void>;
+  openExternalUrl?(url: string): Promise<void>;
   loadPrompts(): Promise<{ period: string; modern: string; ancient: string; cultivation: string }>;
   getDraft(): Promise<unknown | null>;
   saveDraft(draft: unknown): Promise<void>;
