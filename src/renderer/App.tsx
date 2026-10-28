@@ -17,6 +17,7 @@ import type {
   TranslationActivityEntry,
   TranslationJobSnapshot,
   AiProvider,
+  StoryMemory,
 } from '../shared';
 import {
   chapterContentFingerprint,
@@ -25,6 +26,7 @@ import {
 import { Icon } from './components/Icon';
 import { StatusPill } from './components/StatusPill';
 import { ChapterSplitter, type SplitCheckpoint } from './features/splitter/ChapterSplitter';
+import { StoryMemoryModal } from './features/memory/StoryMemoryModal';
 import {
   StoryLinkImporter,
   type ManualVerificationState,
@@ -114,7 +116,7 @@ type ExportableChapter = FinalChapterExportInput;
 interface ExportRange {
   startChapter: number;
   endChapter: number;
-  /** Exact source chapter numbers, kept only when the selection has no gaps. */
+  /** Exact source chapter numbers, including deliberate gaps in a selection. */
   sourceChapterNumbers: number[];
 }
 
@@ -177,10 +179,15 @@ function isExportRange(value: unknown): value is ExportRange {
     || !Number.isSafeInteger(candidate.endChapter)
     || Number(candidate.startChapter) <= 0
     || Number(candidate.endChapter) < Number(candidate.startChapter)) return false;
-  const count = Number(candidate.endChapter) - Number(candidate.startChapter) + 1;
-  return Array.isArray(candidate.sourceChapterNumbers)
-    && candidate.sourceChapterNumbers.length === count
-    && candidate.sourceChapterNumbers.every((value, index) => value === Number(candidate.startChapter) + index);
+  if (!Array.isArray(candidate.sourceChapterNumbers) || candidate.sourceChapterNumbers.length < 1) return false;
+  const sourceNumbers = candidate.sourceChapterNumbers;
+  return sourceNumbers.every((value, index) => (
+    Number.isSafeInteger(value)
+    && Number(value) > 0
+    && (index === 0 || Number(value) > Number(sourceNumbers[index - 1]))
+  ))
+    && Number(sourceNumbers[0]) === Number(candidate.startChapter)
+    && Number(sourceNumbers.at(-1)) === Number(candidate.endChapter);
 }
 
 /**
@@ -203,11 +210,6 @@ function sourceChapterRange(source: string, config: SplitConfig): ExportRange | 
   const startChapter = uniqueNumbers[0];
   const endChapter = uniqueNumbers.at(-1);
   if (startChapter === undefined || endChapter === undefined) return undefined;
-  const expectedCount = endChapter - startChapter + 1;
-  // A summary named "152-155" must contain exactly 152,153,154,155. A
-  // user may deliberately choose 152 and 155, but the individual exports
-  // remain correct while the ambiguous combined TXT is disabled.
-  if (uniqueNumbers.length !== expectedCount) return undefined;
   return { startChapter, endChapter, sourceChapterNumbers: uniqueNumbers };
 }
 
@@ -341,7 +343,7 @@ function connectionPresentation(state: ConnectionState, provider: AiProvider) {
   }
 }
 
-type ManualVerificationSite = 'huliwang' | 'xszj' | 'novel543';
+type ManualVerificationSite = 'huliwang' | 'xszj' | 'novel543' | 'timotxt';
 
 /**
  * Host brands that name a different, fully automated source. Their chapter
@@ -350,7 +352,7 @@ type ManualVerificationSite = 'huliwang' | 'xszj' | 'novel543';
  * guesses — otherwise a TimoTXT link offers the Huliwang browser helper.
  */
 const OTHER_SOURCE_BRANDS = new Set([
-  'timotxt', 'qingrenyouxi', 'xbanxia', 'liehuozw', 'uaa002', 'uaa', 'c6k6', 'czbooks',
+  'qingrenyouxi', 'xbanxia', 'liehuozw', 'uaa002', 'uaa', 'c6k6', 'czbooks',
 ]);
 
 /**
@@ -371,6 +373,7 @@ function manualVerificationSite(value: string): ManualVerificationSite | undefin
     if (brand === 'huliwang' || brand === 'ihuliwang') return 'huliwang';
     if (brand === 'xszj' || brand === 'ixdzs8') return 'xszj';
     if (brand === 'novel543') return 'novel543';
+    if (brand === 'timotxt') return 'timotxt';
     // Unknown mirror: fall back to the shape of the path.
     if (/^\/(?:dir\/\d+(?:[-_/]\d+)?\.html|\d+\/?|\d+\/\d+(?:\/\d+)?\.html)\/?$/u.test(path)) return 'huliwang';
     if (/^\/b\/\d+(?:\/(?:cs|c)\/\d+)?\/?$/u.test(path) || /^\/read\/\d+(?:\/p\d+\.html)?\/?$/u.test(path)) return 'xszj';
@@ -384,11 +387,12 @@ function manualVerificationSite(value: string): ManualVerificationSite | undefin
 function manualVerificationSiteLabel(site: ManualVerificationSite): string {
   if (site === 'huliwang') return 'Huliwang';
   if (site === 'xszj') return 'XSZJ/爱下电子书';
+  if (site === 'timotxt') return 'TimoTXT';
   return 'Novel543';
 }
 
 function isCloudflareVerificationMessage(message: string): boolean {
-  return /Cloudflare|Turnstile|Just a moment|security verification|xác minh|trình duyệt mặc định|tiện ích Huliwang|Huli Browser Helper|Browser Helper|tiện ích trình duyệt|kết nối tiện ích|cầu nối Huliwang|phiên bản.*tiện ích|Tải lại tiện ích|Reload|bridge/iu.test(message);
+  return /Cloudflare|Turnstile|Just a moment|security verification|trình duyệt mặc định|tiện ích Huliwang|Huli Browser Helper|Browser Helper|tiện ích trình duyệt|kết nối tiện ích|cầu nối Huliwang|phiên bản.*tiện ích|Tải lại tiện ích|Reload|bridge/iu.test(message);
 }
 
 export default function App() {
@@ -408,6 +412,7 @@ export default function App() {
   const [storyImportState, setStoryImportState] = useState<StoryImportState>('idle');
   const [storyProgress, setStoryProgress] = useState<StorySourceProgress | null>(null);
   const [manualVerificationState, setManualVerificationState] = useState<ManualVerificationState>('none');
+  const [manualVerificationIssue, setManualVerificationIssue] = useState('');
   const [exportDirectory, setExportDirectory] = useState('');
   // Both export formats are useful safeguards for a long web translation, so
   // they are opt-out.  Old drafts without these fields retain that default.
@@ -452,6 +457,8 @@ export default function App() {
   const [translationHistory, setTranslationHistory] = useState<TranslationJobSnapshot[]>([]);
   const [activityLog, setActivityLog] = useState<TranslationActivityEntry[]>([]);
   const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
+  const [isMemoryOpen, setIsMemoryOpen] = useState(false);
+  const [storyMemory, setStoryMemory] = useState<StoryMemory | null>(null);
   const [isChapterDrawerOpen, setIsChapterDrawerOpen] = useState(false);
   const [isSupportedSitesOpen, setIsSupportedSitesOpen] = useState(false);
   const [completedSegments, setCompletedSegments] = useState(0);
@@ -486,6 +493,7 @@ export default function App() {
   const reconciledAutoExportsRef = useRef<Set<string>>(new Set());
   const exportingCombinedJobsRef = useRef<Set<string>>(new Set());
   const exportingCombinedSourceJobsRef = useRef<Set<string>>(new Set());
+  const pendingManualStoryActionRef = useRef<'analyze' | 'fetch' | null>(null);
   const autoExportRetryAttemptsRef = useRef<Map<string, number>>(new Map());
   const appAvailable = hasStoryTool();
 
@@ -494,6 +502,19 @@ export default function App() {
     const jobs = await getStoryTool().discoverTranslations();
     setTranslationHistory(jobs.filter((job) => job.status === 'failed' || job.status === 'cancelled'));
   }, [appAvailable]);
+
+  const refreshStoryMemory = useCallback(async (dir?: string, jobId?: string) => {
+    if (!appAvailable) return;
+    try {
+      const mem = await getStoryTool().getStoryMemory?.({ directory: dir, jobId });
+      if (mem) setStoryMemory(mem);
+    } catch {}
+  }, [appAvailable]);
+
+  useEffect(() => {
+    void refreshStoryMemory(exportDirectory, activeJobId);
+  }, [refreshStoryMemory, exportDirectory, activeJobId]);
+
   const suggestedOutputChapterStart = useMemo(() => {
     if (!storyAnalysis) return undefined;
     const selectableChapters = storyAnalysis.chapters
@@ -750,6 +771,9 @@ export default function App() {
       if (entry) {
         setActivityLog((current) => [...current, entry].slice(-240));
       }
+    }
+    if (type === 'story-memory-updated' && payload.memory) {
+      setStoryMemory(payload.memory as StoryMemory);
     }
     if (!activeJobRef.current && event.jobId && type === 'job-created') {
       activeJobRef.current = event.jobId;
@@ -1055,11 +1079,11 @@ export default function App() {
         }
         const job = await getStoryTool().getTranslation(autoExportJobId);
         if (disposed || job.id !== autoExportJobId) return;
-        // A cancelled or failed checkpoint belongs to history.  Binding it as
-        // the active job makes the UI look locked even though the runner no
-        // longer has any active work.  Keep its durable text intact, but
-        // sever the stale auto-export association so a new job may begin.
-        if (job.status === 'cancelled' || job.status === 'failed') {
+        // A cancelled, failed, or already completed checkpoint belongs to history.
+        // Binding an old completed checkpoint as the active job makes the UI hydrate
+        // multi-megabyte text, triggering redundant re-export cycles, conflict recovery,
+        // and severe UI lag. Sever the stale auto-export link so a new job may begin smoothly.
+        if (job.status === 'cancelled' || job.status === 'failed' || job.status === 'completed') {
           if (autoExportJobRef.current === job.id) autoExportJobRef.current = '';
           activeJobRef.current = '';
           setAutoExportJobId('');
@@ -1569,6 +1593,7 @@ export default function App() {
         ...(aiProvider === 'chatgpt' ? {} : { aiProvider }),
         allowedAiProviders: [...allowedAiProviders],
         customPrompt: promptMode === 'custom' ? customPrompt.trim() : undefined,
+        ...(storyMemory ? { memory: storyMemory } : {}),
         // Link imports preserve an ordinary source chapter in one request;
         // only unusually long chapters are split by the runner.
         settings: {
@@ -1679,18 +1704,25 @@ export default function App() {
     setSelectedChapterIds(new Set());
     setOutputChapterStart(undefined);
     setManualVerificationState('none');
+    setManualVerificationIssue('');
+    pendingManualStoryActionRef.current = 'analyze';
     setAppNotice('');
     try {
       const analysis = await getStoryTool().analyzeStoryUrl(requestedUrl);
       setStoryAnalysis(analysis);
       setSelectedChapterIds(new Set(analysis.defaultSelectedChapterIds));
       setStoryImportState('ready');
+      setManualVerificationState('none');
+      setManualVerificationIssue('');
+      pendingManualStoryActionRef.current = null;
       setAppNotice(`Đã đọc ${analysis.chapters.filter((chapter) => !chapter.isIntroduction).length.toLocaleString('vi-VN')} chương của “${analysis.bookTitle}”.`);
     } catch (error) {
       setStoryImportState('error');
       const message = error instanceof Error ? error.message : 'Không thể phân tích link truyện.';
       const canVerifyManually = Boolean(manualVerificationSite(requestedUrl)) && isCloudflareVerificationMessage(message);
+      pendingManualStoryActionRef.current = canVerifyManually ? 'analyze' : null;
       setManualVerificationState(canVerifyManually ? 'available' : 'none');
+      setManualVerificationIssue(canVerifyManually ? message : '');
       setAppNotice(canVerifyManually
         ? `${message} Hãy kết nối tiện ích với trình duyệt mặc định và đúng profile bạn dùng hằng ngày. Kết nối xong, tool sẽ tự phân tích lại link.`
         : message);
@@ -1707,17 +1739,29 @@ export default function App() {
       return;
     }
     setManualVerificationState('opening');
+    setManualVerificationIssue('');
     setAppNotice('');
     try {
       await openVerification(verificationUrl);
+      const pendingAction = pendingManualStoryActionRef.current;
+      if (pendingAction === 'fetch' && storyAnalysis && selectedChapterIds.size > 0 && exportDirectory) {
+        setManualVerificationState('none');
+        setManualVerificationIssue('');
+        setAppNotice(`Đã kết nối trình duyệt mặc định. Tool đang tiếp tục tải và dịch các chương ${manualVerificationSiteLabel(verificationSite)} đã chọn…`);
+        await fetchAndTranslateStory();
+        return;
+      }
       setManualVerificationState('open');
+      setManualVerificationIssue('');
       setAppNotice(`Đã kết nối trình duyệt mặc định. Tool đang tự phân tích lại link ${manualVerificationSiteLabel(verificationSite)}…`);
       await analyzeStoryUrl(true);
     } catch (error) {
-      setManualVerificationState('available');
-      setAppNotice(error instanceof Error
+      const message = error instanceof Error
         ? error.message
-        : 'Không thể kết nối tiện ích với trình duyệt mặc định. Hãy kiểm tra tiện ích đã được cài và thử lại.');
+        : 'Không thể kết nối tiện ích với trình duyệt mặc định. Hãy kiểm tra tiện ích đã được cài và thử lại.';
+      setManualVerificationState('available');
+      setManualVerificationIssue(message);
+      setAppNotice(message);
     }
   };
 
@@ -1741,6 +1785,7 @@ export default function App() {
   const switchToTextImport = () => {
     setSourceMode('text');
     setManualVerificationState('none');
+    setManualVerificationIssue('');
     setStoryImportState('idle');
     setStoryProgress(null);
     setAppNotice('Dán nội dung truyện bạn đã sao chép vào ô tiếng Trung để dịch.');
@@ -1787,6 +1832,8 @@ export default function App() {
     setOriginalExportedRecords([]);
     setCombinedExport(undefined);
     setAutoExportOutput('');
+    pendingManualStoryActionRef.current = null;
+    setManualVerificationIssue('');
     setAppNotice('');
     try {
       const fetched = await getStoryTool().fetchStoryChapters({
@@ -1796,15 +1843,23 @@ export default function App() {
       setSource(fetched.combinedSource);
       setStoryImportState('ready');
       if (fetched.warnings.length) setAppNotice(fetched.warnings.join(' '));
+      pendingManualStoryActionRef.current = null;
+      setManualVerificationState('none');
+      setManualVerificationIssue('');
       await beginTranslation(fetched.combinedSource, exportDirectory);
     } catch (error) {
       setStoryImportState('error');
       const message = error instanceof Error ? error.message : 'Không thể tải nội dung các chương đã chọn.';
       const needsReconnect = Boolean(manualVerificationSite(storyAnalysis.inputUrl))
         && isCloudflareVerificationMessage(message);
+      const keepsCurrentBrowser = /giữ nguyên tab Browser Helper/iu.test(message);
+      pendingManualStoryActionRef.current = needsReconnect ? 'fetch' : null;
       setManualVerificationState(needsReconnect ? 'available' : 'none');
+      setManualVerificationIssue(needsReconnect ? message : '');
       setAppNotice(needsReconnect
-        ? `${message} Hãy kết nối lại trình duyệt mặc định, phân tích lại link rồi chọn tiếp các chương cần tải.`
+        ? keepsCurrentBrowser
+          ? `${message} Hoàn tất xác minh trong tab hiện tại rồi bấm “Tải lại chương”.`
+          : `${message} Hãy kết nối lại trình duyệt mặc định; tool sẽ tiếp tục tải và dịch các chương đang chọn.`
         : message);
     }
   };
@@ -1912,10 +1967,17 @@ export default function App() {
   };
 
   const discardTranslationCheckpoint = async (job: TranslationJobSnapshot) => {
-    if (!window.confirm(`Bỏ checkpoint ${job.id.slice(0, 8)}? Dữ liệu dịch đã lưu trong checkpoint này sẽ bị xóa.`)) return;
+    if (!window.confirm(`Bỏ checkpoint ${job.id.slice(0, 8)}? Dữ liệu dịch và toàn bộ bộ nhớ đã lưu sẽ bị xóa sạch.`)) return;
     try {
       await getStoryTool().discardTranslation(job.id);
-      if (activeJobRef.current === job.id) {
+
+      // Xóa sạch bộ nhớ truyện trong state UI và dọn file bộ nhớ trên đĩa
+      setStoryMemory(null);
+      if (exportDirectory) {
+        await getStoryTool().clearStoryMemory?.({ directory: exportDirectory, jobId: job.id }).catch(() => undefined);
+      }
+
+      if (activeJobRef.current === job.id || activeJobId === job.id) {
         activeJobRef.current = '';
         setActiveJobId('');
         setTranslationState('idle');
@@ -1930,7 +1992,7 @@ export default function App() {
         setAutoExportStartedAt(0);
       }
       await refreshTranslationHistory();
-      setAppNotice('Đã bỏ checkpoint cũ. Bạn có thể bắt đầu tác vụ mới.');
+      setAppNotice('Đã xóa bỏ checkpoint và dọn sạch toàn bộ bộ nhớ lưu trữ của tiến trình cũ. Bạn có thể bắt đầu tác vụ mới.');
     } catch (error) {
       setAppNotice(error instanceof Error ? error.message : 'Không thể bỏ checkpoint.');
     }
@@ -2163,7 +2225,7 @@ export default function App() {
 
     const range = autoExportRange ?? sourceChapterRange(autoExportSource, splitForAutomaticExport);
     if (!range) {
-      setAppNotice('Không xác định được dải chương gốc liên tục để tạo file tổng bản gốc.');
+      setAppNotice('Không xác định được danh sách chương gốc để tạo file tổng bản gốc.');
       return;
     }
     const sourceChapters = splitSealedOriginalChapters(autoExportSource, splitForAutomaticExport, true);
@@ -2209,6 +2271,7 @@ export default function App() {
           exportJobId: activeJobId,
           sourceStartChapter: range.startChapter,
           sourceEndChapter: range.endChapter,
+          sourceChapterNumbers: range.sourceChapterNumbers,
           outputStartChapter,
           outputEndChapter,
           splitOutputStartChapter,
@@ -2277,15 +2340,9 @@ export default function App() {
       setAppNotice('Không xác định được phạm vi chương gốc để tạo file tổng hợp. Các file chương lẻ vẫn đã được lưu an toàn.');
       return;
     }
-    // Legacy exports retain their original website-range name. A user-set
-    // sequence instead names the aggregate after the actual split output
-    // range, so source chapter 40 split into 101–102 is visible honestly.
-    const summaryStartChapter = autoExportOutputChapterStart === undefined
-      ? range.startChapter
-      : chapters[0]?.index;
-    const summaryEndChapter = autoExportOutputChapterStart === undefined
-      ? range.endChapter
-      : chapters.at(-1)?.index;
+    // Use the actual visible output split range so the file name is accurate and matches its contents honestly.
+    const summaryStartChapter = chapters[0]?.index ?? (autoExportOutputChapterStart ?? range.startChapter);
+    const summaryEndChapter = chapters.at(-1)?.index ?? (autoExportOutputChapterStart !== undefined ? autoExportOutputChapterStart + chapters.length - 1 : range.endChapter);
     if (summaryStartChapter === undefined || summaryEndChapter === undefined) return;
     const combinedHash = combinedChapterContentFingerprint(summaryStartChapter, summaryEndChapter, chapters);
     const reconciliationKey = `combined\u0000${activeJobId}\u0000${resolvedAutoExportDirectory}\u0000${combinedHash}`;
@@ -2366,8 +2423,8 @@ export default function App() {
       autoExportOutputChapterStart,
       autoExportOmitOutputChapterTitles,
     );
-    const splitKnown = new Set(exportedRecords.map(exportRecordKey));
-    if (splitChapters.some((chapter) => !splitKnown.has(exportInputKey(activeJobId, resolvedAutoExportDirectory, chapter)))) return;
+    const splitKnown = new Set(exportedRecords.map((r) => `${r.exportJobId}\u0000${r.contentHash}`));
+    if (splitChapters.some((chapter) => !splitKnown.has(`${activeJobId}\u0000${chapterContentFingerprint(chapter)}`))) return;
 
     if (exportOriginalChapters) {
       const originals = renumberOriginalExportChapters(
@@ -2376,15 +2433,12 @@ export default function App() {
         autoExportOutputChapterStart,
         autoExportOmitOutputChapterTitles,
       );
-      const originalKnown = new Set(originalExportedRecords.map(exportRecordKey));
-      if (originals.some((chapter) => !originalKnown.has(exportInputKey(activeJobId, resolvedAutoExportDirectory, chapter)))) return;
+      const originalKnown = new Set(originalExportedRecords.map((r) => `${r.exportJobId}\u0000${r.contentHash}`));
+      if (originals.some((chapter) => !originalKnown.has(`${activeJobId}\u0000${chapterContentFingerprint(chapter)}`))) return;
     }
 
     if (exportCombinedChapters) {
       const range = autoExportRange ?? sourceChapterRange(source, splitForAutomaticExport);
-      // A deliberately non-contiguous website selection has no honest
-      // "from X to Y" summary name. The prior effect reports this explicitly;
-      // it must not leave an otherwise complete job stuck forever.
       if (!range) {
         autoExportJobRef.current = '';
         setAutoExportJobId('');
@@ -2404,7 +2458,6 @@ export default function App() {
       const combinedHash = combinedChapterContentFingerprint(summaryStartChapter, summaryEndChapter, splitChapters);
       if (!combinedExport
         || combinedExport.exportJobId !== activeJobId
-        || combinedExport.exportDirectory !== resolvedAutoExportDirectory
         || combinedExport.contentHash !== combinedHash
         || combinedExport.startChapter !== summaryStartChapter
         || combinedExport.endChapter !== summaryEndChapter
@@ -2413,20 +2466,31 @@ export default function App() {
 
     if (exportCombinedSourceChapters) {
       const range = autoExportRange ?? sourceChapterRange(autoExportSource, splitForAutomaticExport);
-      if (!range) return;
+      if (!range) {
+        setAppNotice('Không xác định được danh sách chương gốc để tạo file tổng bản gốc.');
+        autoExportJobRef.current = '';
+        setAutoExportJobId('');
+        setAutoExportStartedAt(0);
+        return;
+      }
       const sourceChapters = renumberFinalExportChapters(
         splitSealedOriginalChapters(autoExportSource, splitForAutomaticExport, true),
         autoExportOutputChapterStart,
         autoExportOmitOutputChapterTitles,
       );
-      if (!sourceChapters.length || sourceChapters.length !== range.sourceChapterNumbers.length) return;
+      if (!sourceChapters.length || sourceChapters.length !== range.sourceChapterNumbers.length) {
+        setAppNotice('Số chương nguồn không khớp checkpoint; đã dừng liên kết lưu tự động để không lặp tạo file.');
+        autoExportJobRef.current = '';
+        setAutoExportJobId('');
+        setAutoExportStartedAt(0);
+        return;
+      }
       const sourceOutputStart = sourceChapters[0]?.index;
       const sourceOutputEnd = sourceChapters.at(-1)?.index;
       if (sourceOutputStart === undefined || sourceOutputEnd === undefined) return;
       const sourceCombinedHash = combinedChapterContentFingerprint(sourceOutputStart, sourceOutputEnd, sourceChapters);
       if (!combinedSourceExport
         || combinedSourceExport.exportJobId !== activeJobId
-        || combinedSourceExport.exportDirectory !== resolvedAutoExportDirectory
         || combinedSourceExport.contentHash !== sourceCombinedHash
         || combinedSourceExport.startChapter !== sourceOutputStart
         || combinedSourceExport.endChapter !== sourceOutputEnd
@@ -2463,6 +2527,18 @@ export default function App() {
     translationState,
   ]);
 
+  // Hidden shortcut Ctrl + R (hoặc Cmd + R) để tự động reload bản mới nhất
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r') {
+        e.preventDefault();
+        window.location.reload();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const connectionInfo = connectionPresentation(connection, aiProvider);
   const providerLabel = aiProviderLabel(aiProvider);
   const providerAccounts = savedAccounts.filter((account) => account.provider === aiProvider);
@@ -2476,7 +2552,9 @@ export default function App() {
     <div className="app-shell" data-theme={colorTheme}>
       <div className="window-titlebar">
         <span className="window-titlebar__mark" aria-hidden="true"><Icon name="book" size={16} /></span>
-        <span className="window-titlebar__title">Dịch Truyện · Trung → Việt</span>
+        <span className="window-titlebar__title">
+          Dịch Truyện · Trung → Việt <span className="window-titlebar__version">v1.3.0</span>
+        </span>
         <div className="window-titlebar__controls" aria-label="Điều khiển cửa sổ">
           <button aria-label="Thu nhỏ" className="window-titlebar__control" onClick={() => void getStoryTool().minimizeWindow?.()} type="button"><span aria-hidden="true" className="window-control-icon window-control-icon--minimize" /></button>
           <button aria-label="Phóng to hoặc khôi phục" className="window-titlebar__control" onClick={() => void getStoryTool().toggleMaximizeWindow?.()} type="button"><span aria-hidden="true" className="window-control-icon window-control-icon--maximize" /></button>
@@ -2548,6 +2626,15 @@ export default function App() {
             </small>
           </div>
           <button
+            className="button button--secondary memory-toggle"
+            onClick={() => setIsMemoryOpen(true)}
+            type="button"
+            title="Quản lý bộ nhớ thực thể, tên riêng, địa danh và quy ước xưng hô cho truyện"
+          >
+            <Icon name="sparkles" />
+            {storyMemory?.entities?.length ? `Trí nhớ (${storyMemory.entities.length})` : 'Trí nhớ truyện'}
+          </button>
+          <button
             className="button button--secondary activity-toggle"
             onClick={() => setIsActivityLogOpen((open) => !open)}
             type="button"
@@ -2606,8 +2693,8 @@ export default function App() {
                 <div className="account-panel__rows">
                   {providerAccounts.length === 0 && (
                     <p className="account-panel__empty">
-                      Chưa có tài khoản nào. Bấm “Thêm tài khoản”, đăng nhập trong cửa sổ vừa mở,
-                      rồi đóng cửa sổ đó — tool tự đọc và lưu tài khoản.
+                      Chưa có tài khoản nào. Bấm “Thêm tài khoản”, đăng nhập trong cửa sổ vừa mở
+                      cho đến khi vào hẳn giao diện chính rồi đóng cửa sổ đó — tool sẽ tự động đọc và lưu tài khoản.
                     </p>
                   )}
                   {providerAccounts.map((account) => {
@@ -2761,6 +2848,7 @@ export default function App() {
                 originalExportedRecords={originalExportedRecords}
                 combinedExport={combinedExport}
                 manualVerificationState={manualVerificationState}
+                manualVerificationIssue={manualVerificationIssue}
                 progress={storyProgress}
                 selectedChapterIds={selectedChapterIds}
                 state={storyImportState}
@@ -2798,6 +2886,7 @@ export default function App() {
                 onUrlChange={(value) => {
                   setStoryUrl(value);
                   setManualVerificationState('none');
+                  setManualVerificationIssue('');
                   if (storyAnalysis && value.trim() !== storyAnalysis.inputUrl) {
                     setStoryAnalysis(null);
                     setSelectedChapterIds(new Set());
@@ -2990,6 +3079,23 @@ export default function App() {
         <span>Dữ liệu bản thảo được lưu trên thiết bị của bạn.</span>
         <span>{providerLabel} chỉ nhận nội dung khi bạn bắt đầu dịch.</span>
       </footer>
+
+      <StoryMemoryModal
+        isOpen={isMemoryOpen}
+        onClose={() => setIsMemoryOpen(false)}
+        memory={storyMemory}
+        onSave={async (updated) => {
+          setStoryMemory(updated);
+          if (appAvailable) {
+            await getStoryTool().saveStoryMemory?.({
+              directory: exportDirectory,
+              jobId: activeJobId,
+              memory: updated,
+            });
+          }
+        }}
+        storyTitle={storyAnalysis?.bookTitle || 'Bộ truyện hiện tại'}
+      />
     </div>
   );
 }

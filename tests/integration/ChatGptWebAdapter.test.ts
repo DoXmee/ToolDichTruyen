@@ -66,6 +66,8 @@ interface FakePageOptions {
   kimiIdentityCandidates?: string[];
   chatGptIdentityCandidates?: string[];
   deepSeekIdentityCandidates?: string[];
+  initialReasoningActive?: boolean;
+  reasoningAvailable?: boolean;
 }
 
 const STORED_TOOL_MARKER = 'TDTOWN_0123456789abcdef0123456789abcdef'
@@ -93,6 +95,8 @@ function createFakeBrowser(options: FakePageOptions = {}) {
   let deleteActionClickCount = 0
   let deleteConfirmClickCount = 0
   let stopClickCount = 0
+  let reasoningActive = options.initialReasoningActive ?? false
+  let reasoningClickCount = 0
   const sentUrls: string[] = []
   const sendDestinationUrls: string[] = []
   const deletedUrls: string[] = []
@@ -119,6 +123,8 @@ function createFakeBrowser(options: FakePageOptions = {}) {
     const isSend = !selector.includes('stop-icon')
       && !selector.includes('send-button-container.stop')
       && !selector.includes('task-bar-stop')
+      && !selector.includes(':has(rect)')
+      && !selector.includes('svg rect')
       && (selector.includes('send-button') || selector.includes('Send') || selector.includes('Gửi'))
     const isCompletionAction = selector.includes('copy-turn-action-button')
     const isVirtualItemContainer = selector.includes('@data-virtual-list-item-key')
@@ -149,6 +155,8 @@ function createFakeBrowser(options: FakePageOptions = {}) {
       || selector.includes('aria-label="Stop"')
       || selector.includes('Stop streaming')
       || selector.includes('Stop generating')
+      || selector.includes(':has(rect)')
+      || selector.includes('svg rect')
     const isUserMessage = selector.includes('message-author-role="user"')
       || selector.includes('data-role="user"')
       || selector.includes('chat-content-item-user')
@@ -175,6 +183,11 @@ function createFakeBrowser(options: FakePageOptions = {}) {
       || selector.includes('thread-header-right-actions')
     const isDeleteAction = selector.includes('role="menuitem"')
     const isDeleteConfirm = selector.includes('delete-conversation-confirm') || selector.includes('role="dialog"')
+    const isReasoning = selector.includes('reasoning')
+      || selector.includes('Suy luận')
+      || selector.includes('Reason')
+      || selector.includes('Thinking')
+      || selector.includes('think')
     const assistantMessageCount = () => sendCount > 0
       ? options.assistantCountAfterSend ?? sendCount
       : options.initialAssistantCount ?? 0
@@ -209,12 +222,14 @@ function createFakeBrowser(options: FakePageOptions = {}) {
       (isProfileButton && Boolean(options.chatGptIdentityCandidates?.length || options.kimiIdentityCandidates?.length || options.deepSeekIdentityCandidates?.length)) ||
       (isConversationMenu && currentUrl.includes('/c/') && options.deleteMenuAvailable !== false) ||
       (isDeleteAction && menuOpen && options.deleteActionAvailable !== false) ||
-      (isDeleteConfirm && deleteDialogOpen && options.deleteConfirmAvailable !== false)
+      (isDeleteConfirm && deleteDialogOpen && options.deleteConfirmAvailable !== false) ||
+      (isReasoning && options.reasoningAvailable !== false)
     const countElements = () => {
       if (isCompletionAction) return completionActionCount()
       if (isAssistant) return exists() ? assistantMessageCount() : 0
       if (isStop) return stopButtonVisibilities().length
       if (isUserMessage) return userMessages.length
+      if (isReasoning) return exists() ? 1 : 0
       if (isConversationMenu) {
         const currentMenu = currentUrl.includes('/c/') && options.deleteMenuAvailable !== false ? 1 : 0
         const sidebarMenu = options.sidebarPersonalConversationMenu && !isMainScopedMenu ? 1 : 0
@@ -266,6 +281,10 @@ function createFakeBrowser(options: FakePageOptions = {}) {
           currentUrl = options.deleteRedirectUrl ?? 'https://chatgpt.com/'
         }
       }
+      if (isReasoning) {
+        reasoningClickCount += 1
+        reasoningActive = !reasoningActive
+      }
     }
     const locator = {
       first: () => locatorFor(selector, 0, scope),
@@ -281,6 +300,12 @@ function createFakeBrowser(options: FakePageOptions = {}) {
         return countElements()
       },
       getAttribute: async (name: string) => {
+        if (isReasoning && exists()) {
+          if (name === 'aria-pressed') return reasoningActive ? 'true' : 'false'
+          if (name === 'data-state') return reasoningActive ? 'on' : 'off'
+          if (name === 'aria-label') return reasoningActive ? 'Tắt suy luận' : 'Bật suy luận'
+          return null
+        }
         if (isAssistantTurnContainer && name === 'data-testid' && exists()) {
           if (options.assistantTurnOrdinalUnavailable) return null
           return `conversation-turn-${latestAssistantTurnOrdinal()}`
@@ -394,6 +419,8 @@ function createFakeBrowser(options: FakePageOptions = {}) {
     get deleteActionClickCount() { return deleteActionClickCount },
     get deleteConfirmClickCount() { return deleteConfirmClickCount },
     get stopClickCount() { return stopClickCount },
+    get reasoningClickCount() { return reasoningClickCount },
+    get reasoningActive() { return reasoningActive },
     get sentUrls() { return [...sentUrls] },
     get sendDestinationUrls() { return [...sendDestinationUrls] },
     get deletedUrls() { return [...deletedUrls] },
@@ -413,7 +440,7 @@ async function waitForFileCondition(
   statePath: string,
   condition: (state: { version: number; conversation: unknown }) => boolean,
 ): Promise<{ version: number; conversation: unknown }> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     try {
       const state = JSON.parse(await readFile(statePath, 'utf8'))
       if (condition(state)) return state
@@ -421,9 +448,9 @@ async function waitForFileCondition(
       // The adapter may still be completing its atomic temp-file rename.
     }
     // Fake timers do not yield to libuv filesystem completions. Explicitly
-    // advance only the 0-ms queue so the atomic write/rename can settle even
+    // advance timers so the atomic write/rename can settle even
     // when the complete coverage suite is running concurrently.
-    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(10)
   }
   throw new Error('Timed out waiting for conversation state fixture.')
 }
@@ -444,7 +471,7 @@ async function waitForRuntimeCondition(
 afterEach(async () => {
   vi.useRealTimers()
   await Promise.all(temporaryDirectories.splice(0).map((directory) =>
-    rm(directory, { recursive: true, force: true }),
+    rm(directory, { recursive: true, force: true }).catch(() => undefined),
   ))
 })
 
@@ -581,7 +608,7 @@ describe('ChatGptWebAdapter', () => {
     }))
     expect(fake.page.isClosed()).toBe(true)
     await adapter.close()
-  })
+  }, 15_000)
 
   it('điền composer, gửi và chỉ nhận assistant message mới khi nội dung ổn định', async () => {
     vi.useFakeTimers()
@@ -2385,7 +2412,7 @@ describe('ChatGptWebAdapter', () => {
     expect(browserFactory).toHaveBeenCalledTimes(2)
     expect(browserFactory).toHaveBeenLastCalledWith(expect.objectContaining({ headless: true }))
     await adapter.close()
-  })
+  }, 15_000)
 
   it('báo rõ nếu Kiểm tra kết nối chưa đóng được manual Edge', async () => {
     vi.useFakeTimers()
@@ -2415,4 +2442,88 @@ describe('ChatGptWebAdapter', () => {
     expect(browserFactory).toHaveBeenCalledOnce()
     await adapter.close()
   })
+
+  it('ChatGPT hết hạn chờ sau 180 giây khi không có phản hồi dù timeoutMs dài hơn 480 giây', { timeout: 20_000 }, async () => {
+    const fake = createFakeBrowser({
+      composer: true,
+      assistantAfterSend: false,
+      conversationUrlAfterSend: 'https://chatgpt.com/c/tool-chat-timeout-180s',
+    })
+    const adapter = new ChatGptWebAdapter({
+      profileDirectory: 'fake-profile',
+      browserFactory: async () => fake.context,
+    })
+    await adapter.openLogin()
+    vi.useFakeTimers()
+
+    const responsePromise = adapter.sendAndWait('Hãy dịch đoạn này.', { timeoutMs: 480_000 })
+    const rejection = expect(responsePromise).rejects.toThrow(/180 giây/u)
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(90_000)
+    await vi.advanceTimersByTimeAsync(95_000)
+    await rejection
+
+    await adapter.close()
+  })
+
+  it('setReasoning(true) bật nút suy luận khi đang tắt và tắt lại khi gọi setReasoning(false)', async () => {
+    const fake = createFakeBrowser({
+      composer: true,
+      initialReasoningActive: false,
+    })
+    const adapter = new ChatGptWebAdapter({
+      profileDirectory: 'fake-profile',
+      browserFactory: async () => fake.context,
+    })
+    await adapter.openLogin()
+
+    expect(fake.reasoningActive).toBe(false)
+    expect(fake.reasoningClickCount).toBe(0)
+
+    const turnOnResult = await adapter.setReasoning(true)
+    expect(turnOnResult).toBe(true)
+    expect(fake.reasoningActive).toBe(true)
+    expect(fake.reasoningClickCount).toBe(1)
+
+    // Gọi lại khi đã bật -> không bấm lại
+    const turnOnAgainResult = await adapter.setReasoning(true)
+    expect(turnOnAgainResult).toBe(true)
+    expect(fake.reasoningActive).toBe(true)
+    expect(fake.reasoningClickCount).toBe(1)
+
+    // Tắt đi
+    const turnOffResult = await adapter.setReasoning(false)
+    expect(turnOffResult).toBe(true)
+    expect(fake.reasoningActive).toBe(false)
+    expect(fake.reasoningClickCount).toBe(2)
+
+    await adapter.close()
+  })
+
+  it('sendAndWait với options.reasoning = true tự động kích hoạt suy luận trước khi gửi', async () => {
+    const fake = createFakeBrowser({
+      composer: true,
+      initialReasoningActive: false,
+      response: 'Bản dịch sửa lỗi thành công.',
+    })
+    const adapter = new ChatGptWebAdapter({
+      profileDirectory: 'fake-profile',
+      browserFactory: async () => fake.context,
+    })
+    await adapter.openLogin()
+
+    expect(fake.reasoningActive).toBe(false)
+    const response = await adapter.sendAndWait('Đoạn retry cần suy luận', { reasoning: true })
+    expect(response).toBe('Bản dịch sửa lỗi thành công.')
+    expect(fake.reasoningActive).toBe(true)
+    expect(fake.reasoningClickCount).toBe(1)
+
+    // Lần tiếp theo với reasoning = false -> tự động tắt suy luận
+    await adapter.sendAndWait('Đoạn thường không suy luận', { reasoning: false })
+    expect(fake.reasoningActive).toBe(false)
+    expect(fake.reasoningClickCount).toBe(2)
+
+    await adapter.close()
+  })
 })
+

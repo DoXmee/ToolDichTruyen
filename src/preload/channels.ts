@@ -53,4 +53,7 @@ export const IPC_CHANNELS = Object.freeze({
   accountRename: "story-tool:accounts:rename",
   accountSyncCurrent: "story-tool:accounts:sync-current",
   accountsCleanup: "story-tool:accounts:cleanup",
+  storyMemoryGet: "story-tool:memory:get",
+  storyMemorySave: "story-tool:memory:save",
+  storyMemoryClear: "story-tool:memory:clear",
 });

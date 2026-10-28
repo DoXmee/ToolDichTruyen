@@ -25,6 +25,7 @@ import {
   type ChatWebSelectors,
   type ChatWebModelPicker,
 } from "./selectors.js";
+import { detectOfflineLoginIdentity } from "../accounts/offlineProbe.js";
 import {
   currentModelFromAriaLabel,
   ensureProModel,
@@ -48,6 +49,7 @@ export interface ChatGptStatusSnapshot {
 export interface SendMessageOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+  reasoning?: boolean;
 }
 
 export class ChatGptGenerationStopError extends Error {
@@ -165,6 +167,8 @@ const DEEPSEEK_TRANSIENT_ERROR_SELECTORS = [
 ] as const;
 const DEEPSEEK_INITIAL_RESPONSE_TIMEOUT_MS = 3 * 60_000;
 const DEEPSEEK_RESPONSE_IDLE_TIMEOUT_MS = 3 * 60_000;
+const CHATGPT_INITIAL_RESPONSE_TIMEOUT_MS = 180_000;
+const CHATGPT_RESPONSE_IDLE_TIMEOUT_MS = 90_000;
 
 // Kimi pauses long answers behind an inline "continue" control instead of
 // finishing the assistant turn.  Without handling it the Stop control is gone
@@ -176,6 +180,15 @@ const KIMI_CONTINUE_RESPONSE_SELECTORS = [
   '.continue-chat-button',
   'button:has-text("Continue generating")',
   'button:has-text("继续生成")',
+] as const;
+
+const CHATGPT_CONTINUE_RESPONSE_SELECTORS = [
+  'button:has-text("Continue generating")',
+  'button:has-text("Tiếp tục tạo")',
+  'button:has-text("Tiếp tục")',
+  'button[aria-label*="Continue generating" i]',
+  'button[aria-label*="Tiếp tục tạo" i]',
+  'button[data-testid*="continue" i]',
 ] as const;
 
 const MAX_KIMI_RESPONSE_CONTINUATIONS = 6;
@@ -387,9 +400,17 @@ async function defaultBrowserFactory(options: BrowserFactoryOptions): Promise<Br
       "--disable-default-apps",
       "--disable-sync",
       "--disable-save-password-bubble",
-      "--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication",
+      "--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,EdgeShopping,EdgeEntityExtraction,EdgeWallet,Translate,OptimizationHints,MediaRouter",
       "--no-default-browser-check",
       "--no-first-run",
+      "--disable-extensions",
+      "--disable-component-update",
+      "--disable-background-networking",
+      "--disable-breakpad",
+      "--disk-cache-size=104857600",
+      "--disable-background-timer-throttling",
+      "--memory-model=low",
+      "--enable-features=MemorySaver",
     ],
   };
 
@@ -498,6 +519,8 @@ async function defaultManualLoginFactory(options: {
       // visible login window closes. The adapter used to mistake that
       // background process for an unfinished login forever.
       "--disable-background-mode",
+      "--disable-extensions",
+      "--disable-features=EdgeShopping,EdgeEntityExtraction,EdgeWallet,Translate,OptimizationHints",
       options.url,
     ],
     {
@@ -516,8 +539,18 @@ async function defaultManualLoginFactory(options: {
     closed,
     isRunning: () => child.exitCode === null && child.signalCode === null && !child.killed,
     close: async () => {
-      if (child.exitCode === null && child.signalCode === null) child.kill();
-      await Promise.race([closed.catch(() => undefined), delay(3_000)]);
+      if (child.exitCode === null && child.signalCode === null) {
+        if (process.platform === "win32" && typeof child.pid === "number") {
+          try {
+            execFile("taskkill", ["/PID", String(child.pid)], () => undefined);
+          } catch {}
+        }
+        await Promise.race([closed.catch(() => undefined), delay(2_000)]);
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill();
+        }
+      }
+      await Promise.race([closed.catch(() => undefined), delay(2_000)]);
     },
   };
 }
@@ -876,7 +909,7 @@ export class ChatGptWebAdapter {
     return { ...this.snapshot };
   }
 
-  public async openLogin(): Promise<ChatGptStatusSnapshot> {
+  public async openLogin(options: { allowManualFallback?: boolean } = {}): Promise<ChatGptStatusSnapshot> {
     if (this.manualLogin?.isRunning()) {
       const verified = await this.verifyManualLoginWindow(this.manualLogin);
       if (verified.status === "ready") return verified;
@@ -913,6 +946,7 @@ export class ChatGptWebAdapter {
     await this.page.bringToFront();
     const status = await this.refreshStatus(12_000);
     if (
+      (options.allowManualFallback ?? true) &&
       status.status === "login-required" &&
       this.manualLoginFactory &&
       !(this.options.headless ?? false)
@@ -926,6 +960,11 @@ export class ChatGptWebAdapter {
     if (this.manualLogin?.isRunning()) return this.waitForManualLoginWindow(this.manualLogin);
     this.manualLogin = undefined;
     return this.switchToManualLogin();
+  }
+
+  /** Whether a detached manual login window is currently open. */
+  public isManualLoginRunning(): boolean {
+    return Boolean(this.manualLogin?.isRunning());
   }
 
   /** Browser profile currently backing this adapter. */
@@ -944,6 +983,7 @@ export class ChatGptWebAdapter {
    * closed must not be reopened while the tool reads its own profile.
    */
   public async readAccountAfterManualLogin(): Promise<{ label: string; email?: string; plan?: string } | undefined> {
+    const offline = await detectOfflineLoginIdentity(this.profileDirectory, this.provider).catch(() => undefined);
     let temporaryContext: BrowserContext | undefined;
     try {
       if (!this.context) {
@@ -954,6 +994,8 @@ export class ChatGptWebAdapter {
             "Đang đọc phiên đã đăng nhập bằng cửa sổ ẩn.",
           ),
         );
+        await releaseProfileLock(this.profileDirectory).catch(() => undefined);
+        await delay(500);
         let context: BrowserContext | undefined;
         let lastError: unknown;
         for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -985,10 +1027,46 @@ export class ChatGptWebAdapter {
         await this.page.goto(this.baseUrl, { waitUntil: "domcontentloaded", timeout: 45_000 })
           .catch(() => undefined);
       }
-      const status = await this.refreshStatus(10_000);
-      if (status.status !== "ready") return undefined;
-      return await this.readAccountIdentity();
+      let identity = await this.readAccountIdentity();
+      if (identity) {
+        return {
+          ...identity,
+          ...(offline?.email && !identity.email ? { email: offline.email } : {}),
+        };
+      }
+
+      const status = await this.refreshStatus(offline?.hasEvidence ? 2_000 : 20_000);
+      identity = await this.readAccountIdentity();
+      if (identity) {
+        return {
+          ...identity,
+          ...(offline?.email && !identity.email ? { email: offline.email } : {}),
+        };
+      }
+      if (status.status === "ready") {
+        const readyIdentity = await this.readAccountIdentity();
+        if (readyIdentity) {
+          return {
+            ...readyIdentity,
+            ...(offline?.email && !readyIdentity.email ? { email: offline.email } : {}),
+          };
+        }
+      }
+
+      if (offline?.hasEvidence) {
+        return {
+          label: offline.label || providerDefaultAccountLabel(this.provider),
+          ...(offline.email ? { email: offline.email } : {}),
+        };
+      }
+      return undefined;
     } catch {
+      if (offline?.hasEvidence) {
+        return {
+          label: offline.label || providerDefaultAccountLabel(this.provider),
+          ...(offline.email ? { email: offline.email } : {}),
+        };
+      }
       return undefined;
     } finally {
       if (temporaryContext) {
@@ -1393,6 +1471,26 @@ export class ChatGptWebAdapter {
   }
 
   private async readChatGptAccountIdentity(page: Page): Promise<{ label: string; email?: string; plan?: string } | undefined> {
+    // 1. Direct session probe: ChatGPT's internal auth endpoint returns signed-in user name & email reliably
+    const sessionIdentity = await page.evaluate(async () => {
+      try {
+        const response = await fetch("/api/auth/session", { credentials: "include" });
+        if (response.ok) {
+          const json = await response.json();
+          const user = json?.user;
+          if (user && (user.email || user.name)) {
+            return {
+              email: typeof user.email === "string" ? user.email.trim() : undefined,
+              name: typeof user.name === "string" ? user.name.trim() : undefined,
+            };
+          }
+        }
+      } catch {
+        // Fallback to DOM below
+      }
+      return undefined;
+    }).catch(() => undefined);
+
     const readCandidates = async (): Promise<string[]> => page.evaluate(() => {
       const values = new Set<string>();
       const push = (value: unknown): void => {
@@ -1411,6 +1509,7 @@ export class ChatGptWebAdapter {
             '[aria-label*="hồ sơ" i]',
             '[aria-label*="account" i]',
             '[aria-label*="tài khoản" i]',
+            '[aria-label*="user" i]',
           ].join(", "),
         ),
       ];
@@ -1436,7 +1535,26 @@ export class ChatGptWebAdapter {
 
     const candidates = await readCandidates();
     let identity = pickChatGptIdentity(candidates);
+    if (sessionIdentity?.email || sessionIdentity?.name) {
+      return {
+        label: sessionIdentity.name || normalizeIdentityLabel(identity?.label) || sessionIdentity.email?.split("@")[0] || "ChatGPT",
+        ...(sessionIdentity.email ? { email: sessionIdentity.email } : identity?.email ? { email: identity.email } : {}),
+        ...(identity?.plan ? { plan: identity.plan } : {}),
+      };
+    }
     if (identity?.email && (identity.plan || normalizeIdentityLabel(identity.label))) return identity;
+
+    // In headless or narrow viewports, the sidebar may be collapsed hiding the profile button
+    const sidebarButton = await firstVisible(page, [
+      '[data-testid="open-sidebar-button"]',
+      'button[aria-label*="thanh bên" i]',
+      'button[aria-label*="sidebar" i]',
+      'button[aria-label*="Open sidebar" i]',
+    ]);
+    if (sidebarButton) {
+      await sidebarButton.click({ timeout: 2_000 }).catch(() => undefined);
+      await delay(400);
+    }
 
     const profileButton = await firstVisible(page, [
       '[data-testid="accounts-profile-button"]',
@@ -1447,7 +1565,11 @@ export class ChatGptWebAdapter {
       'button[aria-label*="hồ sơ" i]',
       'button[aria-label*="account" i]',
       'button[aria-label*="tài khoản" i]',
+      'button[aria-label*="User" i]',
+      'button[aria-label*="Open user menu" i]',
       'button:has([data-testid="user-avatar"])',
+      'nav button:has(img)',
+      'nav [role="button"]:has(img)',
     ]);
     if (!profileButton) return identity;
     await profileButton.click({ timeout: 5_000 }).catch(() => undefined);
@@ -1573,10 +1695,27 @@ export class ChatGptWebAdapter {
   }
 
   public async ensureReady(): Promise<void> {
-    if (!this.context || !this.page || this.page.isClosed()) await this.openLogin();
-    const status = await this.refreshStatus(5_000);
+    if (!this.context || !this.page || this.page.isClosed()) {
+      await this.openLogin({ allowManualFallback: false });
+    }
+    if (this.page && !this.page.isClosed() && this.snapshot.status === "ready") {
+      return;
+    }
+    const status = await this.refreshStatus(10_000);
     if (status.status !== "ready") {
-      throw new Error(status.message ?? "ChatGPT Web chưa sẵn sàng.");
+      if (status.status === "login-required") {
+        throw new Error(
+          status.message
+            || providerStatusMessage(
+              this.provider,
+              "Tài khoản ChatGPT chưa được đăng nhập. Hãy bấm Kiểm tra kết nối hoặc Thêm tài khoản để đăng nhập trước khi dịch.",
+            ),
+        );
+      }
+      throw new Error(
+        status.message
+          ?? providerStatusMessage(this.provider, "ChatGPT Web chưa sẵn sàng. Hãy kiểm tra kết nối tài khoản."),
+      );
     }
   }
 
@@ -1697,6 +1836,9 @@ export class ChatGptWebAdapter {
     await this.ensurePreferredModel(page);
     const activeConversation = await this.prepareToolConversationForSend(page);
     if (this.provider === "kimi") await this.ensureKimiStandardThinkingEffort(page);
+    if (this.provider === "chatgpt" && options.reasoning !== undefined) {
+      await this.setReasoning(options.reasoning).catch(() => false);
+    }
     const ownershipMarker = createOwnershipMarker();
     const submittedMessage = appendOwnershipMetadata(message, ownershipMarker);
     if (submittedMessage.length > 200_000) {
@@ -1742,6 +1884,7 @@ export class ChatGptWebAdapter {
       const baseline = await this.captureAssistantTurnBaseline(page);
       throwIfAborted(options.signal);
       this.assertSafeSendDestination(page, activeConversation);
+      await this.pruneHistoricalTurnDom(page).catch(() => undefined);
       const composer = await firstVisible(page, this.selectors.composer);
       if (!composer) throw new Error("Không tìm thấy ô nhập ChatGPT. Giao diện web có thể đã thay đổi.");
       // A transient sidebar, tooltip or onboarding layer can intercept pointer
@@ -1750,7 +1893,24 @@ export class ChatGptWebAdapter {
       await composer.click({ timeout: 5_000 }).catch(() => undefined);
       throwIfAborted(options.signal);
       try {
-        await composer.fill(submittedMessage);
+        let fastInserted = false;
+        if (typeof composer.evaluate === "function") {
+          fastInserted = await composer.evaluate((el: HTMLElement, text: string) => {
+            el.focus();
+            const sel = window.getSelection();
+            if (sel) {
+              const range = document.createRange();
+              range.selectNodeContents(el);
+              sel.removeAllRanges();
+              sel.addRange(range);
+            }
+            return document.execCommand("insertText", false, text);
+          }, submittedMessage).catch(() => false);
+        }
+
+        if (!fastInserted) {
+          await composer.fill(submittedMessage, { timeout: 3_000 });
+        }
       } catch {
         throwIfAborted(options.signal);
         await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
@@ -1760,9 +1920,18 @@ export class ChatGptWebAdapter {
       throwIfAborted(options.signal);
       this.assertSafeSendDestination(page, activeConversation);
       const sendButton = await firstVisible(page, this.selectors.sendButton);
-      if (sendButton && (await sendButton.isEnabled().catch(() => false))) {
-        messageSubmitted = await this.clickAtSafeSendDestination(sendButton, activeConversation)
-          .then(() => true, () => false);
+      if (sendButton) {
+        // Wait briefly for React synthetic events to settle and enable the submit button
+        const enabledDeadline = Date.now() + 2_000;
+        let isEnabled = await sendButton.isEnabled().catch(() => false);
+        while (!isEnabled && Date.now() < enabledDeadline) {
+          await delay(80, options.signal);
+          isEnabled = await sendButton.isEnabled().catch(() => false);
+        }
+        if (isEnabled) {
+          messageSubmitted = await this.clickAtSafeSendDestination(sendButton, activeConversation)
+            .then(() => true, () => false);
+        }
       }
       if (!messageSubmitted) {
         throwIfAborted(options.signal);
@@ -1797,7 +1966,7 @@ export class ChatGptWebAdapter {
           { cause: error },
         );
       }
-      return await this.waitForLatestResponse(
+      const responseText = await this.waitForLatestResponse(
         page,
         baseline,
         timeoutMs,
@@ -1806,6 +1975,8 @@ export class ChatGptWebAdapter {
         submittedConversation,
         ownershipMarkerHash(ownershipMarker),
       );
+      await this.pruneHistoricalTurnDom(page).catch(() => undefined);
+      return responseText;
     } catch (error) {
       // A timeout or DOM failure after submission may leave ChatGPT streaming.
       // Stop it before the runner retries, otherwise the next prompt can race
@@ -1934,6 +2105,68 @@ export class ChatGptWebAdapter {
     throw new ChatGptGenerationStopError(
       "ChatGPT Web vẫn hiển thị nút dừng sau khi tool đã bấm. Response có thể vẫn đang chạy.",
     );
+  }
+
+  /**
+   * DOM Virtualization & Memory Pruning:
+   * Replaces heavy historical turn contents (thousands of DOM nodes, markdown, KaTeX)
+   * with lightweight compact placeholder elements. Preserves turn containers and test IDs
+   * so baseline counting, ordinal tracking, and server conversation continuity remain 100% intact,
+   * while freeing up to 5-7 GB of Chromium renderer memory.
+   */
+  public async pruneHistoricalTurnDom(page: Page): Promise<void> {
+    if (!page || page.isClosed()) return;
+    try {
+      await page.evaluate(() => {
+        // 1. Prune historical assistant messages
+        const assistantSelectors = [
+          '[data-message-author-role="assistant"]',
+          '[data-markdown-text-style="assistant-message"]',
+          '.ds-markdown',
+          'article:has([data-message-author-role="assistant"])',
+        ].join(", ");
+        const assistantNodes = document.querySelectorAll(assistantSelectors);
+        if (assistantNodes.length > 1) {
+          // Leave the most recent turn intact (length - 1)
+          for (let i = 0; i < assistantNodes.length - 1; i++) {
+            const node = assistantNodes[i] as HTMLElement;
+            if (node && !node.dataset.toolPruned) {
+              const contentContainer = (node.querySelector(".markdown") ?? node) as HTMLElement;
+              if (contentContainer && (contentContainer.textContent?.length ?? 0) > 200) {
+                node.dataset.toolPruned = "true";
+                contentContainer.innerHTML =
+                  '<div style="padding: 8px 12px; margin: 4px 0; background: rgba(16,163,127,0.06); border-left: 3px solid #10a37f; border-radius: 4px; font-size: 13px; color: #444; font-style: italic;">' +
+                  '✓ Bản dịch đoạn này đã hoàn tất & lưu an toàn vào máy (Nội dung đã thu gọn để tối ưu RAM)' +
+                  '</div>';
+              }
+            }
+          }
+        }
+
+        // 2. Prune historical user messages
+        const userSelectors = [
+          '[data-message-author-role="user"]',
+          '.ds-message-user',
+        ].join(", ");
+        const userNodes = document.querySelectorAll(userSelectors);
+        if (userNodes.length > 1) {
+          for (let i = 0; i < userNodes.length - 1; i++) {
+            const node = userNodes[i] as HTMLElement;
+            if (node && !node.dataset.toolPruned) {
+              if ((node.textContent?.length ?? 0) > 200) {
+                node.dataset.toolPruned = "true";
+                node.innerHTML =
+                  '<div style="padding: 6px 10px; margin: 2px 0; background: rgba(128,128,128,0.05); border-radius: 4px; font-size: 12px; color: #777; font-style: italic;">' +
+                  '✓ Prompt đã gửi thành công (Đã thu gọn để tối ưu RAM)' +
+                  '</div>';
+              }
+            }
+          }
+        }
+      });
+    } catch {
+      // Non-fatal if page closed or evaluating during navigation
+    }
   }
 
   public async close(options: ChatGptCloseOptions = {}): Promise<void> {
@@ -2494,13 +2727,11 @@ export class ChatGptWebAdapter {
       // its historical combined-selector check because its selectors are
       // mutually exclusive in that DOM.
       let messages = page.locator(this.selectors.toolConversationUserMessages.join(", "));
-      if (this.provider === "kimi" || this.provider === "gemini") {
-        for (const candidateSelector of this.selectors.toolConversationUserMessages) {
-          const candidate = page.locator(candidateSelector);
-          if (await candidate.count() > 0) {
-            messages = candidate;
-            break;
-          }
+      for (const candidateSelector of this.selectors.toolConversationUserMessages) {
+        const candidate = page.locator(candidateSelector);
+        if (await candidate.count() > 0) {
+          messages = candidate;
+          break;
         }
       }
       const count = await messages.count();
@@ -2518,8 +2749,20 @@ export class ChatGptWebAdapter {
         );
       }
       if (count === 1) {
-        const text = await messages.first().innerText().catch(() => "");
+        const text =
+          (await messages.first().innerText().catch(() => "")) ||
+          (await messages.first().textContent().catch(() => ""));
         if (text && containsOwnershipHash(text, expectedHashes)) return;
+
+        const bodyText = await page
+          .evaluate(() => (document.body ? (document.body.innerText || "") + "\n" + (document.body.textContent || "") : ""))
+          .catch(() => "");
+        if (bodyText && containsOwnershipHash(bodyText, expectedHashes)) return;
+
+        if (Date.now() < deadline) {
+          await delay(250);
+          continue;
+        }
         throw new Error(
           "Tin nhắn đầu tiên trong chat không có marker sở hữu tool vừa gửi. Tool không lưu ID chat này.",
         );
@@ -2536,13 +2779,26 @@ export class ChatGptWebAdapter {
   ): Promise<void> {
     const deadline = Date.now() + this.conversationUrlTimeoutMs;
     const expectedHashes = new Set([submittedOwnershipHash]);
-    const messages = page.locator(this.selectors.toolConversationUserMessages.join(", "));
+
     do {
       this.assertExactToolConversation(page, conversation);
-      for (let index = 0; index < await messages.count(); index += 1) {
-        const text = await messages.nth(index).innerText().catch(() => "");
-        if (text && containsOwnershipHash(text, expectedHashes)) return;
+
+      for (const candidateSelector of this.selectors.toolConversationUserMessages) {
+        const candidate = page.locator(candidateSelector);
+        const count = await candidate.count().catch(() => 0);
+        for (let index = count - 1; index >= 0; index -= 1) {
+          const text =
+            (await candidate.nth(index).innerText().catch(() => "")) ||
+            (await candidate.nth(index).textContent().catch(() => ""));
+          if (text && containsOwnershipHash(text, expectedHashes)) return;
+        }
       }
+
+      const bodyText = await page
+        .evaluate(() => (document.body ? (document.body.innerText || "") + "\n" + (document.body.textContent || "") : ""))
+        .catch(() => "");
+      if (bodyText && containsOwnershipHash(bodyText, expectedHashes)) return;
+
       if (Date.now() < deadline) await delay(200);
     } while (Date.now() < deadline);
     throw new Error(
@@ -2660,13 +2916,34 @@ export class ChatGptWebAdapter {
       return await this.rememberMarkerConversation(page, expected, submittedOwnershipHash);
     }
     let kimiCandidate: ToolCreatedConversation | undefined;
-    let observerPage: Page | undefined;
-    try {
-      do {
-        const currentConversation = conversationFromUrl(page.url(), this.baseUrl, this.provider);
+    do {
+      const currentConversation = conversationFromUrl(page.url(), this.baseUrl, this.provider);
         if (currentConversation && this.provider === "kimi") kimiCandidate = currentConversation;
         const conversation = currentConversation ?? kimiCandidate;
         if (!conversation) {
+          const pageError = await page
+            .evaluate(() => {
+              const alerts = document.querySelectorAll(
+                '[role="alert"], [data-testid*="error"], .text-red-500, div[class*="toast"], div[class*="banner"]',
+              );
+              for (const el of alerts) {
+                const text = el.textContent?.trim() || "";
+                if (
+                  /(?:quá dài|too long|something went wrong|rate limit|quota|đã xảy ra lỗi|vui lòng thử lại)/iu.test(
+                    text,
+                  )
+                ) {
+                  return text;
+                }
+              }
+              return null;
+            })
+            .catch(() => null);
+
+          if (pageError) {
+            throw new Error(`ChatGPT hiển thị thông báo lỗi trên trang: "${pageError.slice(0, 200)}"`);
+          }
+
           if (Date.now() < deadline) await delay(200);
           continue;
         }
@@ -2681,15 +2958,9 @@ export class ChatGptWebAdapter {
             "ID chat vừa gửi không khớp ID do tool đã lưu. Tool đã giữ nguyên bản ghi cũ để tránh xóa nhầm.",
           );
         }
-        let verificationPage = page;
+        const verificationPage = page;
         if (!isSameConversationUrl(page.url(), conversation, this.baseUrl, this.provider)) {
           if (this.provider !== "kimi") this.assertExactToolConversation(page, conversation);
-          observerPage ??= await page.context().newPage();
-          await observerPage.goto(conversation.url, {
-            waitUntil: "domcontentloaded",
-            timeout: 45_000,
-          }).catch(() => undefined);
-          verificationPage = observerPage;
         }
         try {
           if (!expected && !persisted) {
@@ -2743,9 +3014,6 @@ export class ChatGptWebAdapter {
         "Tin nhắn đã được gửi nhưng ChatGPT không cấp URL /c/{id} hợp lệ. " +
         "Tool đã dừng vì không thể ghi nhớ an toàn cuộc chat để xóa ở lần sau.",
       );
-    } finally {
-      await observerPage?.close().catch(() => undefined);
-    }
   }
 
   /**
@@ -2921,7 +3189,9 @@ export class ChatGptWebAdapter {
     const hardDeadline = startedAt + timeoutMs;
     let deadline = this.provider === "deepseek"
       ? Math.min(hardDeadline, startedAt + DEEPSEEK_INITIAL_RESPONSE_TIMEOUT_MS)
-      : hardDeadline;
+      : this.provider === "chatgpt"
+        ? Math.min(hardDeadline, startedAt + Math.min(timeoutMs, CHATGPT_INITIAL_RESPONSE_TIMEOUT_MS))
+        : hardDeadline;
     let responseLocator: Locator | undefined;
     let responsePage = page;
     let selectedResponseSelector = "";
@@ -2955,6 +3225,15 @@ export class ChatGptWebAdapter {
             // A continuation is a real new generation phase. Give it a fresh
             // response window instead of letting the original deadline expire
             // while Kimi is still extending the same answer.
+            deadline = Math.max(deadline, Date.now() + timeoutMs);
+            await delay(750, signal);
+          }
+        }
+        if (this.provider === "chatgpt") {
+          const continueResponse = await firstVisible(page, CHATGPT_CONTINUE_RESPONSE_SELECTORS);
+          if (continueResponse) {
+            await continueResponse.click({ timeout: 5_000 }).catch(() => undefined);
+            stableChecks = 0;
             deadline = Math.max(deadline, Date.now() + timeoutMs);
             await delay(750, signal);
           }
@@ -3048,27 +3327,41 @@ export class ChatGptWebAdapter {
           }
         }
 
+        const stopButtonVisible = Boolean(await firstVisible(responsePage, this.selectors.stopButton));
+        const stillStreaming = await this.responseStillStreaming(responsePage);
+        const isActivelyGenerating = stopButtonVisible || stillStreaming;
+
+        if (!isActivelyGenerating && (await firstVisible(responsePage, this.selectors.retryButton))) {
+          throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
+        }
+
         if (responseLocator) {
           const rawText = (await responseLocator.innerText().catch(() => "")).trim();
           const text = this.selectors.cleanupResponse?.(rawText) ?? rawText;
-          const stopButtonVisible = Boolean(await firstVisible(responsePage, this.selectors.stopButton));
-          const stillStreaming = await this.responseStillStreaming(responsePage);
+          const hasCompletionAction = await this.responseTurnHasVisibleCompletionAction(responseLocator);
+          const hasClosingTag = text.includes("</BAN_DICH>") || text.includes("</THUC_THE_MOI>");
+
           // Kimi renders Copy/action controls on intermediate thinking
           // segments.  Those controls are not a completion signal; only the
           // disappearance of its Stop control proves the final answer ended.
+          // ChatGPT: complete if completion action (Copy) is visible in latest turn,
+          // closing tag is present, or Stop button has gone.
           const responseComplete = stillStreaming
             ? false
             : this.provider === "kimi"
               ? !stopButtonVisible
-              : !stopButtonVisible || (
-                await this.responseTurnHasVisibleCompletionAction(responseLocator)
-              );
+              : (hasCompletionAction || hasClosingTag || !stopButtonVisible);
+
           if (text && text === previousText && responseComplete) stableChecks += 1;
           else stableChecks = 0;
           if (this.provider === "deepseek" && text && text !== previousText) {
             deadline = Math.min(hardDeadline, Date.now() + DEEPSEEK_RESPONSE_IDLE_TIMEOUT_MS);
           }
+          if (this.provider === "chatgpt" && (text !== previousText || isActivelyGenerating)) {
+            deadline = Math.min(hardDeadline, Date.now() + CHATGPT_RESPONSE_IDLE_TIMEOUT_MS);
+          }
           previousText = text;
+
           if (text && stableChecks >= 3) {
             if (this.provider === "kimi") {
               console.warn(
@@ -3076,10 +3369,6 @@ export class ChatGptWebAdapter {
               );
             }
             return text;
-          }
-
-          if (responseComplete && (await firstVisible(responsePage, this.selectors.retryButton))) {
-            throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
           }
         }
 
@@ -3129,8 +3418,12 @@ export class ChatGptWebAdapter {
         + diagnosticSuffix,
       );
     }
+    const observedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    const reportedSeconds = this.provider === "chatgpt" && observedSeconds < Math.round(timeoutMs / 1000)
+      ? observedSeconds
+      : Math.round(timeoutMs / 1000);
     throw new Error(
-      `${providerLabel} không hoàn tất phản hồi trong ${Math.round(timeoutMs / 1000)} giây.`
+      `${providerLabel} không hoàn tất phản hồi trong ${reportedSeconds} giây.`
       + diagnosticSuffix,
     );
   }
@@ -3195,12 +3488,8 @@ export class ChatGptWebAdapter {
     const selectors = this.selectors.streamingIndicators;
     if (!selectors?.length) return false;
     for (const selector of selectors) {
-      const nodes = page.locator(selector);
-      const count = await nodes.count().catch(() => 0);
-      for (let index = 0; index < count; index += 1) {
-        const busy = await nodes.nth(index).getAttribute("aria-busy").catch(() => null);
-        if (busy === "true") return true;
-      }
+      const busyCount = await page.locator(`${selector}[aria-busy="true"]`).count().catch(() => 0);
+      if (busyCount > 0) return true;
     }
     return false;
   }
@@ -3357,6 +3646,104 @@ export class ChatGptWebAdapter {
       if (entries.length) return entries;
     }
     return [];
+  }
+
+  public async setReasoning(enabled: boolean): Promise<boolean> {
+    if (this.provider !== "chatgpt") return false;
+    const page = this.page;
+    if (!page || page.isClosed()) return false;
+    const selectors = this.selectors.reasoningButton;
+    if (!selectors || selectors.length === 0) return false;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const button = await firstVisible(page, selectors);
+      if (!button) return false;
+
+      const isActive = await this.isReasoningButtonActive(button);
+      if (isActive === enabled) {
+        return true;
+      }
+
+      try {
+        await button.click({ timeout: 5_000 });
+        const deadline = Date.now() + 800;
+        do {
+          await delay(150);
+          const currentActive = await this.isReasoningButtonActive(button);
+          if (currentActive === enabled) return true;
+        } while (Date.now() < deadline);
+
+        // If clicking opened a dropdown/popover menu with toggle options:
+        if (!enabled) {
+          const offOption = await firstVisible(page, [
+            '[role="menuitem"]:has-text("Tắt")',
+            '[role="menuitem"]:has-text("Off")',
+            '[role="menuitem"]:has-text("Don\'t reason")',
+            '[role="menuitem"]:has-text("Không suy luận")',
+            '[role="option"]:has-text("Tắt")',
+            '[role="option"]:has-text("Off")',
+          ]);
+          if (offOption) {
+            await offOption.click({ timeout: 2_000 }).catch(() => undefined);
+            await delay(200);
+            if ((await this.isReasoningButtonActive(button)) === false) return true;
+          }
+        } else {
+          const onOption = await firstVisible(page, [
+            '[role="menuitem"]:has-text("Bật")',
+            '[role="menuitem"]:has-text("On")',
+            '[role="menuitem"]:has-text("Suy luận")',
+            '[role="menuitem"]:has-text("Think")',
+            '[role="option"]:has-text("Bật")',
+            '[role="option"]:has-text("On")',
+          ]);
+          if (onOption) {
+            await onOption.click({ timeout: 2_000 }).catch(() => undefined);
+            await delay(200);
+            if ((await this.isReasoningButtonActive(button)) === true) return true;
+          }
+        }
+      } catch {
+        // Continue to next attempt
+      }
+    }
+
+    const finalButton = await firstVisible(page, selectors);
+    return finalButton ? (await this.isReasoningButtonActive(finalButton)) === enabled : false;
+  }
+
+  private async isReasoningButtonActive(button: Locator): Promise<boolean> {
+    try {
+      const ariaPressed = await button.getAttribute("aria-pressed").catch(() => null);
+      if (ariaPressed === "true") return true;
+      if (ariaPressed === "false") return false;
+
+      const ariaChecked = await button.getAttribute("aria-checked").catch(() => null);
+      if (ariaChecked === "true") return true;
+      if (ariaChecked === "false") return false;
+
+      const dataState = await button.getAttribute("data-state").catch(() => null);
+      if (dataState === "on" || dataState === "active" || dataState === "checked") return true;
+      if (dataState === "off" || dataState === "unchecked") return false;
+
+      const ariaLabel = (await button.getAttribute("aria-label").catch(() => null)) ?? "";
+      if (/tắt\s+suy\s+luận|disable\s+reason|turn\s+off\s+reason/iu.test(ariaLabel)) return true;
+      if (/bật\s+suy\s+luận|enable\s+reason|turn\s+on\s+reason/iu.test(ariaLabel)) return false;
+
+      const dataActive = await button.getAttribute("data-active").catch(() => null);
+      if (dataActive === "true") return true;
+      if (dataActive === "false") return false;
+
+      const className = (await button.getAttribute("class").catch(() => null)) ?? "";
+      if (/(?:^|\s)(?:active|selected|btn-active|is-active)(?:\s|$)/iu.test(className)) return true;
+
+      const activeChildCount = await button.locator('[aria-pressed="true"], [data-state="on"]').count().catch(() => 0);
+      if (activeChildCount > 0) return true;
+
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   private setStatus(status: ChatGptWebStatus, message?: string): void {

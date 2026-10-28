@@ -39,7 +39,9 @@ TUYỆT ĐỐI KHÔNG HIỆN ĐẠI HÓA. Giữ đúng hệ thống từ vựng,
 - Ví dụ: 知青 → thanh niên trí thức; 供销社 → cửa hàng quốc doanh / hợp tác xã; 粮票/布票 → lương phiếu / vải phiếu; 大院 → khu tập thể / đại viện; 的确良 → vải đích lương; 同志 → đồng chí; 公社 → công xã.
 
 ## 9. TÊN RIÊNG & XƯNG HÔ
-- Tên người, địa danh: Phiên âm Hán Việt chuẩn, thống nhất tuyệt đối. (VD: 慕檸 → Mộ Nịnh). Một nhân vật chỉ có MỘT cách phiên âm.
+- Tên người Trung Quốc: Phiên âm Hán Việt chuẩn, thống nhất tuyệt đối. (VD: 慕檸 → Mộ Nịnh). Một nhân vật chỉ có MỘT cách phiên âm.
+- TÊN NGƯỜI NGOẠI QUỐC (Phương Tây, Liên Xô / Nga...): BẮT BUỘC dùng chữ cái Latinh quốc tế chuẩn (VD: Jelina, Aina, Karijia, Edlian, John). TUYỆT ĐỐI CẤM dùng âm Hán Việt thô (CẤM: Gia Liên Na, Ái Na, Ca Lệ Giai, Na Mâu Nhĩ, E-đơ-lin).
+- TÊN THÂN MẬT / BIẾN THỂ NGOẠI QUỐC (như tiếng Nga dùng hậu tố -ka 耶莲卡 / 耶莲娜): BẮT BUỘC quy về MỘT tên Latinh chính thức duy nhất (Jelina), tuyệt đối không để 1 nhân vật bị gọi bằng 2-3 tên khác nhau qua các chương.
 - Xưng hô nhất quán theo: TUỔI + VAI VẾ + QUAN HỆ + ĐỊA VỊ + HOÀN CẢNH.
 
 ## 10. ĐẦU RA & CHECK MODE (QUY TẮC SINH TỬ)

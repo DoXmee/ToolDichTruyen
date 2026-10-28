@@ -237,6 +237,17 @@ export function validateTranslation(
       });
     }
 
+    const openLockCount = (translation.match(/⟦/gu) || []).length;
+    const closeLockCount = (translation.match(/⟧/gu) || []).length;
+    if (openLockCount !== closeLockCount) {
+      issues.push({
+        code: 'unclosed_lock',
+        severity: 'error',
+        message: `Bản dịch có dấu ngoặc khóa tên ⟦ (${openLockCount}) không khớp với ⟧ (${closeLockCount}).`,
+        sample: `Mở: ${openLockCount}, Đóng: ${closeLockCount}`,
+      });
+    }
+
     const sourceChapterNumbers = chapterHeaderNumbers(source);
     if (sourceChapterNumbers.length > 0) {
       const translatedChapterNumbers = chapterHeaderNumbers(translation);

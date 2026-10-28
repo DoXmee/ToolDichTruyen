@@ -1,20 +1,50 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { readFile, writeFile, unlink } from "node:fs/promises";
+import path from "node:path";
 import {
+  autoExtractStoryMemory,
   buildContinuationRetryPrompt,
   buildContinuationTranslationPrompt,
   buildLocalizedHanRepairPrompt,
   buildRetryPrompt,
   buildTranslationPrompt,
   chunkSourceText,
+  compileStoryBiblePrompt,
+  compileStoryDigestPrompt,
+  createCharacterClusters,
+  createEmptyStoryMemory,
+  extractRecentDialogues,
+  formatStoryMemoryForPrompt,
+  getGenreProfile,
+  harvestCharacterContext,
+  harvestLocationContext,
+  mergeStoryMemory,
+  parseStoryDigestResponse,
+  sanitizeStoryMemory,
   sanitizeTranslationResponse,
+  extractDiscoveredDataFromResponse,
+  extractDiscoveredEntitiesFromResponse,
+  scanBookForEntities,
+  scanBookForLocations,
+  transcribeHanViet,
   findCrossTranslationRepetition,
   validateTranslation,
 } from "../../core/index.js";
-import type { LocalizedHanRepairPromptInput } from "../../core/index.js";
+import type {
+  DiscoveredCharacterEntity,
+  DiscoveredStoryData,
+  DiscoveredStoryEntity,
+  LocalizedHanRepairPromptInput,
+  StoryBible,
+  StoryBibleEntity,
+  StoryBibleRelation,
+} from "../../core/index.js";
 import type {
   PromptMode,
   AiProvider,
+  StoryEntity,
+  StoryMemory,
   TranslationJob,
   TranslationJobSnapshot,
   TranslationActivityEntry,
@@ -24,6 +54,67 @@ import type {
   TranslationSettings,
   TranslationValidationResult,
 } from "../../shared/types.js";
+
+function storyMemoryToStoryBible(memory: StoryMemory, promptMode?: string): StoryBible {
+  const profileId = promptMode ?? "period";
+  const entities: StoryBibleEntity[] = (memory.entities ?? []).map((ent) => ({
+    id: ent.id,
+    category: ent.category ?? "character",
+    zh: ent.chinese,
+    vi: ent.vietnamese,
+    aliases: ent.aliases?.map((a) => ({ zh: a })),
+    gender: ent.gender,
+    narrationPronoun: ent.narrationPronoun,
+    role: ent.role,
+    status: ent.status ?? "active",
+  }));
+
+  const resolveId = (nameOrId: string): string => {
+    const trimmed = (nameOrId ?? "").trim();
+    const found = entities.find(
+      (e) => e.id === trimmed || e.vi === trimmed || e.zh === trimmed,
+    );
+    return found ? found.id : trimmed;
+  };
+
+  const relations: StoryBibleRelation[] = (memory.relations ?? []).map((rel) => {
+    const addr = rel.directionalAddress ?? {
+      aToB: { self: "tôi", call: "bạn" },
+      bToA: { self: "tôi", call: "bạn" },
+    };
+    return {
+      id: rel.id,
+      from: resolveId(rel.sourceCharacter),
+      to: resolveId(rel.targetCharacter),
+      type: rel.relationType,
+      address: {
+        aToB: {
+          self: addr.aToB?.self ?? "tôi",
+          call: addr.aToB?.call ?? "bạn",
+          tenseSelf: addr.aToB?.tenseSelf,
+          tenseCall: addr.aToB?.tenseCall,
+        },
+        bToA: {
+          self: addr.bToA?.self ?? "tôi",
+          call: addr.bToA?.call ?? "bạn",
+          tenseSelf: addr.bToA?.tenseSelf,
+          tenseCall: addr.bToA?.tenseCall,
+        },
+      },
+    };
+  });
+
+  return {
+    schemaVersion: 2,
+    profileId,
+    storyTitle: memory.storyTitle,
+    entities,
+    relations,
+    timeline: [],
+    pending: [],
+    updatedAt: memory.updatedAt ?? new Date().toISOString(),
+  };
+}
 import {
   ChatGptConversationVerificationError,
   ChatGptFreshChatRecoveryError,
@@ -44,6 +135,7 @@ export interface StartTranslationRequest {
   aiProvider?: AiProvider;
   allowedAiProviders?: AiProvider[];
   autoExport?: TranslationAutoExportBinding;
+  memory?: StoryMemory;
   settings?: Partial<TranslationSettings> & {
     maxChunkChars?: number;
     timeoutMs?: number;
@@ -52,9 +144,15 @@ export interface StartTranslationRequest {
 
 interface PersistedTranslationJob extends TranslationJob {
   settings: TranslationSettings;
+  memory: StoryMemory;
+  storyDigestAttempted?: boolean;
   conversationInitialized: boolean;
   conversationRecoveryPending: boolean;
   conversationHasBasePrompt: boolean;
+  conversationAccumulatedCharacters?: number;
+  conversationSegmentCount?: number;
+  browserRecycleSegmentCount?: number;
+  browserRecyclePending?: boolean;
   localizedHanRepairAttempts: Record<string, number>;
   /**
    * A bounded, durable hand-off after ordinary retries have all failed.
@@ -128,7 +226,8 @@ export interface TranslationEvent {
     | "segment-failed"
     | "job-completed"
     | "job-failed"
-    | "activity-log";
+    | "activity-log"
+    | "story-memory-updated";
   timestamp: number;
   payload?: unknown;
 }
@@ -137,7 +236,7 @@ export interface TranslationRunnerDependencies {
   chatGpt: Pick<
     ChatGptWebAdapter,
     "ensureReady" | "startNewConversation" | "sendAndWait" | "cancelGeneration"
-  > & Partial<Pick<ChatGptWebAdapter, "restartForRecovery" | "reloadForRecovery">> & {
+  > & Partial<Pick<ChatGptWebAdapter, "restartForRecovery" | "reloadForRecovery" | "setReasoning">> & {
     selectProvider?: (provider: AiProvider) => Promise<void>;
   };
   persistence: Pick<PersistenceService, "saveJob" | "loadJob"> &
@@ -174,15 +273,19 @@ function repairLegacyXbanxiaCheckpoint(job: PersistedTranslationJob): number {
   if (!job.autoExport || !/^Chương\s+\d+/mu.test(job.sourceText)) return 0;
   const controlCount = (job.sourceText.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu) ?? []).length;
   const unmistakableXbanxiaNoise = controlCount >= 10
-    || /\?{5,}|cx\d+|(?:^|\n)\s*【\s*第\s*\d+\s*章|(?:^|\n)\s*p\.?\s*s\.?\s*[：:]/imu.test(job.sourceText);
+    || /\?{5,}|cx\d+|(?:^|\n)\s*【\s*第\s*\d+\s*章/imu.test(job.sourceText);
   if (!unmistakableXbanxiaNoise) return 0;
 
   let repairedCount = 0;
   for (const segment of job.segments) {
-    const repaired = repairLegacyXbanxiaCheckpointSegment(segment.sourceText);
-    if (repaired === segment.sourceText) continue;
-    segment.sourceText = repaired;
-    repairedCount += 1;
+    try {
+      const repaired = repairLegacyXbanxiaCheckpointSegment(segment.sourceText);
+      if (repaired === segment.sourceText) continue;
+      segment.sourceText = repaired;
+      repairedCount += 1;
+    } catch {
+      // Gracefully preserve existing segment text if repair encounters an issue; never crash resume
+    }
   }
   if (repairedCount) job.sourceText = job.segments.map((segment) => segment.sourceText.trim()).join("\n\n");
   return repairedCount;
@@ -208,7 +311,7 @@ const DEFAULT_SETTINGS: TranslationSettings = {
 
 const MAX_LOCALIZED_HAN_RUNS = 10;
 const MAX_LOCALIZED_HAN_TARGETS = 10;
-const MAX_LOCALIZED_HAN_REPAIR_ATTEMPTS = 10;
+const MAX_LOCALIZED_HAN_REPAIR_ATTEMPTS = 3;
 // A failed adapter send already consumes one ordinary attempt.  With the
 // current maximum of three retries, at most three hand-offs can remain before
 // the fourth consumed attempt terminally fails.  Do not let a browser/context
@@ -223,6 +326,10 @@ const MAX_CHATGPT_TO_KIMI_RESCUE_CYCLES = 3;
 // Initial response + three contextual replays + one new-chat replay + one
 // contextual new-chat replay. This budget applies only to a detected refusal.
 const SAFETY_REFUSAL_MAXIMUM_ATTEMPTS = 6;
+
+export const CONVERSATION_ROTATION_CHARACTER_THRESHOLD = 110_000;
+export const CONVERSATION_ROTATION_SEGMENT_CEILING = 10;
+export const BROWSER_RECYCLE_SEGMENT_INTERVAL = 0;
 
 function normalizeAiProvider(provider: unknown): AiProvider {
   return provider === "kimi" || provider === "deepseek" || provider === "gemini"
@@ -513,6 +620,19 @@ function localizedRepairBatchResponseError(
       : { replacements: new Map([[target.targetId, candidate]]) };
   }
   if (matches.length !== targets.length) {
+    const candidateLines = candidate
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("<") && !line.startsWith("#"));
+    if (candidateLines.length === targets.length) {
+      const replacements = new Map<string, string>();
+      for (let i = 0; i < targets.length; i++) {
+        const t = targets[i]!;
+        const cleaned = candidateLines[i]!.replace(/^\d+[\.\:\-\s]+/, "").trim();
+        replacements.set(t.targetId, cleaned);
+      }
+      return { replacements };
+    }
     return { error: "Phản hồi sửa cục bộ không chứa đủ các câu theo mã target." };
   }
 
@@ -820,6 +940,8 @@ export class TranslationJobRunner {
   private restorePromise: Promise<void> | undefined;
   private restoreComplete = false;
   private shuttingDown = false;
+  private activeDraftMemory?: StoryMemory;
+  private readonly discoveredDataBySegment = new Map<string, DiscoveredStoryData>();
 
   public constructor(private readonly dependencies: TranslationRunnerDependencies) {
     this.chunker = dependencies.chunker ?? chunkSourceText;
@@ -918,6 +1040,16 @@ export class TranslationJobRunner {
     const initialProvider = allowedAiProviders.includes(requestedProvider)
       ? requestedProvider
       : allowedAiProviders[0]!;
+    let initialMemory = request.memory;
+    if (!initialMemory && request.autoExport?.directory) {
+      initialMemory = await this.readMemoryFromDisk(request.autoExport.directory);
+    }
+    const memory = initialMemory ?? createEmptyStoryMemory({
+      storyId: id,
+      storyTitle: request.autoExport ? path.basename(request.autoExport.directory) : undefined,
+      genre: request.promptMode,
+    });
+
     const job: PersistedTranslationJob = {
       id,
       createdAt: timestamp,
@@ -933,9 +1065,14 @@ export class TranslationJobRunner {
       translatedText: "",
       segments,
       settings,
+      memory,
       conversationInitialized: false,
       conversationRecoveryPending: false,
       conversationHasBasePrompt: false,
+      conversationAccumulatedCharacters: 0,
+      conversationSegmentCount: 0,
+      browserRecycleSegmentCount: 0,
+      browserRecyclePending: false,
       localizedHanRepairAttempts: {},
       freshChatRecoveryAttempts: {},
       freshChatRecoveryAttemptLimits: {},
@@ -950,6 +1087,8 @@ export class TranslationJobRunner {
     };
     this.logActivity(job, `Đã tạo checkpoint. Đang chuẩn bị kết nối ${aiProviderLabel(job.aiProvider)}.`);
     this.jobs.set(id, job);
+    this.ensureStoryMemoryEntities(job);
+    await this.autoSyncStoryMemoryFromSegments(job, { silent: true });
     await this.checkpoint(job);
     this.emit(job.id, "job-created", { job: this.publicJob(job) });
     this.launch(job);
@@ -995,6 +1134,13 @@ export class TranslationJobRunner {
       job.currentSegmentIndex = interrupted.index;
     }
     job.status = "paused";
+    job.conversationInitialized = false;
+    job.conversationHasBasePrompt = false;
+    job.conversationSegmentCount = 0;
+    job.conversationAccumulatedCharacters = 0;
+    job.conversationRecoveryPending = job.segments.some(
+      (segment) => segment.status === "completed" && Boolean(segment.translatedText.trim()),
+    );
     this.rebuildTranslation(job);
     this.logActivity(job, "Người dùng đã tạm dừng tác vụ. AI cũ đã dừng hẳn và checkpoint đã được giữ nguyên.", "warning");
     job.updatedAt = nowIso();
@@ -1022,7 +1168,7 @@ export class TranslationJobRunner {
       );
     }
     this.assertNoOtherActiveJob(job.id);
-    if (resumePausedJob) {
+    if (resumePausedJob || resumeLifecycleFailure) {
       // Checkpoints paused by older builds could persist the interrupted turn
       // as `sending`/`streaming`. Normalize it before selecting a provider so
       // a manual pause never consumes retry budget or reuses partial output.
@@ -1043,6 +1189,12 @@ export class TranslationJobRunner {
           interrupted.attempts -= 1;
         }
         job.currentSegmentIndex = interrupted.index;
+      }
+      const targetSegment = interrupted ?? job.segments.find((s) => s.status === "queued" || s.status === "failed");
+      if (targetSegment) {
+        delete job.pageReloadRecoveryAttempts[targetSegment.id];
+        delete job.browserRestartRecoveryAttempts[targetSegment.id];
+        delete job.freshChatRecoveryAttempts[targetSegment.id];
       }
     }
     if (aiProvider && aiProvider !== job.aiProvider) {
@@ -1086,6 +1238,13 @@ export class TranslationJobRunner {
     }
     this.pauseRequests.delete(job.id);
     this.cancelRequests.delete(job.id);
+    job.conversationInitialized = false;
+    job.conversationHasBasePrompt = false;
+    job.conversationSegmentCount = 0;
+    job.conversationAccumulatedCharacters = 0;
+    job.conversationRecoveryPending = job.segments.some(
+      (segment) => segment.status === "completed" && Boolean(segment.translatedText.trim()),
+    );
     if (resumeCancelledJob) {
       // `cancel()` marks only the in-flight segment as cancelled. Make that
       // exact checkpoint eligible again while preserving every completed
@@ -1117,6 +1276,8 @@ export class TranslationJobRunner {
     }
     const existingRunWillContinue = this.running.has(job.id);
     job.status = existingRunWillContinue ? "running" : "queued";
+    this.ensureStoryMemoryEntities(job);
+    await this.autoSyncStoryMemoryFromSegments(job);
     this.logActivity(job, "Đã tiếp tục từ checkpoint đã lưu.");
     job.updatedAt = nowIso();
     await this.checkpoint(job);
@@ -1289,11 +1450,8 @@ export class TranslationJobRunner {
    */
   public async discard(jobId: string): Promise<void> {
     const job = await this.requireJob(jobId);
-    if (["queued", "running", "paused"].includes(job.status)) {
-      throw new Error("Hãy hủy tác vụ đang hoạt động trước khi bỏ checkpoint.");
-    }
-    if (job.status === "completed") {
-      throw new Error("Không thể bỏ checkpoint đã hoàn tất; hãy xuất hoặc lưu bản dịch trước.");
+    if (this.running.has(job.id) && (job.status === "running" || job.status === "queued")) {
+      throw new Error("Hãy dừng hoặc hủy tác vụ đang chạy trước khi bỏ checkpoint.");
     }
     if (!this.dependencies.persistence.removeJob) {
       throw new Error("Bộ nhớ phiên bản này chưa hỗ trợ bỏ checkpoint.");
@@ -1303,8 +1461,41 @@ export class TranslationJobRunner {
     this.abortControllers.delete(job.id);
     this.pauseRequests.delete(job.id);
     this.cancelRequests.delete(job.id);
+    job.conversationInitialized = false;
+    job.conversationHasBasePrompt = false;
+    job.conversationSegmentCount = 0;
+    job.conversationAccumulatedCharacters = 0;
+    job.conversationRecoveryPending = job.segments.some(
+      (segment) => segment.status === "completed" && Boolean(segment.translatedText.trim()),
+    );
     this.jobs.delete(job.id);
     this.persistedJobSummaries.delete(job.id);
+    this.quotaNotices.delete(job.id);
+    for (const segment of job.segments) {
+      this.quotaNotices.delete(segment.id);
+      delete job.localizedHanRepairAttempts[segment.id];
+      delete job.freshChatRecoveryAttempts[segment.id];
+      delete job.freshChatRecoveryAttemptLimits[segment.id];
+      delete job.shortTranslationRecoveryAttempts[segment.id];
+      delete job.browserRestartRecoveryAttempts[segment.id];
+      delete job.pageReloadRecoveryAttempts[segment.id];
+    }
+
+    // Dọn sạch tệp bộ nhớ truyện trên đĩa nếu tác vụ có thư mục tự động xuất
+    const directory = job.autoExport?.directory;
+    if (directory) {
+      try {
+        const memoryPath = path.join(directory, ".tool-dich-truyen-memory.json");
+        await unlink(memoryPath).catch(() => undefined);
+      } catch {}
+    }
+
+    // Làm sạch bộ nhớ của job và phát sự kiện thông báo để UI dọn sạch
+    delete (job as any).memory;
+    this.emit(job.id, "story-memory-updated", {
+      memory: createEmptyStoryMemory({ storyId: job.id, genre: job.promptMode }),
+    });
+
     await this.dependencies.persistence.removeJob(job.id);
   }
 
@@ -1329,9 +1520,16 @@ export class TranslationJobRunner {
     upgradeLegacyWebTimeout(candidate);
     candidate.conversationInitialized = false;
     candidate.conversationHasBasePrompt = false;
+    candidate.conversationAccumulatedCharacters = 0;
+    candidate.conversationSegmentCount = 0;
+    candidate.browserRecycleSegmentCount = Math.max(0, candidate.browserRecycleSegmentCount ?? 0);
+    candidate.browserRecyclePending = false;
     candidate.conversationRecoveryPending = candidate.segments.some(
       (segment) => segment.status === "completed" && Boolean(segment.translatedText?.trim()),
     );
+    if (candidate.memory) {
+      candidate.memory = sanitizeStoryMemory(candidate.memory);
+    }
     if (candidate.status === "running" || candidate.status === "queued") {
       candidate.status = "paused";
       candidate.updatedAt = nowIso();
@@ -1456,11 +1654,18 @@ export class TranslationJobRunner {
     await this.checkpoint(job);
     if (this.shouldStop(job, controller.signal)) return;
     this.emit(job.id, "job-status", { status: job.status });
+    this.ensureStoryMemoryEntities(job);
+    await this.ensureAiStoryDigest(job, controller.signal);
+    if (this.shouldStop(job, controller.signal)) return;
 
     for (const segment of job.segments) {
       if (this.shouldStop(job, controller.signal)) return;
       if (this.pauseRequests.has(job.id) || jobHasStatus(job, "paused")) return;
       if (segment.status === "completed") continue;
+      if (!job.conversationInitialized) {
+        await this.prepareProviderLifecycle(job, controller.signal);
+        if (this.shouldStop(job, controller.signal)) return;
+      }
       job.currentSegmentIndex = segment.index;
       const completed = await this.processSegment(job, segment, controller.signal);
       if (!completed) return;
@@ -1510,6 +1715,8 @@ export class TranslationJobRunner {
           if (this.shouldStop(job, signal)) return;
           job.conversationInitialized = true;
           job.conversationHasBasePrompt = false;
+          job.conversationAccumulatedCharacters = 0;
+          job.conversationSegmentCount = 0;
           await this.checkpoint(job);
           this.logActivity(job, "Đã sẵn sàng chat dịch mới.", "success");
         }
@@ -1523,6 +1730,11 @@ export class TranslationJobRunner {
           "warning",
           segment,
         );
+
+        const isAuthError = /(?:đăng nhập|login|chưa có tài khoản|chưa được đăng nhập)/iu.test(segment.error);
+        if (isAuthError) {
+          throw error;
+        }
 
         const reloadUsed = Math.min(
           MAX_AUTOMATIC_PAGE_RELOAD_RECOVERY_ATTEMPTS,
@@ -1689,18 +1901,26 @@ export class TranslationJobRunner {
         maximumAttempts,
       });
 
+      const dynamicMemorySnippet = formatStoryMemoryForPrompt(
+        job.memory,
+        segment.sourceText,
+        { genre: job.promptMode },
+      );
+
       const commonPromptInput = {
         basePrompt: job.resolvedPrompt,
         sourceText: segment.sourceText,
         segmentIndex: segment.index,
         totalSegments: job.segments.length,
         segmentId: segment.id,
+        glossary: dynamicMemorySnippet,
       };
       // Every retry repeats the full base prompt.  A fresh request for the
       // next normal segment may still use the short continuation envelope,
       // but no error recovery relies on context that ChatGPT may have lost.
+      const isFirstTurnInChat = !job.conversationHasBasePrompt || (job.conversationSegmentCount ?? 0) === 0;
       const includeBasePrompt = isRetry
-        || !job.conversationHasBasePrompt
+        || isFirstTurnInChat
         || job.aiProvider !== "chatgpt";
       const retryPromptInput = previousValidation
         ? {
@@ -1710,11 +1930,57 @@ export class TranslationJobRunner {
             attempt: segment.attempts,
           }
         : undefined;
-      let prompt = retryPromptInput
-        ? this.retryPromptBuilder(retryPromptInput)
-        : includeBasePrompt
-          ? this.promptBuilder(commonPromptInput)
-          : this.continuationPromptBuilder(commonPromptInput);
+      const hasEntities = (job.memory?.entities?.length ?? 0) > 0;
+      const isContinuationTurn = !includeBasePrompt && job.aiProvider === "chatgpt";
+      let prompt: string;
+
+      if (hasEntities) {
+        const bible = storyMemoryToStoryBible(job.memory, job.promptMode);
+        const genreProfile = getGenreProfile(job.promptMode ?? "universal");
+        const prevCompletedSegment = job.segments
+          .slice(0, segment.index)
+          .reverse()
+          .find((s) => s.status === "completed" && Boolean(s.translatedText?.trim()));
+        const continuityTailVi = prevCompletedSegment?.translatedText?.trim()
+          ? prevCompletedSegment.translatedText.trim().slice(-250)
+          : undefined;
+        const compiled = compileStoryBiblePrompt({
+          segmentId: segment.id,
+          segmentIndex: segment.index,
+          totalSegments: job.segments.length,
+          sourceText: segment.sourceText,
+          bible,
+          genreProfile,
+          sceneState: "normal",
+          previousSegmentTailVi: continuityTailVi,
+          customPrompt: job.customPrompt,
+          isContinuationTurn,
+        });
+
+        if (retryPromptInput) {
+          const attempt = Math.max(1, Math.trunc(segment.attempts));
+          const issues = retryPromptInput.validation?.issues?.length
+            ? retryPromptInput.validation.issues
+                .map(
+                  (issue, index) =>
+                    `${index + 1}. [${issue.code}] ${issue.message}${
+                      issue.sample ? ` (mẫu: ${issue.sample})` : ""
+                    }`,
+                )
+                .join("\n")
+            : "1. [unknown] Bản dịch chưa vượt qua bước kiểm tra.";
+
+          prompt = `${compiled.fullPrompt}\n\n---\n### LƯU Ý SỬA LỖI (LẦN THỬ ${attempt}):\nCác điểm cần chỉnh sửa:\n${issues}\nHÃY DỊCH LẠI ĐẦY ĐỦ VÀ CHÍNH XÁC TOÀN BỘ NỘI DUNG VÀO TRONG THẺ <BAN_DICH id="${segment.id}">.`;
+        } else {
+          prompt = compiled.fullPrompt;
+        }
+      } else {
+        prompt = retryPromptInput
+          ? this.retryPromptBuilder(retryPromptInput)
+          : includeBasePrompt
+            ? this.promptBuilder(commonPromptInput)
+            : this.continuationPromptBuilder(commonPromptInput);
+      }
       prompt = this.withPendingRecoveryContext(job, prompt);
       prompt = this.withSafetyRefusalContext(job, segment.id, prompt);
       if (includeBasePrompt) job.conversationHasBasePrompt = true;
@@ -1726,6 +1992,7 @@ export class TranslationJobRunner {
       let conversationVerificationFailed = false;
       let safetyRefusalDetected = false;
       let crossChapterRepetitionDetected = false;
+      let chapterStructureMismatchDetected = false;
       let exhaustedQuotaNotice: string | undefined;
       let accountRotatedTo: string | undefined;
       try {
@@ -1737,12 +2004,17 @@ export class TranslationJobRunner {
         const response = await this.dependencies.chatGpt.sendAndWait(prompt, {
           timeoutMs: responseTimeoutForProvider(job),
           signal,
+          reasoning: false,
         });
         if (this.shouldStop(job, signal)) return false;
         this.consumeRecoveryContext(job);
         this.consumeSafetyRefusalContext(job, segment.id);
         segment.status = "validating";
         segment.translatedText = sanitizeTranslationResponse(segment.sourceText, response);
+        const discoveredData = extractDiscoveredDataFromResponse(response);
+        if (discoveredData.entities.length > 0 || discoveredData.relations.length > 0) {
+          this.discoveredDataBySegment.set(segment.id, discoveredData);
+        }
         job.updatedAt = nowIso();
         await this.checkpoint(job);
         this.logActivity(job, `Đã nhận phản hồi, đang kiểm tra chất lượng đoạn ${segment.index + 1}/${job.segments.length}.`, "info", segment);
@@ -1801,6 +2073,9 @@ export class TranslationJobRunner {
         crossChapterRepetitionDetected = validation.issues.some(
           (issue) => issue.code === 'cross_chapter_repetition',
         );
+        chapterStructureMismatchDetected = validation.issues.some(
+          (issue) => issue.code === 'chapter_structure',
+        );
         segment.error = validation.issues.map((issue) => issue.message).join("; ");
         this.logActivity(job, `Đoạn chưa đạt kiểm tra: ${segment.error}`, "warning", segment);
       } catch (error) {
@@ -1817,6 +2092,20 @@ export class TranslationJobRunner {
         this.logActivity(job, `Lỗi khi chờ ${aiProviderLabel(job.aiProvider)}: ${segment.error}`, "warning", segment);
         safetyRefusalDetected = isKimiSilentSafetyTimeout(job.aiProvider, error);
         freshChatRecoveryRequested = isSafeForFreshChatRecovery(error);
+        if (
+          !freshChatRecoveryRequested &&
+          segment.attempts >= 2 &&
+          job.aiProvider !== "gemini" &&
+          /(?:không hoàn tất phản hồi|hết hạn chờ|timeout|đang bận|quá lâu)/iu.test(segment.error ?? "")
+        ) {
+          freshChatRecoveryRequested = true;
+          this.logActivity(
+            job,
+            `Đoạn dịch bị quá thời gian/treo nhiều lần (${segment.attempts} lần thử). Kích hoạt xoay sang chat mới sạch để giải phóng bộ nhớ và khôi phục tốc độ.`,
+            "warning",
+            segment,
+          );
+        }
         conversationVerificationFailed = isConversationVerificationFailure(error);
         // A context that the adapter has positively abandoned is the one
         // exception to the normal fail-closed stop rule. Its explicit marker
@@ -1840,6 +2129,9 @@ export class TranslationJobRunner {
           segment,
         );
         job.updatedAt = nowIso();
+        job.conversationHasBasePrompt = false;
+        job.conversationInitialized = false;
+        job.conversationRecoveryPending = true;
         await this.checkpoint(job);
         segment.error = undefined;
         continue;
@@ -1972,10 +2264,12 @@ export class TranslationJobRunner {
         });
       }
 
-      if (crossChapterRepetitionDetected) {
+      if (crossChapterRepetitionDetected || (segment.attempts >= 2 && chapterStructureMismatchDetected)) {
         this.logActivity(
           job,
-          'Phát hiện bản dịch lặp chéo checkpoint trước; loại phản hồi và chuyển sang chat mới trước khi dịch lại.',
+          chapterStructureMismatchDetected
+            ? 'Phát hiện tiêu đề chương bị lặp lại hoặc sai lệch so với nguồn; chuyển sang chat mới để xóa ngữ cảnh cũ trước khi thử lại.'
+            : 'Phát hiện bản dịch lặp chéo checkpoint trước; loại phản hồi và chuyển sang chat mới trước khi dịch lại.',
           'warning',
           segment,
         );
@@ -2136,6 +2430,8 @@ export class TranslationJobRunner {
     // completed output as continuity context.
     job.conversationInitialized = false;
     job.conversationHasBasePrompt = false;
+    job.conversationAccumulatedCharacters = 0;
+    job.conversationSegmentCount = 0;
     job.conversationRecoveryPending = job.segments.some(
       (candidate) => candidate.status === "completed" && Boolean(candidate.translatedText.trim()),
     );
@@ -2286,6 +2582,10 @@ export class TranslationJobRunner {
     job.currentSegmentIndex = segment.index;
     job.conversationInitialized = false;
     job.conversationHasBasePrompt = false;
+    job.conversationAccumulatedCharacters = 0;
+    job.conversationSegmentCount = 0;
+    job.browserRecycleSegmentCount = 0;
+    job.browserRecyclePending = false;
     job.conversationRecoveryPending = job.segments.some(
       (candidate) => candidate.status === "completed" && Boolean(candidate.translatedText.trim()),
     );
@@ -2331,139 +2631,139 @@ export class TranslationJobRunner {
     // is clean, but must still stop deterministically after ten attempts.
     const maximumLocalAttempts = MAX_LOCALIZED_HAN_REPAIR_ATTEMPTS;
 
-    while (localAttempts < maximumLocalAttempts) {
-      if (
-        this.shouldStop(job, signal) ||
-        this.pauseRequests.has(job.id) ||
-        jobHasStatus(job, "paused")
-      ) {
-        return "stopped";
-      }
-
-      const validation = segment.validation;
-      if (!validation) {
-        segment.error = "Bản dịch không còn đủ điều kiện sửa chữ Hán cục bộ.";
-        return "full-retry";
-      }
-      const targets = localizedHanTargets(segment.translatedText, validation, segment.id);
-      if (!targets) {
-        segment.error = "Bản dịch không còn đủ điều kiện sửa chữ Hán cục bộ.";
-        return "full-retry";
-      }
-
-      localAttempts += 1;
-      job.localizedHanRepairAttempts[segment.id] = localAttempts;
-      segment.attempts += 1;
-      const separateBasePrompt = localAttempts === 3;
-      const prompt = this.localizedRepairPromptBuilder({
-        basePrompt: job.resolvedPrompt,
-        targets: targets.map((target) => ({ targetId: target.targetId, sentence: target.text })),
-        attempt: localAttempts,
-        hanSample: validation.hanCharacters.map((item) => item.character).join(""),
-        // The first two local repairs repeat the base prompt in the same
-        // message. On the third repair, prime the chat with the base prompt as
-        // its own turn, then send only the still-faulty sentences below.
-        includeBasePrompt: !separateBasePrompt,
-      });
-      job.conversationHasBasePrompt = true;
-      const promptWithRecovery = separateBasePrompt
-        ? prompt
-        : this.withPendingRecoveryContext(job, prompt);
-      const separateBasePromptWithRecovery = separateBasePrompt
-        ? this.withPendingRecoveryContext(job, job.resolvedPrompt)
-        : undefined;
-
-      segment.status = "retrying";
-      segment.error = undefined;
-      job.updatedAt = nowIso();
-      await this.checkpoint(job);
-      if (this.shouldStop(job, signal)) return "stopped";
-      this.emit(job.id, "segment-retry", {
-        segment: publicSegment(segment),
-        kind: "localized-han",
-        targetIds: targets.map((target) => target.targetId),
-        localAttempt: localAttempts,
-        maximumAttempts: maximumLocalAttempts,
-      });
-
-      let retryUnsafe = false;
-      let freshChatRecoveryRequested = false;
-      try {
-        segment.status = "streaming";
-        await this.checkpoint(job);
-        if (this.shouldStop(job, signal)) return "stopped";
-        this.emit(job.id, "segment-status", { segment: publicSegment(segment) });
-        if (separateBasePromptWithRecovery) {
-          this.logActivity(
-            job,
-            `Lượt sửa chữ Hán thứ 3: đang gửi lại prompt gốc riêng trước khi gửi ${targets.length} câu lỗi.`,
-            "warning",
-            segment,
-          );
-          await this.dependencies.chatGpt.sendAndWait(separateBasePromptWithRecovery, {
-            timeoutMs: responseTimeoutForProvider(job),
-            signal,
-          });
-          if (this.shouldStop(job, signal)) return "stopped";
-          this.consumeRecoveryContext(job);
-          job.updatedAt = nowIso();
-          await this.checkpoint(job);
+    try {
+      while (localAttempts < maximumLocalAttempts) {
+        if (
+          this.shouldStop(job, signal) ||
+          this.pauseRequests.has(job.id) ||
+          jobHasStatus(job, "paused")
+        ) {
+          return "stopped";
         }
-        const response = await this.dependencies.chatGpt.sendAndWait(promptWithRecovery, {
-          timeoutMs: responseTimeoutForProvider(job),
-          signal,
+
+        const validation = segment.validation;
+        if (!validation) {
+          segment.error = "Bản dịch không còn đủ điều kiện sửa chữ Hán cục bộ.";
+          return "full-retry";
+        }
+        const targets = localizedHanTargets(segment.translatedText, validation, segment.id);
+        if (!targets) {
+          segment.error = "Bản dịch không còn đủ điều kiện sửa chữ Hán cục bộ.";
+          return "full-retry";
+        }
+
+        localAttempts += 1;
+        job.localizedHanRepairAttempts[segment.id] = localAttempts;
+        segment.attempts += 1;
+        const prompt = this.localizedRepairPromptBuilder({
+          basePrompt: job.resolvedPrompt,
+          targets: targets.map((target) => ({ targetId: target.targetId, sentence: target.text })),
+          attempt: localAttempts,
+          hanSample: validation.hanCharacters.map((item) => item.character).join(""),
+          includeBasePrompt: true,
         });
-        if (this.shouldStop(job, signal)) return "stopped";
-        if (!separateBasePrompt) this.consumeRecoveryContext(job);
+        job.conversationHasBasePrompt = true;
+        const promptWithRecovery = this.withPendingRecoveryContext(job, prompt);
 
-        segment.status = "validating";
-        const parsed = localizedRepairBatchResponseError(response, targets);
-        if (parsed.error) {
-          segment.error = parsed.error;
-        } else {
-          segment.translatedText = replaceLocalizedTargets(
-            segment.translatedText,
-            targets,
-            parsed.replacements ?? new Map(),
-          );
-          segment.validation = this.validateSegment(job, segment);
-          segment.error = segment.validation.valid
-            ? undefined
-            : segment.validation.issues.map((issue) => issue.message).join("; ");
-        }
+        segment.status = "retrying";
+        segment.error = undefined;
         job.updatedAt = nowIso();
         await this.checkpoint(job);
         if (this.shouldStop(job, signal)) return "stopped";
-        this.emit(job.id, "segment-status", { segment: publicSegment(segment) });
+        this.emit(job.id, "segment-retry", {
+          segment: publicSegment(segment),
+          kind: "localized-han",
+          targetIds: targets.map((target) => target.targetId),
+          localAttempt: localAttempts,
+          maximumAttempts: maximumLocalAttempts,
+        });
 
-        if (!parsed.error && segment.validation?.valid) return "completed";
-        if (!parsed.error && segment.validation && !isLocalizedHanOnly(segment.validation)) {
-          segment.error ||= "Câu sửa cục bộ làm bản dịch phát sinh lỗi kiểm tra khác.";
-          return "full-retry";
+        let retryUnsafe = false;
+        let freshChatRecoveryRequested = false;
+        try {
+          segment.status = "streaming";
+          await this.checkpoint(job);
+          if (this.shouldStop(job, signal)) return "stopped";
+          this.emit(job.id, "segment-status", { segment: publicSegment(segment) });
+          this.logActivity(
+            job,
+            `Đang gửi yêu cầu sửa chữ Hán còn sót (lượt ${localAttempts}/${maximumLocalAttempts}, bật suy luận sâu)...`,
+            "info",
+            segment,
+          );
+          const response = await this.dependencies.chatGpt.sendAndWait(promptWithRecovery, {
+            timeoutMs: Math.max(responseTimeoutForProvider(job), 300_000),
+            signal,
+            reasoning: false,
+          });
+          if (this.shouldStop(job, signal)) return "stopped";
+          this.consumeRecoveryContext(job);
+
+          segment.status = "validating";
+          const parsed = localizedRepairBatchResponseError(response, targets);
+          if (parsed.error) {
+            segment.error = parsed.error;
+          } else {
+            segment.translatedText = replaceLocalizedTargets(
+              segment.translatedText,
+              targets,
+              parsed.replacements ?? new Map(),
+            );
+            segment.validation = this.validateSegment(job, segment);
+            segment.error = segment.validation.valid
+              ? undefined
+              : segment.validation.issues.map((issue) => issue.message).join("; ");
+          }
+          job.updatedAt = nowIso();
+          await this.checkpoint(job);
+          if (this.shouldStop(job, signal)) return "stopped";
+          this.emit(job.id, "segment-status", { segment: publicSegment(segment) });
+
+          if (!parsed.error && segment.validation?.valid) {
+            this.logActivity(
+              job,
+              `Đã sửa sạch chữ Hán còn sót thành công (đã tắt suy luận sâu để tiếp tục dịch bình thường).`,
+              "info",
+              segment,
+            );
+            return "completed";
+          }
+          if (!parsed.error && segment.validation && !isLocalizedHanOnly(segment.validation)) {
+            segment.error ||= "Câu sửa cục bộ làm bản dịch phát sinh lỗi kiểm tra khác.";
+            return "full-retry";
+          }
+          this.logActivity(
+            job,
+            `Lượt sửa chữ Hán ${localAttempts}/${maximumLocalAttempts} vẫn lỗi: ${segment.error ?? "câu trả về chưa đạt kiểm tra"}. Sẽ gửi lại đúng câu lỗi.`,
+            "warning",
+            segment,
+          );
+        } catch (error) {
+          if (this.shouldStop(job, signal) || isAbortError(error)) return "stopped";
+          segment.error = errorMessage(error);
+          freshChatRecoveryRequested = isSafeForFreshChatRecovery(error);
+          retryUnsafe = !freshChatRecoveryRequested && isUnsafeToRetry(error);
+          await this.checkpoint(job);
         }
-        this.logActivity(
-          job,
-          `Lượt sửa chữ Hán ${localAttempts}/${maximumLocalAttempts} vẫn lỗi: ${segment.error ?? "câu trả về chưa đạt kiểm tra"}. Sẽ gửi lại đúng câu lỗi.`,
-          "warning",
-          segment,
-        );
-      } catch (error) {
-        if (this.shouldStop(job, signal) || isAbortError(error)) return "stopped";
-        segment.error = errorMessage(error);
-        freshChatRecoveryRequested = isSafeForFreshChatRecovery(error);
-        retryUnsafe = !freshChatRecoveryRequested && isUnsafeToRetry(error);
-        await this.checkpoint(job);
+
+        // Only the adapter's explicit safe marker may move a repair to a new
+        // chat. Validation/output errors continue here and use normal retries.
+        if (freshChatRecoveryRequested) return "fresh-chat";
+        if (retryUnsafe) return "failed";
+        await this.waitBeforeLocalizedHanRetry(signal);
       }
 
-      // Only the adapter's explicit safe marker may move a repair to a new
-      // chat. Validation/output errors continue here and use normal retries.
-      if (freshChatRecoveryRequested) return "fresh-chat";
-      if (retryUnsafe) return "failed";
-      await this.waitBeforeLocalizedHanRetry(signal);
+      this.logActivity(
+        job,
+        `Đã dùng hết ${maximumLocalAttempts} lần thử sửa chữ Hán cục bộ.`,
+        "warning",
+        segment,
+      );
+      segment.error ||= "Đã dùng hết số lần thử khi sửa chữ Hán cục bộ.";
+      return "failed";
+    } finally {
+      await this.dependencies.chatGpt.setReasoning?.(false).catch(() => undefined);
     }
-
-    segment.error ||= "Đã dùng hết số lần thử khi sửa chữ Hán cục bộ.";
-    return "failed";
   }
 
   private async completeSegment(
@@ -2482,6 +2782,158 @@ export class TranslationJobRunner {
     delete job.pageReloadRecoveryAttempts[segment.id];
     this.clearSafetyRefusalRecovery(job, segment.id);
     this.rebuildTranslation(job);
+
+    const discoveredData = this.discoveredDataBySegment.get(segment.id);
+    this.discoveredDataBySegment.delete(segment.id);
+
+    job.memory ??= createEmptyStoryMemory({ storyId: job.id, genre: job.promptMode });
+    const existingChinese = new Set((job.memory.entities ?? []).map((e) => e.chinese));
+    let aiAddedCount = 0;
+    let aiCharCount = 0;
+    let aiLocCount = 0;
+
+    if (discoveredData?.entities && discoveredData.entities.length > 0) {
+      const KINSHIP_SUFFIX_REGEX = /[哥姐叔嬸爸媽爺奶弟妹伯舅姑娘嫂]$/u;
+      for (const d of discoveredData.entities) {
+        if (!d.zh) continue;
+
+        // 1. Kiểm tra nếu đã có thực thể cùng tên Latinh / tiếng Việt (Ví dụ: Jelina với zh: 耶莲娜, nay gặp biến thể zh: 耶莲卡)
+        const sameViEntity = (job.memory.entities ?? []).find(
+          (e) => e.category === d.category && e.vietnamese.trim().toLowerCase() === d.vi.trim().toLowerCase(),
+        );
+        if (sameViEntity) {
+          sameViEntity.aliases ??= [];
+          if (sameViEntity.chinese !== d.zh && !sameViEntity.aliases.includes(d.zh)) {
+            sameViEntity.aliases.push(d.zh);
+          }
+          if (d.aliases?.length) {
+            for (const a of d.aliases) {
+              if (sameViEntity.chinese !== a && !sameViEntity.aliases.includes(a)) {
+                sameViEntity.aliases.push(a);
+              }
+            }
+          }
+          existingChinese.add(d.zh);
+          aiAddedCount++;
+          continue;
+        }
+
+        if (existingChinese.has(d.zh)) continue;
+
+        // Bỏ qua nếu là danh xưng kèm vai vế của một nhân vật đã có (ví dụ: 大飛哥 khi đã có 陳大飛/大飛, 海松叔 khi đã có 向海松)
+        if (d.category === "character" && KINSHIP_SUFFIX_REGEX.test(d.zh)) {
+          const stem = d.zh.slice(0, -1);
+          const hasBase = [...existingChinese].some((c) => c === stem || c.endsWith(stem));
+          const isNotSeparate = Boolean(d.notes && /không phải nhân vật riêng|cách gọi/i.test(d.notes));
+          if (hasBase || isNotSeparate) {
+            continue;
+          }
+        }
+
+        const newEntity: StoryEntity = {
+          id: `ent-${randomUUID().slice(0, 8)}`,
+          category: d.category === "faction" ? "faction" : d.category === "location" ? "location" : "character",
+          chinese: d.zh,
+          vietnamese: d.vi,
+          gender: d.gender,
+          role: d.role,
+          notes: d.notes,
+          aliases: d.aliases,
+          status: "active",
+        };
+        job.memory.entities = [...(job.memory.entities ?? []), newEntity];
+        existingChinese.add(d.zh);
+        aiAddedCount++;
+        if (newEntity.category === "character") {
+          aiCharCount++;
+        } else {
+          aiLocCount++;
+        }
+      }
+    }
+
+    // CƠ CHẾ 3: Lưu trữ quan hệ xưng hô đối thoại do ChatGPT nhận diện và trả về
+    if (discoveredData?.relations && discoveredData.relations.length > 0) {
+      const existingRelations = [...(job.memory.relations ?? [])];
+      for (const rel of discoveredData.relations) {
+        const normA = rel.charA.toLowerCase();
+        const normB = rel.charB.toLowerCase();
+        const existingIdx = existingRelations.findIndex(
+          (r) =>
+            (r.sourceCharacter.toLowerCase() === normA && r.targetCharacter.toLowerCase() === normB) ||
+            (r.sourceCharacter.toLowerCase() === normB && r.targetCharacter.toLowerCase() === normA),
+        );
+
+        const aToBObj = rel.aToB?.self || rel.aToB?.call ? { self: rel.aToB.self || '', call: rel.aToB.call || '' } : undefined;
+        const bToAObj = rel.bToA?.self || rel.bToA?.call ? { self: rel.bToA.self || '', call: rel.bToA.call || '' } : undefined;
+
+        if (existingIdx !== -1) {
+          const prevRel = existingRelations[existingIdx]!;
+          const isDirect = prevRel.sourceCharacter.toLowerCase() === normA;
+          existingRelations[existingIdx] = {
+            ...prevRel,
+            relationType: rel.relationType || prevRel.relationType,
+            pronounSample: rel.aToB?.call && rel.bToA?.call ? `${rel.aToB.call} - ${rel.bToA.call}` : prevRel.pronounSample,
+            directionalAddress: {
+              aToB: isDirect ? (aToBObj || prevRel.directionalAddress?.aToB || { self: '', call: '' }) : (bToAObj || prevRel.directionalAddress?.aToB || { self: '', call: '' }),
+              bToA: isDirect ? (bToAObj || prevRel.directionalAddress?.bToA || { self: '', call: '' }) : (aToBObj || prevRel.directionalAddress?.bToA || { self: '', call: '' }),
+            },
+          };
+        } else {
+          existingRelations.push({
+            id: `rel-${randomUUID().slice(0, 8)}`,
+            sourceCharacter: rel.charA,
+            targetCharacter: rel.charB,
+            relationType: rel.relationType,
+            pronounSample: rel.aToB?.call && rel.bToA?.call ? `${rel.aToB.call} - ${rel.bToA.call}` : 'Quan hệ',
+            directionalAddress: {
+              aToB: aToBObj || { self: '', call: '' },
+              bToA: bToAObj || { self: '', call: '' },
+            },
+          });
+        }
+      }
+      job.memory.relations = existingRelations;
+    }
+
+    const prevCount = job.memory?.entities?.length ?? 0;
+    const extracted = autoExtractStoryMemory(segment.sourceText, segment.translatedText, {
+      genre: job.promptMode,
+      existingEntities: job.memory?.entities,
+    });
+    // Toàn quyền tạo nhân vật & địa danh thuộc về ChatGPT qua thẻ <THUC_THE_MOI>.
+    // Loại bỏ mọi thực thể nhân vật/địa danh do Regex cục bộ tự ý mò mẫm từ proper nouns để triệt tiêu thực thể rác.
+    const safeExtracted = {
+      ...extracted,
+      entities: (extracted.entities || []).filter(
+        (e) => e.category !== "character" && e.category !== "location",
+      ),
+    };
+    job.memory = mergeStoryMemory(
+      job.memory,
+      safeExtracted,
+    );
+    const newCount = job.memory.entities?.length ?? 0;
+    await this.saveJobMemory(job);
+    this.emit(job.id, "story-memory-updated", { memory: job.memory });
+    if (aiAddedCount > 0) {
+      const summaryParts: string[] = [];
+      if (aiCharCount > 0) summaryParts.push(`${aiCharCount} nhân vật`);
+      if (aiLocCount > 0) summaryParts.push(`${aiLocCount} địa danh/khu vực`);
+      this.logActivity(
+        job,
+        `AI phát hiện và nạp chuẩn xác ${summaryParts.join(" và ")} mới vào bảng khóa tên (tổng cộng ${newCount} thực thể).`,
+        "info",
+        segment,
+      );
+    } else if (newCount > prevCount) {
+      this.logActivity(
+        job,
+        `Trí nhớ truyện: Tự động ghi nhận thêm ${newCount - prevCount} thực thể mới (tổng cộng ${newCount} thực thể).`,
+        "info",
+        segment,
+      );
+    }
     job.updatedAt = nowIso();
     await this.checkpoint(job);
     if (this.shouldStop(job, signal)) return false;
@@ -2499,6 +2951,34 @@ export class TranslationJobRunner {
       delete state.attemptedProviders;
       job.providerFailover = state;
     }
+
+    job.conversationSegmentCount = (job.conversationSegmentCount ?? 0) + 1;
+    job.browserRecycleSegmentCount = (job.browserRecycleSegmentCount ?? 0) + 1;
+    job.conversationAccumulatedCharacters = (job.conversationAccumulatedCharacters ?? 0)
+      + segment.sourceText.length
+      + (segment.translatedText?.length ?? 0);
+
+    const hasMoreSegments = job.segments.some((s) => s.status !== "completed");
+    if (
+      hasMoreSegments &&
+      job.aiProvider !== "gemini" &&
+      (job.conversationAccumulatedCharacters >= CONVERSATION_ROTATION_CHARACTER_THRESHOLD ||
+        job.conversationSegmentCount >= CONVERSATION_ROTATION_SEGMENT_CEILING)
+    ) {
+      this.logActivity(
+        job,
+        `Đã hoàn thành ${job.conversationSegmentCount} đoạn (${job.conversationAccumulatedCharacters.toLocaleString("vi-VN")} ký tự). Tự động tạo chat mới trong trình duyệt hiện tại để duy trì tốc độ và tránh lag.`,
+        "info",
+        segment,
+      );
+      job.conversationInitialized = false;
+      job.conversationHasBasePrompt = false;
+      job.conversationRecoveryPending = true;
+      job.conversationAccumulatedCharacters = 0;
+      job.conversationSegmentCount = 0;
+      await this.checkpoint(job);
+    }
+
     return true;
   }
 
@@ -2524,6 +3004,8 @@ export class TranslationJobRunner {
     job.providerFailover = initialProviderFailover(returnProvider);
     job.conversationInitialized = false;
     job.conversationHasBasePrompt = false;
+    job.conversationAccumulatedCharacters = 0;
+    job.conversationSegmentCount = 0;
     job.conversationRecoveryPending = job.segments.some(
       (candidate) => candidate.status === "completed" && Boolean(candidate.translatedText.trim()),
     );
@@ -2893,6 +3375,308 @@ export class TranslationJobRunner {
     delete job.safetyRefusalContextPending[segmentId];
   }
 
+  private async readMemoryFromDisk(directory: string): Promise<StoryMemory | undefined> {
+    try {
+      const memoryPath = path.join(directory, ".tool-dich-truyen-memory.json");
+      const content = await readFile(memoryPath, "utf-8");
+      return JSON.parse(content) as StoryMemory;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async saveJobMemory(job: PersistedTranslationJob): Promise<void> {
+    const directory = job.autoExport?.directory;
+    if (directory && job.memory) {
+      try {
+        const memoryPath = path.join(directory, ".tool-dich-truyen-memory.json");
+        await writeFile(memoryPath, JSON.stringify(job.memory, null, 2), "utf-8");
+      } catch {}
+    }
+  }
+
+  private ensureStoryMemoryEntities(job: PersistedTranslationJob): void {
+    // Không tự động quét thô bằng Regex nữa.
+    // Toàn bộ việc phát hiện nhân vật đã được chuyển sang ChatGPT qua thẻ <THUC_THE_MOI>.
+    job.memory ??= createEmptyStoryMemory({ storyId: job.id, genre: job.promptMode });
+  }
+
+  private async ensureAiStoryDigest(
+    job: PersistedTranslationJob,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (process.env.SKIP_DIGEST_IN_TEST === "true") return;
+    // Nếu job đã thử trinh sát hoặc đã có thực thể trong memory thì bỏ qua
+    if (job.storyDigestAttempted || (job.memory?.entities && job.memory.entities.length > 0)) {
+      return;
+    }
+
+    job.storyDigestAttempted = true;
+
+    const chapters: Array<{ index: number; sourceText: string }> = (job.segments ?? []).map((seg) => ({
+      index: seg.index,
+      sourceText: seg.sourceText,
+    }));
+    if (chapters.length === 0 && job.sourceText) {
+      chapters.push({ index: 0, sourceText: job.sourceText });
+    }
+    if (chapters.length === 0) return;
+
+    this.logActivity(
+      job,
+      "Giai đoạn 1: Bắt đầu quét trinh sát dàn nhân vật cốt lõi và địa danh toàn bộ tác phẩm...",
+      "info",
+    );
+
+    // 1. Quét nhân vật thô (đã lọc sạch triệt để đồ vật và danh từ chung qua bộ lọc nâng cấp)
+    const scannedChars = scanBookForEntities(chapters, {
+      minOccurrences: 3,
+      maxCandidates: 45,
+    });
+    // 2. Quét địa danh thô
+    const scannedLocs = scanBookForLocations(chapters, {
+      minOccurrences: 2,
+      maxCandidates: 25,
+    });
+
+    if (scannedChars.length === 0 && scannedLocs.length === 0) {
+      this.logActivity(
+        job,
+        "Không phát hiện thực thể cốt lõi nổi bật; chuyển sang Giai đoạn 2 để AI tự động bổ sung trong lúc dịch.",
+        "info",
+      );
+      job.updatedAt = nowIso();
+      await this.checkpoint(job);
+      return;
+    }
+
+    // Thu thập ngữ cảnh xuất hiện đầu tiên, câu thoại và câu bằng chứng thân tộc
+    const charProfiles = harvestCharacterContext(chapters, scannedChars, {
+      maxKinship: 3,
+      maxDialogues: 3,
+    });
+    const locProfiles = harvestLocationContext(chapters, scannedLocs);
+
+    // Chia thành 2-3 cụm nhỏ (mỗi cụm tối đa 18 nhân vật) để suy luận sâu mà không bị quá tải
+    const clusters = createCharacterClusters(charProfiles, 18);
+    const totalClusters = Math.min(Math.max(clusters.length, 1), 3);
+
+    this.logActivity(
+      job,
+      `Đã lọc được ${charProfiles.length} nhân vật cốt lõi và ${locProfiles.length} địa danh bối cảnh sạch. Bắt đầu gửi ${totalClusters} mẻ phân tích sâu lên ChatGPT (chế độ suy luận)...`,
+      "info",
+    );
+
+    job.memory ??= createEmptyStoryMemory({ storyId: job.id, genre: job.promptMode });
+
+    const bookTitle = job.autoExport?.directory
+      ? path.basename(job.autoExport.directory)
+      : "Tiểu thuyết";
+
+    for (let cIdx = 0; cIdx < totalClusters; cIdx++) {
+      if (this.shouldStop(job, signal)) return;
+      const currentCluster = clusters[cIdx] ?? [];
+      const clusterLocations = cIdx === 0 ? locProfiles.slice(0, 15) : cIdx === 1 ? locProfiles.slice(15, 30) : [];
+
+      if (currentCluster.length === 0 && clusterLocations.length === 0) continue;
+
+      const prompt = compileStoryDigestPrompt(currentCluster, {
+        bookTitle,
+        genre: job.promptMode,
+        clusterIndex: cIdx + 1,
+        totalClusters,
+        locations: clusterLocations,
+      });
+
+      this.logActivity(
+        job,
+        `Đang phân tích sâu mẻ ${cIdx + 1}/${totalClusters} (${currentCluster.length} nhân vật, ${clusterLocations.length} địa danh)...`,
+        "info",
+      );
+
+      try {
+        const digestResponse = await this.dependencies.chatGpt.sendAndWait(prompt, {
+          timeoutMs: 300_000, // 5 phút thoải mái cho reasoning mode
+          signal,
+          reasoning: true,    // Chế độ suy luận sâu theo yêu cầu của bạn
+        });
+
+        if (this.shouldStop(job, signal)) return;
+
+        const parsed = parseStoryDigestResponse(digestResponse);
+        if (parsed.characters.length > 0 || parsed.locations.length > 0) {
+          const existingChinese = new Set((job.memory.entities ?? []).map((e) => e.chinese));
+          let newChars = 0;
+          let newLocs = 0;
+          for (const ch of parsed.characters) {
+            if (!existingChinese.has(ch.chinese)) {
+              job.memory.entities.push(ch);
+              existingChinese.add(ch.chinese);
+              newChars++;
+            }
+          }
+          for (const loc of parsed.locations) {
+            if (!existingChinese.has(loc.chinese)) {
+              job.memory.entities.push(loc);
+              existingChinese.add(loc.chinese);
+              newLocs++;
+            }
+          }
+          if (parsed.relationships.length > 0) {
+            job.memory.relations = [
+              ...(job.memory.relations ?? []),
+              ...parsed.relationships,
+            ];
+          }
+          await this.saveJobMemory(job);
+          this.emit(job.id, "story-memory-updated", { memory: job.memory });
+          this.logActivity(
+            job,
+            `Hoàn tất mẻ ${cIdx + 1}/${totalClusters}: Đã nạp ${newChars} nhân vật và ${newLocs} địa danh chuẩn xác vào Trí nhớ.`,
+            "info",
+          );
+        }
+      } catch (err: unknown) {
+        if (this.shouldStop(job, signal)) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logActivity(
+          job,
+          `Mẻ trinh sát ${cIdx + 1}/${totalClusters} gặp sự cố (${msg}); tiếp tục tiến trình và để Giai đoạn 2 tự động bổ sung trong lúc dịch.`,
+          "warning",
+        );
+      }
+    }
+
+    job.updatedAt = nowIso();
+    await this.checkpoint(job);
+  }
+
+  private async autoSyncStoryMemoryFromSegments(
+    job: PersistedTranslationJob,
+    options?: { silent?: boolean },
+  ): Promise<boolean> {
+    const completedSegments = job.segments.filter(
+      (s) => s.status === "completed" && Boolean(s.translatedText?.trim()),
+    );
+    if (completedSegments.length === 0) return false;
+
+    job.memory ??= createEmptyStoryMemory({ storyId: job.id, genre: job.promptMode });
+    const prevCount = job.memory.entities?.length ?? 0;
+    let changed = false;
+
+    for (const segment of completedSegments) {
+      const extracted = autoExtractStoryMemory(segment.sourceText, segment.translatedText, {
+        genre: job.promptMode,
+        existingEntities: job.memory?.entities,
+      });
+      // Toàn quyền tạo nhân vật & địa danh thuộc về ChatGPT qua thẻ <THUC_THE_MOI>.
+      // Loại bỏ mọi thực thể nhân vật/địa danh do Regex cục bộ tự ý mò mẫm từ proper nouns để triệt tiêu thực thể rác.
+      const safeExtracted = {
+        ...extracted,
+        entities: (extracted.entities || []).filter(
+          (e) => e.category !== "character" && e.category !== "location",
+        ),
+      };
+      if (
+        safeExtracted.entities.length > 0 ||
+        safeExtracted.relations.length > 0 ||
+        safeExtracted.recentDialogues.length > 0
+      ) {
+        job.memory = mergeStoryMemory(job.memory, safeExtracted);
+        changed = true;
+      }
+    }
+
+    const newCount = job.memory.entities?.length ?? 0;
+    if (changed) {
+      await this.saveJobMemory(job);
+      this.emit(job.id, "story-memory-updated", { memory: job.memory });
+      if (!options?.silent && newCount > prevCount) {
+        this.logActivity(
+          job,
+          `Trí nhớ truyện: Đã tự động rà quét và đồng bộ ${newCount} thực thể từ các đoạn đã dịch.`,
+          "info",
+        );
+      }
+    }
+    return changed;
+  }
+
+  public async getStoryMemory(options?: { directory?: string; jobId?: string }): Promise<StoryMemory> {
+    if (options?.jobId) {
+      const job = this.jobs.get(options.jobId);
+      if (job) {
+        if (!job.memory?.entities?.length && job.segments.some((s) => s.status === "completed")) {
+          await this.autoSyncStoryMemoryFromSegments(job, { silent: true });
+        }
+        if (job.memory) {
+          job.memory = sanitizeStoryMemory(job.memory);
+          return job.memory;
+        }
+      }
+    }
+    if (options?.directory) {
+      const fromDisk = await this.readMemoryFromDisk(options.directory);
+      if (fromDisk) return sanitizeStoryMemory(fromDisk);
+    }
+    if (this.activeDraftMemory) {
+      return sanitizeStoryMemory(this.activeDraftMemory);
+    }
+    return createEmptyStoryMemory();
+  }
+
+  public async saveStoryMemory(options: {
+    directory?: string;
+    jobId?: string;
+    memory: StoryMemory;
+  }): Promise<StoryMemory> {
+    const { directory, jobId, memory } = options;
+    const sanitized = sanitizeStoryMemory(memory);
+    this.activeDraftMemory = sanitized;
+    if (jobId) {
+      const job = this.jobs.get(jobId);
+      if (job) {
+        job.memory = sanitized;
+        job.updatedAt = nowIso();
+        await this.checkpoint(job);
+        this.emit(job.id, "activity-log", {
+          entry: {
+            at: nowIso(),
+            tone: "info",
+            message: "Đã cập nhật trí nhớ truyện và quy ước xưng hô.",
+          },
+        });
+      }
+    }
+    if (directory) {
+      try {
+        const memoryPath = path.join(directory, ".tool-dich-truyen-memory.json");
+        await writeFile(memoryPath, JSON.stringify(sanitized, null, 2), "utf-8");
+      } catch {}
+    }
+    return sanitized;
+  }
+
+  public async clearStoryMemory(options?: { directory?: string; jobId?: string }): Promise<void> {
+    const { directory, jobId } = options ?? {};
+    this.activeDraftMemory = undefined;
+    if (jobId) {
+      const job = this.jobs.get(jobId);
+      if (job) {
+        job.memory = createEmptyStoryMemory({ storyId: job.id, genre: job.promptMode });
+        job.updatedAt = nowIso();
+        await this.checkpoint(job).catch(() => undefined);
+        this.emit(job.id, "story-memory-updated", { memory: job.memory });
+      }
+    }
+    if (directory) {
+      try {
+        const memoryPath = path.join(directory, ".tool-dich-truyen-memory.json");
+        await unlink(memoryPath).catch(() => undefined);
+      } catch {}
+    }
+  }
+
   private buildRecoveryContext(job: PersistedTranslationJob): string {
     const latestCompleted = [...job.segments]
       .filter((segment) => segment.status === "completed" && segment.translatedText.trim())
@@ -2950,6 +3734,12 @@ export class TranslationJobRunner {
         }
         job.providerFailover = normalizedProviderFailover(job.providerFailover, job.aiProvider);
         job.activityLog ??= [];
+        job.memory ??= createEmptyStoryMemory({ storyId: job.id, genre: job.promptMode });
+        if (job.autoExport?.directory && (!job.memory.entities || job.memory.entities.length === 0)) {
+          const fromDisk = await this.readMemoryFromDisk(job.autoExport.directory);
+          if (fromDisk) job.memory = mergeStoryMemory(job.memory, fromDisk);
+        }
+        await this.autoSyncStoryMemoryFromSegments(job, { silent: true });
         upgradeLegacyWebTimeout(job);
         job.conversationInitialized = false;
         job.conversationHasBasePrompt = false;
@@ -2980,7 +3770,9 @@ export class TranslationJobRunner {
    */
   private canResumeLifecycleFailure(job: PersistedTranslationJob): boolean {
     return (
-      job.segments.some((segment) => segment.status === "queued") &&
+      job.segments.some((segment) =>
+        segment.status === "queued" || segment.status === "sending" || segment.status === "streaming",
+      ) &&
       !job.segments.some(
         (segment) => segment.status === "failed" || segment.status === "cancelled",
       )

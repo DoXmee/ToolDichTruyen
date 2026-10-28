@@ -205,10 +205,10 @@ export function PromptSelector({
           value={customPrompt}
           onChange={(event) => onCustomPromptChange(event.target.value)}
           onFocus={() => onModeChange('custom')}
-          placeholder="Ví dụ: Dịch sát nghĩa, giữ giọng trinh thám lạnh, không thêm lời giải thích…"
+          placeholder="Nhập yêu cầu dịch riêng (hoặc để trống để Tool tự động áp dụng phong cách Đa thể loại mượt mà cho mọi loại truyện)..."
           rows={5}
         />
-        <p>Chỉ cần bắt đầu nhập, chế độ “Khác” sẽ được chọn tự động.</p>
+        <p>Nếu để trống, Tool sẽ tự động dùng prompt Đa thể loại toàn năng để dịch chuẩn cho mọi loại truyện.</p>
       </div>
     </section>
   );

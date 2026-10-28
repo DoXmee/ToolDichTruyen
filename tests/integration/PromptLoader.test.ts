@@ -30,8 +30,19 @@ describe('PromptLoader', () => {
     expect(normalizePromptMode('khác')).toBe('custom')
   })
 
-  it('bắt buộc prompt tùy chỉnh phải có nội dung', async () => {
+  it('sử dụng prompt đa thể loại mặc định khi người dùng để trống prompt tùy chỉnh và ưu tiên prompt riêng khi có', async () => {
     const loader = new PromptLoader([])
-    await expect(loader.resolve('custom', '   ')).rejects.toThrow(/Vui lòng nhập prompt/u)
+    // Khi để trống hoặc chuỗi trắng: trả về prompt đa thể loại mặc định
+    const defaultPrompt = await loader.resolve('custom', '   ')
+    expect(defaultPrompt).toContain('VĂN PHONG THUẦN VIỆT')
+    expect(defaultPrompt).toContain('không để sót bất kỳ chữ Hán nào')
+
+    const emptyPrompt = await loader.resolve('custom', '')
+    expect(emptyPrompt).toBe(defaultPrompt)
+
+    // Khi người dùng nhập prompt riêng: sử dụng chính xác prompt của người dùng
+    const userPrompt = 'Dịch giữ phong cách hài hước châm biếm.'
+    const resolvedUser = await loader.resolve('custom', userPrompt)
+    expect(resolvedUser).toBe(userPrompt)
   })
 })

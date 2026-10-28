@@ -18,6 +18,8 @@ export interface ChatWebSelectors {
   confirmDeleteConversation: readonly string[];
   retryButton: readonly string[];
   loginLink: readonly string[];
+  /** Toggle button for reasoning / thinking mode (e.g. ChatGPT "Suy luận" / "Reason" button). */
+  reasoningButton?: readonly string[];
   /**
    * Positive proof that the session is already authenticated. Only providers
    * whose sign-in state cannot be inferred from a URL are expected to set it.
@@ -57,7 +59,11 @@ export const CHATGPT_SELECTORS: ChatWebSelectors = Object.freeze({
   composer: [
     "#prompt-textarea",
     '[data-testid="prompt-textarea"]',
+    'div[contenteditable="true"].ProseMirror',
+    'div[contenteditable="true"][role="textbox"]',
+    'div[contenteditable="true"][data-composer-markdown]',
     'div[contenteditable="true"][data-lexical-editor="true"]',
+    'div[contenteditable="true"]',
     'textarea[placeholder*="Message"]',
     'textarea[placeholder*="Tin nhắn"]',
   ] as const,
@@ -66,15 +72,44 @@ export const CHATGPT_SELECTORS: ChatWebSelectors = Object.freeze({
     'button[aria-label="Send prompt"]',
     'button[aria-label="Send message"]',
     'button[aria-label*="Gửi"]',
+    'button[aria-label*="gui" i]',
+    'button[aria-label="Gửi"]',
+    'button[data-testid="fruitjuice-send-button"]',
   ] as const,
   stopButton: [
     'button[data-testid="stop-button"]',
+    'button[data-testid*="stop" i]',
     'button[aria-label="Stop streaming"]',
     'button[aria-label="Stop generating"]',
-    'button[aria-label*="Dừng"]',
+    'button[aria-label*="Dừng" i]',
+    'button[aria-label*="stop" i]',
+    'button:has(svg rect)',
+    '[data-testid="fruitjuice-send-button"]:has(rect)',
+  ] as const,
+  reasoningButton: [
+    'button[data-testid="composer-button-reasoning"]',
+    'button[data-testid*="reasoning" i]',
+    'button[data-testid*="think" i]',
+    '[data-testid="composer-footer"] button:has-text("Suy luận")',
+    '[data-testid="composer-footer"] button:has-text("Reason")',
+    '[data-testid="composer-footer"] [role="button"]:has-text("Suy luận")',
+    '[data-testid="composer-footer"] [role="button"]:has-text("Reason")',
+    'form button:has-text("Suy luận")',
+    'form button:has-text("Reason")',
+    'form button[aria-label*="Suy luận" i]',
+    'form button[aria-label*="Reason" i]',
+    'form button[aria-label*="Thinking" i]',
+    'button[aria-label*="Suy luận" i]',
+    'button[aria-label*="Reason" i]',
+    'button[aria-label*="Thinking" i]',
+    'button:has([aria-label*="suy luận" i])',
+    'button:has([aria-label*="reason" i])',
   ] as const,
   assistantMessages: [
     '[data-message-author-role="assistant"]',
+    '[data-markdown-text-style="assistant-message"]',
+    '[data-dil-message-id]',
+    '[data-dil-source-message-id]',
     'article:has([data-message-author-role="assistant"])',
     '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
   ] as const,
@@ -83,20 +118,41 @@ export const CHATGPT_SELECTORS: ChatWebSelectors = Object.freeze({
   // delayed Copy action from an old turn from completing the latest response.
   assistantTurnContainerFromMessage: [
     'xpath=ancestor-or-self::*[starts-with(@data-testid, "conversation-turn-")][1]',
+    'xpath=ancestor-or-self::*[@data-talvt-turn-state][1]',
+    'xpath=ancestor-or-self::*[@data-turn-key][1]',
     'xpath=ancestor-or-self::article[1]',
   ] as const,
   assistantTurnCompletionAction: [
     '[data-testid="copy-turn-action-button"]',
+    'button[aria-label*="Sao chép" i]',
+    'button[aria-label*="Copy" i]',
   ] as const,
   toolConversationUserMessages: [
+    '[data-message-author-role="user"]',
+    'article:has([data-message-author-role="user"])',
+    '[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
+    '[data-testid^="conversation-turn-"] [data-message-author-role="user"]',
+    '[data-testid^="conversation-turn-"]',
     'main [data-message-author-role="user"]',
     '[role="main"] [data-message-author-role="user"]',
+    'main [data-chatgpt-search-unit-key*="user"]',
+    '[role="main"] [data-chatgpt-search-unit-key*="user"]',
+    'main [data-content-search-unit-key*="user"]',
+    '[role="main"] [data-content-search-unit-key*="user"]',
+    'main [class*="user-message"]',
+    '[role="main"] [class*="user-message"]',
+    '[data-message-id]',
   ] as const,
   newChat: [
     'a[data-testid="create-new-chat-button"]',
     'button[data-testid="create-new-chat-button"]',
     'a[aria-label="New chat"]',
     'a[aria-label*="Đoạn chat mới"]',
+    'button[aria-label="New chat"]',
+    'button[aria-label*="Đoạn chat mới"]',
+    'button:has-text("Đoạn chat mới")',
+    'button:has-text("New chat")',
+    'a:has-text("Đoạn chat mới")',
   ] as const,
   // These target only the options menu of the conversation that is currently
   // open. The adapter separately verifies the exact /c/{id} URL immediately
@@ -114,6 +170,8 @@ export const CHATGPT_SELECTORS: ChatWebSelectors = Object.freeze({
     '[role="main"] button[aria-label="Mở tùy chọn cuộc trò chuyện"]',
     'main button[aria-label="Tùy chọn cuộc trò chuyện"]',
     '[role="main"] button[aria-label="Tùy chọn cuộc trò chuyện"]',
+    'button[aria-label*="Hành động trong trò chuyện" i]',
+    'button[aria-label*="Tùy chọn thanh bên Trò chuyện" i]',
   ] as const,
   deleteCurrentConversation: [
     '[role="menu"] [role="menuitem"][data-testid="delete-conversation"]',
@@ -135,6 +193,24 @@ export const CHATGPT_SELECTORS: ChatWebSelectors = Object.freeze({
     'a[href*="/auth/login"]',
     'button:has-text("Log in")',
     'button:has-text("Đăng nhập")',
+  ] as const,
+  signedInMarkers: [
+    '[data-testid="accounts-profile-button"]',
+    '[data-testid="profile-button"]',
+    '[data-testid="user-menu-button"]',
+    '[data-testid="user-avatar"]',
+    'button:has([data-testid="user-avatar"])',
+    'button[aria-label*="profile" i]',
+    'button[aria-label*="hồ sơ" i]',
+    'button[aria-label*="account" i]',
+    'button[aria-label*="tài khoản" i]',
+    '#prompt-textarea',
+    '[data-testid="prompt-textarea"]',
+    'div[contenteditable="true"].ProseMirror',
+    'div[contenteditable="true"][role="textbox"]',
+    'div[contenteditable="true"][data-composer-markdown]',
+    'button[data-testid="send-button"]',
+    'button[aria-label*="Gửi" i]',
   ] as const,
 });
 

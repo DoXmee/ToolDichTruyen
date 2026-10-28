@@ -22,6 +22,7 @@ interface StoryLinkImporterProps {
   originalExportedRecords: ChapterExportRecord[];
   combinedExport?: CombinedChapterExportResult;
   manualVerificationState?: ManualVerificationState;
+  manualVerificationIssue?: string;
   disabled?: boolean;
   onUrlChange(value: string): void;
   onAnalyze(): void;
@@ -62,6 +63,7 @@ function manualVerificationLabel(url: string): string {
     const labels = hostname.split('.');
     const brand = labels[0] === 'www' || labels[0] === 'm' ? labels[1] : labels[0];
     const path = parsed.pathname.replace(/\/{2,}/gu, '/');
+    if (brand === 'timotxt') return 'TimoTXT';
     if (brand === 'novel543' || /^\/\d{6,20}(?:\/dir|\/\d+_\d+(?:_\d+)?\.html)?\/?$/u.test(path)) return 'Novel543';
     return brand === 'xszj'
       || brand === 'ixdzs8'
@@ -87,6 +89,7 @@ export function StoryLinkImporter({
   originalExportedRecords,
   combinedExport,
   manualVerificationState = 'none',
+  manualVerificationIssue = '',
   disabled = false,
   onUrlChange,
   onAnalyze,
@@ -111,6 +114,9 @@ export function StoryLinkImporter({
   const savedOriginalCount = originalExportedRecords.filter((record) => record.status === 'saved').length;
   const hasExportHistory = exportedRecords.length > 0 || originalExportedRecords.length > 0 || Boolean(combinedExport);
   const verificationLabel = manualVerificationLabel(url);
+  const showPreAnalysisManualVerification = !analysis && manualVerificationState === 'available' && onOpenManualVerification;
+  const showCatalogManualVerification = Boolean(analysis && manualVerificationState === 'available' && onOpenManualVerification);
+  const retryCurrentBrowser = /giữ nguyên tab Browser Helper/iu.test(manualVerificationIssue);
 
   return (
     <div className="story-link-importer">
@@ -146,7 +152,7 @@ export function StoryLinkImporter({
         </p>
       )}
 
-      {manualVerificationState === 'available' && onOpenManualVerification && (
+      {showPreAnalysisManualVerification && (
         <div className="story-manual-verification" role="alert">
           <Icon name="alert" />
           <div>
@@ -230,6 +236,26 @@ export function StoryLinkImporter({
             </div>
             <span className="field-badge">{analysis.inputKind === 'chapter' ? 'Link chương' : 'Link bộ'}</span>
           </div>
+
+          {showCatalogManualVerification && (
+            <div className="inline-notice inline-notice--info story-catalog__reconnect" role="alert">
+              <Icon name="alert" />
+              <span>{manualVerificationIssue || `Phiên ${verificationLabel} cần kết nối lại bằng trình duyệt mặc định trước khi tải tiếp các chương đã chọn.`}</span>
+              <button
+                className="button button--secondary"
+                disabled={disabled}
+                onClick={retryCurrentBrowser ? onFetchAndTranslate : onOpenManualVerification}
+                type="button"
+              >
+                {retryCurrentBrowser ? 'Tải lại chương' : 'Kết nối lại'}
+              </button>
+              {onRevealBrowserHelper && (
+                <button className="button button--secondary" disabled={disabled} onClick={onRevealBrowserHelper} type="button">
+                  Mở thư mục tiện ích
+                </button>
+              )}
+            </div>
+          )}
 
           {analysis.verification === 'user-action-required' && (
             <div className="inline-notice inline-notice--info">

@@ -194,4 +194,39 @@ describe('AccountRegistry', () => {
     await expect(readFile(path.join(profile, 'Default', 'Network', 'Cookies'), 'utf8'))
       .resolves.toBe('login-data')
   })
+
+  it('dọn sạch các thư mục backup cũ và draft cũ mà không đụng tới dữ liệu quan trọng', async () => {
+    const directory = await temporaryDataDirectory()
+    const registry = new AccountRegistry(directory)
+
+    // Tạo các thư mục backup cũ và draft cũ
+    const obsoleteBackupDir = path.join(directory, 'story-source-browser-profile.backup-20260922-203515')
+    const testProfileDir = path.join(directory, 'test-profile')
+    const repairBackupsDir = path.join(directory, 'repair-backups')
+    const obsoleteDraft = path.join(directory, 'draft.json.pre-output-directory-20260817')
+    const activeDraft = path.join(directory, 'draft.json')
+    const accountsFile = path.join(directory, 'accounts.json')
+
+    await mkdir(obsoleteBackupDir, { recursive: true })
+    await mkdir(testProfileDir, { recursive: true })
+    await mkdir(repairBackupsDir, { recursive: true })
+    await writeFile(path.join(obsoleteBackupDir, 'data.bin'), Buffer.alloc(1024))
+    await writeFile(path.join(testProfileDir, 'temp.bin'), Buffer.alloc(2048))
+    await writeFile(path.join(repairBackupsDir, 'repair.json'), Buffer.alloc(512))
+    await writeFile(obsoleteDraft, 'old-draft')
+    await writeFile(activeDraft, '{"active": true}')
+    await writeFile(accountsFile, '{"version": 1, "accounts": []}')
+
+    const result = await registry.cleanupObsoleteBackups()
+
+    expect(result.removed).toContain(obsoleteBackupDir)
+    expect(result.removed).toContain(testProfileDir)
+    expect(result.removed).toContain(repairBackupsDir)
+    expect(result.removed).toContain(obsoleteDraft)
+    expect(result.freedBytes).toBe(1024 + 2048 + 512 + Buffer.byteLength('old-draft'))
+
+    // File draft đang hoạt động và accounts.json phải được giữ nguyên 100%
+    await expect(readFile(activeDraft, 'utf8')).resolves.toBe('{"active": true}')
+    await expect(readFile(accountsFile, 'utf8')).resolves.toBe('{"version": 1, "accounts": []}')
+  })
 })

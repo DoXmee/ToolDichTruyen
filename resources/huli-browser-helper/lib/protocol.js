@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "1.0.8";
+export const EXTENSION_VERSION = "1.0.11";
 export const HEARTBEAT_PORT_NAME = "huli-heartbeat";
 export const PAIR_FRAGMENT_PREFIX = "#tdt-pair=";
 export const POLL_DELAY_MS = 800;
@@ -27,6 +27,7 @@ const HULI_HOSTS = new Set(["m.huliwang.net", "www.huliwang.net", "m.ihuliwang.n
 const XSZJ_HOSTS = new Set(["xszj.org", "www.xszj.org"]);
 const IXDZS_HOSTS = new Set(["ixdzs8.com", "www.ixdzs8.com"]);
 const NOVEL543_HOSTS = new Set(["novel543.com", "www.novel543.com"]);
+const TIMOTXT_HOSTS = new Set(["timotxt.com", "www.timotxt.com"]);
 const XSZJ_BOOK_PATH = /^\/b\/(\d+)\/?$/u;
 const XSZJ_CATALOG_PATH = /^\/b\/(\d+)\/cs\/(\d+)\/?$/u;
 const XSZJ_CHAPTER_PATH = /^\/b\/(\d+)\/c\/(\d+)\/?$/u;
@@ -233,6 +234,53 @@ export function normalizeNovel543Url(rawUrl) {
   throw new TypeError("Unsupported Novel543 path.");
 }
 
+export function normalizeTimotxtUrl(rawUrl) {
+  if (typeof rawUrl !== "string") throw new TypeError("TimoTXT URL must be a string.");
+  const url = new URL(rawUrl);
+  const host = url.hostname.toLowerCase();
+  const brand = hostBrand(host);
+  if (
+    url.href.length > 2_048
+    || url.protocol !== "https:"
+    || url.port
+    || url.username
+    || url.password
+    || (!TIMOTXT_HOSTS.has(host) && brand !== "timotxt")
+    || isLegacyRootSubdomain(host, [["timotxt", "com"]])
+  ) throw new TypeError("Only exact HTTPS TimoTXT hosts are allowed.");
+  const origin = TIMOTXT_HOSTS.has(host) ? "https://www.timotxt.com" : `https://${withSubdomain(host, "www")}`;
+  const path = url.pathname.replace(/\/{2,}/gu, "/");
+  const book = /^\/([a-zA-Z0-9]{4,24})\/?$/u.exec(path);
+  const catalog = /^\/([a-zA-Z0-9]{4,24})\/dir\/?$/u.exec(path);
+  const chapter = /^\/([a-zA-Z0-9]{4,24})\/(\d+)(?:_(\d+))?\.html\/?$/u.exec(path);
+  if (book?.[1]) return `${origin}/${book[1]}/`;
+  if (catalog?.[1]) return `${origin}/${catalog[1]}/dir`;
+  if (chapter?.[1] && chapter[2]) {
+    const part = chapter[3] && Number.parseInt(chapter[3], 10) > 1 ? `_${Number.parseInt(chapter[3], 10)}` : "";
+    return `${origin}/${chapter[1]}/${chapter[2]}${part}.html`;
+  }
+  throw new TypeError("Unsupported TimoTXT path.");
+}
+
+export function normalizeTimotxtAssetUrl(rawUrl, kind) {
+  if (typeof rawUrl !== "string" || !["stylesheet", "font"].includes(kind)) {
+    throw new TypeError("TimoTXT asset request is invalid.");
+  }
+  const url = new URL(rawUrl);
+  const host = url.hostname.toLowerCase();
+  if (
+    url.href.length > 2_048
+    || url.protocol !== "https:"
+    || url.port
+    || url.username
+    || url.password
+    || !(TIMOTXT_HOSTS.has(host) || host.endsWith(".timotxt.com"))
+    || (kind === "stylesheet" && !/\.css$/iu.test(url.pathname))
+    || (kind === "font" && !/\.(?:woff2?|ttf)(?:$|\?)/iu.test(url.pathname))
+  ) throw new TypeError("Only exact HTTPS TimoTXT assets are allowed.");
+  return url.href;
+}
+
 /** Return a canonical URL for the extension's two strictly allow-listed sites. */
 export function normalizeCompanionUrl(rawUrl) {
   try {
@@ -241,7 +289,11 @@ export function normalizeCompanionUrl(rawUrl) {
     try {
       return normalizeXszjUrl(rawUrl);
     } catch {
-      return normalizeNovel543Url(rawUrl);
+      try {
+        return normalizeNovel543Url(rawUrl);
+      } catch {
+        return normalizeTimotxtUrl(rawUrl);
+      }
     }
   }
 }
@@ -255,13 +307,18 @@ export function companionSite(rawUrl) {
       normalizeXszjUrl(rawUrl);
       return "xszj";
     } catch {
-      normalizeNovel543Url(rawUrl);
-      return "novel543";
+      try {
+        normalizeNovel543Url(rawUrl);
+        return "novel543";
+      } catch {
+        normalizeTimotxtUrl(rawUrl);
+        return "timotxt";
+      }
     }
   }
 }
 
-/** Huli has aliases; XSZJ and Novel543 routes are canonicalized above. */
+/** Huli has aliases; the other routes are canonicalized above. */
 export function companionPageIdentity(rawUrl) {
   try {
     return huliPageIdentity(rawUrl);
@@ -269,7 +326,11 @@ export function companionPageIdentity(rawUrl) {
     try {
       return normalizeXszjUrl(rawUrl);
     } catch {
-      return normalizeNovel543Url(rawUrl);
+      try {
+        return normalizeNovel543Url(rawUrl);
+      } catch {
+        return normalizeTimotxtUrl(rawUrl);
+      }
     }
   }
 }

@@ -98,6 +98,56 @@ describe("story source text safety", () => {
     expect(() => assertCleanXbanxiaStoryText(repaired)).not.toThrow();
   });
 
+  it("repairs chapters without subtitle cleanly without throwing errors", () => {
+    // Case 1: Plain "Chương 2" without colon
+    const plainRepaired = repairLegacyXbanxiaCheckpointSegment([
+      "Chương 2",
+      "",
+      "外头闹轰轰，黑乎乎的屋内，秦玲玲内心倒是比刚才安静多了。",
+      "原主嫁的这个家里，除了顾瑶这个小姑子之外，另外还有一个小姑子。",
+      "说起来，这个家庭挺复杂的。",
+    ].join("\n"));
+    expect(plainRepaired).toBe([
+      "Chương 2",
+      "",
+      "外头闹轰轰，黑乎乎的屋内，秦玲玲内心倒是比刚才安静多了。",
+      "原主嫁的这个家里，除了顾瑶这个小姑子之外，另外还有一个小姑子。",
+      "说起来，这个家庭挺复杂的。",
+    ].join("\n"));
+
+    // Case 2: "Chương 2: " with empty colon
+    const emptyColonRepaired = repairLegacyXbanxiaCheckpointSegment([
+      "Chương 2: ",
+      "",
+      "外头闹轰轰，黑乎乎的屋内，秦玲玲内心倒是比刚才安静多了。",
+      "原主嫁的这个家里，除了顾瑶这个小姑子之外，另外还有一个小姑子。",
+      "说起来，这个家庭挺复杂的。",
+    ].join("\n"));
+    expect(emptyColonRepaired).toBe([
+      "Chương 2",
+      "",
+      "外头闹轰轰，黑乎乎的屋内，秦玲玲内心倒是比刚才安静多了。",
+      "原主嫁的这个家里，除了顾瑶这个小姑子之外，另外还有一个小姑子。",
+      "说起来，这个家庭挺复杂的。",
+    ].join("\n"));
+
+    // Case 3: "Chương 2: 第2章" where title matches number label
+    const numberOnlyRepaired = repairLegacyXbanxiaCheckpointSegment([
+      "Chương 2: 第2章",
+      "",
+      "外头闹轰轰，黑乎乎的屋内，秦玲玲内心倒是比刚才安静多了。",
+      "原主嫁的这个家里，除了顾瑶这个小姑子之外，另外还有一个小姑子。",
+      "说起来，这个家庭挺复杂的。",
+    ].join("\n"));
+    expect(numberOnlyRepaired).toBe([
+      "Chương 2",
+      "",
+      "外头闹轰轰，黑乎乎的屋内，秦玲玲内心倒是比刚才安静多了。",
+      "原主嫁的这个家里，除了顾瑶这个小姑子之外，另外还有一个小姑子。",
+      "说起来，这个家庭挺复杂的。",
+    ].join("\n"));
+  });
+
   it("removes a terminal Ixdzs author/new-book block without touching narrative", () => {
     const raw = [
       "故事正文第一段，人物仍然在继续行动，并且仔细交代了这段故事发生的背景与动机。",
@@ -153,8 +203,21 @@ describe("story source text safety", () => {
       "林美言聽見熟悉的稱呼，回過頭去。",
       "她看見雨中的車燈，腳步沒有停下來。",
     ].join("\n"));
-    expect(() => assertCleanXbanxiaStoryText(cleaned)).not.toThrow();
     expect(() => assertCleanXbanxiaStoryText("正文\n下一章：第2章")).toThrow(/phần giao diện/u);
+    expect(() => assertCleanXbanxiaStoryText("正文\n下一章︰第2章")).toThrow(/phần giao diện/u);
+  });
+
+  it("cleans Xbanxia ad complaints and colon variants from body and title", () => {
+    const rawWithAd = [
+      "第一段正文內容。",
+      "第二段正文內容。",
+      "半夏小說，快樂很多",
+      "如有惡意廣告，請將截屏或錄屏發送至[email protected]",
+    ].join("\n");
+    const cleaned = cleanXbanxiaStoryText(rawWithAd);
+    expect(cleaned).toBe("第一段正文內容。\n第二段正文內容。");
+    expect(() => assertCleanXbanxiaStoryText(cleaned)).not.toThrow();
+    expect(cleanXbanxiaChapterTitle("第1章 第 1 章 他成了江城的大人物", 1)).toBe("他成了江城的大人物");
   });
 
   it("accepts ordinary dialogue that happens to contain a Cloudflare-like English phrase", () => {

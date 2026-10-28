@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@google/genai": "2.16.0",
+    "chinese-conv": "^4.0.0",
     "playwright-core": "1.62.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",

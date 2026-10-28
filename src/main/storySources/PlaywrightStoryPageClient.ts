@@ -140,7 +140,7 @@ async function snapshot(
       const clone = element.cloneNode(true) as Element;
       if (element.matches("#nr, #nr1, .chapter-content .content, #htmlContent, #content, article.page-content")) {
         clone.querySelectorAll(
-          'script, style, iframe, ins, figure, .adBlock, .gadBlock, .clickforceads, .cf-unit, #comment, #teadunit, .bh-rec-embed, .recommend-wrap, [id^="cfadif"], [id^="div-onead-"], [id^="pf-"], [class^="ad-"], [class*=" ad-"], [style*="height: 0"]',
+          'script, style, iframe, ins, figure, .adBlock, .gadBlock, .clickforceads, .cf-unit, #comment, #teadunit, .bh-rec-embed, .recommend-wrap, .outbt, .supportbt, #complaint-form-container, .nav2, #anchor, a[href*="email-protection"], [id^="cfadif"], [id^="div-onead-"], [id^="pf-"], [class^="ad-"], [class*=" ad-"], [style*="height: 0"]',
         ).forEach((node) => node.remove());
         if (element.matches(".chapter-content .content")) {
           clone.querySelectorAll(":scope > div").forEach((node) => {
@@ -368,21 +368,26 @@ export class PlaywrightPageClient implements StoryPageClient {
     }
     const endpoint = "https://www.timotxt.com/chapter/transcode.html";
     await this.networkGuard.assert(endpoint, "transcode");
-    const response = await raceStoryOperationWithAbort(page.request.get(endpoint, {
-        params: { bid: request.bookId, cid: request.chapterId, sid: request.sourceId },
-        headers: { Referer: request.referer },
-        failOnStatusCode: false,
-        maxRedirects: 0,
-        timeout: 30_000,
-        ...(signal ? { signal } : {}),
-      }), signal, () => this.discardPage(page));
+    const response = await raceStoryOperationWithAbort(page.evaluate(async ({ endpoint: transcodeEndpoint, bookId, chapterId, sourceId }) => {
+      const params = new URLSearchParams({ bid: bookId, cid: chapterId, sid: sourceId });
+      const result = await fetch(`${transcodeEndpoint}?${params.toString()}`, {
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+      });
+      return { httpStatus: result.status, body: await result.text() };
+    }, {
+      endpoint,
+      bookId: request.bookId,
+      chapterId: request.chapterId,
+      sourceId: request.sourceId,
+    }), signal, () => this.discardPage(page));
     if (signal?.aborted) throw abortError(signal);
-    if (!response.ok()) {
-      return { status: response.status(), content: "", message: `HTTP ${response.status()}` };
+    if (response.httpStatus < 200 || response.httpStatus >= 300) {
+      return { status: response.httpStatus, content: "", message: `HTTP ${response.httpStatus}` };
     }
     let value: unknown;
     try {
-      value = await response.json();
+      value = JSON.parse(response.body) as unknown;
     } catch (error) {
       throw new StorySourceError("TIMOTXT_DECODE_FAILED", "Endpoint giải mã TimoTXT trả JSON không hợp lệ.", { cause: error });
     }
@@ -428,6 +433,14 @@ export class PlaywrightPageClient implements StoryPageClient {
       if (!request.isNavigationRequest() || response.frame() !== page.mainFrame()) return;
       const current = this.lastNavigation;
       if (!current) return;
+      const rawResponseUrl = typeof response.url === "function"
+        ? response.url()
+        : typeof request.url === "function" ? request.url() : current.requestedUrl;
+      const responseUrl = new URL(rawResponseUrl);
+      responseUrl.hash = "";
+      const requestedUrl = new URL(current.requestedUrl);
+      requestedUrl.hash = "";
+      if (responseUrl.toString() !== requestedUrl.toString()) return;
       this.lastNavigation = {
         ...current,
         status: response.status(),
@@ -467,6 +480,15 @@ export const createPlaywrightStoryPageClient: StoryPageClientFactory = async (op
     acceptDownloads: false,
     serviceWorkers: "block" as const,
     viewport: { width: 1280, height: 900 },
+    args: [
+      "--disable-extensions",
+      "--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,EdgeShopping,EdgeEntityExtraction,EdgeWallet,Translate,OptimizationHints,MediaRouter",
+      "--disable-component-update",
+      "--disable-background-networking",
+      "--disable-breakpad",
+      "--renderer-process-limit=4",
+      "--js-flags=--max-old-space-size=1024",
+    ],
     ...(options.executablePath ? { executablePath: options.executablePath } : { channel: "msedge" }),
   };
   const context = await chromium.launchPersistentContext(options.profileDirectory, launchOptions);

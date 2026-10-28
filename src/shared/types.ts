@@ -160,6 +160,7 @@ export type TranslationValidationIssueCode =
   | 'cross_chapter_repetition'
   | 'ownership_marker_leak'
   | 'chapter_structure'
+  | 'unclosed_lock'
   | 'error_response';
 
 export type ValidationSeverity = 'warning' | 'error';
@@ -243,6 +244,8 @@ export interface TranslationJob {
   autoExport?: TranslationAutoExportBinding;
   /** Bounded, human-readable execution history stored with the checkpoint. */
   activityLog?: TranslationActivityEntry[];
+  /** Durable living memory storing proper nouns, relations, and recent dialogue horizon. */
+  memory?: StoryMemory;
 }
 
 export type TranslationActivityTone = 'info' | 'warning' | 'error' | 'success';
@@ -490,7 +493,7 @@ export interface CombinedChapterExportInput {
   exportJobId: string;
   startChapter: number;
   endChapter: number;
-  /** A contiguous original website source range; it can be shorter than the output range after splitting. */
+  /** Exact original website chapters; it can contain deliberate gaps and be shorter than the output range after splitting. */
   sourceChapterNumbers: number[];
   chapters: FinalChapterExportInput[];
   /** Link-job recovery may publish a complete replacement set in a clean
@@ -512,4 +515,62 @@ export interface CombinedChapterExportResult {
   endChapter: number;
   chapterCount: number;
   status: 'saved' | 'skipped-existing';
+}
+
+export type EntityCategory = 'character' | 'location' | 'faction' | 'term' | 'cultivation';
+
+export interface StoryEntity {
+  id: string;
+  category: EntityCategory;
+  chinese: string;
+  vietnamese: string;
+  gender?: 'male' | 'female' | 'unknown';
+  role?: string;
+  notes?: string;
+  milestoneChapter?: number;
+  /** Các tên gọi tắt / biệt danh Hán tự trỏ về nhân vật này (vd: '苏叶' là tên gọi tắt của '阮苏叶') */
+  aliases?: string[];
+  /** Khi tên gọi tắt có thể khớp với nhiều nhân vật: mảng chinese của các ứng viên đó */
+  ambiguousAliasOf?: string[];
+  /** Đại từ dẫn truyện chuẩn cho nhân vật ('cậu ấy', 'anh', 'cô ấy') */
+  narrationPronoun?: string;
+  /** Điểm số giới tính tích lũy */
+  genderScore?: { m: number; f: number };
+  /** Khóa cứng theo từng trường (người dùng đã sửa / duyệt) */
+  locks?: { vi?: boolean; gender?: boolean; category?: boolean };
+  /** Trạng thái vòng đời thực thể */
+  status?: 'candidate' | 'verified' | 'staged' | 'active' | 'locked' | 'conflict';
+  confidence?: number;
+}
+
+export interface CharacterRelation {
+  id: string;
+  sourceCharacter: string;
+  targetCharacter: string;
+  relationType: string;
+  pronounSample: string;
+  toneInstruction?: string;
+  milestoneChapter?: number;
+  directionalAddress?: {
+    aToB: { self: string; call: string; tenseSelf?: string; tenseCall?: string };
+    bToA: { self: string; call: string; tenseSelf?: string; tenseCall?: string };
+  };
+}
+
+export interface StoryRecentDialogue {
+  chapterIndex?: number;
+  segmentId?: string;
+  snippet: string;
+}
+
+export interface StoryMemory {
+  version: 1;
+  storyId?: string;
+  storyTitle?: string;
+  genre?: string;
+  entities: StoryEntity[];
+  relations: CharacterRelation[];
+  recentDialogues?: StoryRecentDialogue[];
+  customRules?: string[];
+  updatedAt: string;
 }

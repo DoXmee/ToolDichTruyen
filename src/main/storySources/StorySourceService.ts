@@ -40,15 +40,16 @@ interface ActiveOperation {
  * Cloudflare verification in the browser the person actually uses and avoids
  * treating the verification as content or attempting to automate it.
  */
-type BrowserCompanionSite = "huliwang" | "xszj" | "novel543";
+type BrowserCompanionSite = "huliwang" | "xszj" | "novel543" | "timotxt";
 
 function isBrowserCompanionSite(site: StorySourceAnalysis["site"]): site is BrowserCompanionSite {
-  return site === "huliwang" || site === "xszj" || site === "novel543";
+  return site === "huliwang" || site === "xszj" || site === "novel543" || site === "timotxt";
 }
 
 function browserCompanionSiteLabel(site: BrowserCompanionSite): string {
   if (site === "huliwang") return "Huliwang";
   if (site === "xszj") return "XSZJ/爱下电子书";
+  if (site === "timotxt") return "TimoTXT";
   return "Novel543";
 }
 
@@ -266,7 +267,7 @@ export class StorySourceService implements StorySourceServiceApi {
     if (!isBrowserCompanionSite(parsed.site)) {
       throw new StorySourceError(
         "UNSUPPORTED_URL",
-        "Kết nối trình duyệt mặc định chỉ hỗ trợ link Huliwang, XSZJ hoặc Novel543 hợp lệ.",
+        "Kết nối trình duyệt mặc định chỉ hỗ trợ link Huliwang, XSZJ, Novel543 hoặc TimoTXT hợp lệ.",
       );
     }
     const companionSite = parsed.site;
@@ -461,7 +462,6 @@ export class StorySourceService implements StorySourceServiceApi {
       } : {}),
       ...(client.transcode ? {
         transcode: async (request, requestSignal) => {
-          await this.throttle(signal);
           const response = await client.transcode!(request, requestSignal ?? signal);
           this.lastRequestAt = this.now();
           return response;
@@ -500,8 +500,11 @@ export class StorySourceService implements StorySourceServiceApi {
 
   private async visit(url: string, signal: AbortSignal, analysisId: string) {
     this.throwIfAborted(signal);
-    await this.throttle(signal);
     const parsed = parseStoryUrl(url);
+    // TimoTXT can trigger a passive challenge when the catalog and the first
+    // chapter are navigated back-to-back. Keep the same bounded pacing used
+    // by the other sources so a normal browser session remains stable.
+    await this.throttle(signal);
     let snapshot: StoryPageSnapshot | undefined;
     try {
       snapshot = await this.visitSnapshot(url, signal);
@@ -556,7 +559,7 @@ export class StorySourceService implements StorySourceServiceApi {
       }
     }
     const companionReady = isBrowserCompanionSite(parsed.site) && this.hasBrowserCompanionFor(parsed.site);
-    if ((parsed.site === "huliwang" || parsed.site === "xszj" || parsed.site === "czbooks" || parsed.site === "novel543") && snapshot.challenge === "passive") {
+    if ((parsed.site === "huliwang" || parsed.site === "timotxt" || parsed.site === "xszj" || parsed.site === "czbooks" || parsed.site === "novel543") && snapshot.challenge === "passive") {
       this.emit({ analysisId, phase: "verification", completed: 0, total: 0, message: "Đang chờ Cloudflare xác minh thụ động…" });
       // Cloudflare's automatic check does not have a stable duration. Sample
       // the current page rather than navigating to the URL again: a reload
@@ -566,7 +569,7 @@ export class StorySourceService implements StorySourceServiceApi {
       // dozen chapter navigations. Keep inspecting the same tab for the same
       // bounded window used by its visible manual-verification flow; reloading
       // here would restart the challenge and lose the in-flight chapter.
-      let remainingWaitMs = parsed.site === "czbooks" || parsed.site === "novel543"
+      let remainingWaitMs = parsed.site === "timotxt" || parsed.site === "czbooks" || parsed.site === "novel543"
         ? this.manualVerificationWaitMs
         : this.verificationWaitMs;
       while (snapshot.challenge === "passive" && remainingWaitMs > 0) {
@@ -586,10 +589,36 @@ export class StorySourceService implements StorySourceServiceApi {
         remainingWaitMs -= Math.max(waitMs, Date.now() - iterationStartedAt);
       }
       if (snapshot.challenge === "passive") {
+        // A paired daily browser is already the visible verification session.
+        // Re-navigating it here would restart Cloudflare and make the check
+        // impossible to finish. Only replace a service-owned Playwright page.
+        if (parsed.site === "timotxt" && !companionReady && !this.suppliedPageClient) {
+          this.emit({
+            analysisId,
+            phase: "verification",
+            completed: 0,
+            total: 0,
+            message: "TimoTXT vẫn giữ trang xác minh cũ; đang mở lại phiên đọc nguồn sạch cho đúng link…",
+          });
+          await this.releasePageClient();
+          await this.sleep(750, signal);
+          snapshot = await this.visitSnapshot(url, signal);
+          if (snapshot.challenge !== "passive") {
+            this.emit({
+              analysisId,
+              phase: "verification",
+              completed: 0,
+              total: 0,
+              message: "TimoTXT đã qua xác minh; đang tiếp tục đọc nguồn…",
+            });
+          }
+        }
+      }
+      if (snapshot.challenge === "passive") {
         // Close only a Playwright-controlled context. A paired default-browser
         // companion stays alive so the user can finish a visible check without
         // losing the ordinary tab/profile.
-        if (!companionReady && parsed.site !== "novel543") await this.releasePageClient();
+        if (!companionReady && parsed.site !== "novel543" && parsed.site !== "timotxt") await this.releasePageClient();
         throw new StorySourceError(
           "SOURCE_BLOCKED",
           parsed.site === "huliwang" && companionReady
@@ -600,6 +629,10 @@ export class StorySourceService implements StorySourceServiceApi {
               ? "Cloudflare chưa hoàn tất kiểm tra trong trình duyệt mặc định. Hãy giữ tab Novel543 mở, chờ trang hiện nội dung rồi bấm Phân tích lại."
             : parsed.site === "xszj"
               ? "XSZJ/爱下电子书 vẫn đang xác minh thụ động. Tool đã giữ nguyên trang, chờ ngắn rồi mới dừng; hãy chờ trang hiện nội dung rồi bấm Phân tích lại."
+              : parsed.site === "timotxt" && companionReady
+              ? "TimoTXT chưa hoàn tất xác minh thụ động. Hãy giữ nguyên tab Browser Helper, chờ trang hiện nội dung rồi bấm Tải lại chương."
+              : parsed.site === "timotxt"
+              ? "TimoTXT chưa hoàn tất xác minh thụ động. Tool đã thử mở lại phiên đọc nguồn sạch nhưng website vẫn giữ trang xác minh; hãy chờ trang hiện nội dung rồi bấm lại thao tác."
               : parsed.site === "czbooks"
                 ? "CZBooks chưa hoàn tất xác minh thụ động. Tool đã giữ nguyên trang trong thời gian chờ và không nhận trang Cloudflare làm nội dung truyện."
               : parsed.site === "novel543"
@@ -608,8 +641,8 @@ export class StorySourceService implements StorySourceServiceApi {
         );
       }
     }
-    if ((parsed.site === "czbooks" || parsed.site === "novel543") && snapshot.challenge === "interactive") {
-      const sourceName = parsed.site === "novel543" ? "Novel543" : "CZBooks";
+    if ((parsed.site === "timotxt" || parsed.site === "czbooks" || parsed.site === "novel543") && snapshot.challenge === "interactive") {
+      const sourceName = parsed.site === "timotxt" ? "TimoTXT" : parsed.site === "novel543" ? "Novel543" : "CZBooks";
       this.emit({
         analysisId,
         phase: "verification",
@@ -654,6 +687,8 @@ export class StorySourceService implements StorySourceServiceApi {
             ? "Cloudflare yêu cầu thao tác trong tab Novel543 của trình duyệt mặc định. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất bằng tay rồi bấm Phân tích lại."
           : parsed.site === "xszj"
           ? "XSZJ/爱下电子书 yêu cầu xác minh thủ công. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất trong trình duyệt rồi bấm Phân tích lại."
+          : parsed.site === "timotxt"
+            ? "TimoTXT yêu cầu xác minh thủ công. Tool giữ nguyên cửa sổ đọc nguồn; hãy hoàn tất xác minh rồi bấm lại thao tác."
           : "Cloudflare không chấp nhận và tool đã đóng phiên đọc tự động; tool không bấm CAPTCHA/Turnstile. Hãy bấm Kết nối trình duyệt mặc định để Huliwang được mở bằng đúng trình duyệt và hồ sơ bạn thường dùng.";
       if (!companionReady) await this.releasePageClient();
       this.emit({ analysisId, phase: "verification", completed: 0, total: 0, message });

@@ -11,6 +11,9 @@ importers:
       '@google/genai':
         specifier: 2.16.0
         version: 2.16.0(supports-color@7.2.0)
+      chinese-conv:
+        specifier: ^4.0.0
+        version: 4.0.0
       playwright-core:
         specifier: 1.62.1
         version: 1.62.1
@@ -1242,6 +1245,10 @@ packages:
   chalk@4.1.2:
     resolution: {integrity: sha512-oKnbhFyRIXpUuez8iBMmyEa4nbj4IOQyuhc/wy9kY7/WVPcwIO9VA668Pu8RkO7+0G76SLROeyw9CpQ061i4mA==}
     engines: {node: '>=10'}
+
+  chinese-conv@4.0.0:
+    resolution: {integrity: sha512-PVBMzvv6CtX1cubaDXfxYscIdbOAHPuY/E2vnfJIzOACX+xIW4NRKRlNsZVI2p5KxGsXyUp7tVHfvQlqZ4yx/w==}
+    engines: {node: ^20.19.0 || >=22.12.0}
 
   chownr@3.0.0:
     resolution: {integrity: sha512-+IxzY9BZOQd/XuYPRmrvEVjF/nqj5kgT4kEq7VofrDoM1MxoRjEWkrCC3EtLi59TVawxTAn+orJwFQcrqEN1+g==}
@@ -3568,6 +3575,8 @@ snapshots:
       ansi-styles: 4.3.0
       supports-color: 7.2.0
 
+  chinese-conv@4.0.0: {}
+
   chownr@3.0.0: {}
 
   chromium-pickle-js@0.2.0: {}
@@ -4024,7 +4033,7 @@ snapshots:
       es6-error: 4.1.1
       matcher: 3.0.0
       roarr: 2.15.4
-      semver: 7.7.4
+      semver: 7.8.5
       serialize-error: 7.0.1
     optional: true
 
@@ -4326,11 +4335,11 @@ snapshots:
 
   node-abi@4.33.0:
     dependencies:
-      semver: 7.7.4
+      semver: 7.8.5
 
   node-api-version@0.2.1:
     dependencies:
-      semver: 7.7.4
+      semver: 7.8.5
 
   node-domexception@1.0.0: {}
 
@@ -4347,7 +4356,7 @@ snapshots:
       graceful-fs: 4.2.11
       nopt: 9.0.0
       proc-log: 6.1.0
-      semver: 7.7.4
+      semver: 7.8.5
       tar: 7.5.22
       tinyglobby: 0.2.17
       undici: 6.28.0

@@ -52,6 +52,8 @@ export interface ExportCombinedSourceChapterFileRequest {
   exportJobId?: string;
   sourceStartChapter: number;
   sourceEndChapter: number;
+  /** Exact original chapter numbers; unlike the display range this may contain gaps. */
+  sourceChapterNumbers?: number[];
   outputStartChapter: number;
   outputEndChapter: number;
   /** Final visible range after long translated chapters have been split.
@@ -112,8 +114,10 @@ export function combinedSourceChapterFileName(
   sourceEndChapter: number,
   outputStartChapter: number,
   outputEndChapter: number,
+  sourceChapterNumbers?: readonly number[],
 ): string {
-  return `File tổng c.gốc (${sourceStartChapter}-${sourceEndChapter})_c.mới (${outputStartChapter}-${outputEndChapter}).txt`;
+  const missing = sourceChapterNumbers ? missingSourceChapterRanges(sourceStartChapter, sourceEndChapter, sourceChapterNumbers) : '';
+  return `File tổng c.gốc (${sourceStartChapter}-${sourceEndChapter}${missing})_c.mới (${outputStartChapter}-${outputEndChapter}).txt`;
 }
 
 function chapterDocument(chapter: FinalChapterExportInput): string {
@@ -195,7 +199,7 @@ function validateCombinedRange(
   return { startChapter, endChapter };
 }
 
-function validateContiguousSourceChapters(
+function validateSourceChapterNumbers(
   sourceChapterNumbers: unknown,
 ): number[] {
   if (!Array.isArray(sourceChapterNumbers) || sourceChapterNumbers.length < 1 || sourceChapterNumbers.length > MAX_CHAPTERS) {
@@ -203,15 +207,44 @@ function validateContiguousSourceChapters(
   }
   const start = sourceChapterNumbers[0];
   if (!Number.isSafeInteger(start) || start < 1 || start > MAX_CHAPTER_INDEX) {
-    throw new RangeError('Chỉ có thể tạo file tổng hợp cho dãy chương nguồn liên tục.');
+    throw new RangeError('Danh sách chương nguồn của file tổng hợp không hợp lệ.');
   }
   return sourceChapterNumbers.map((candidate, offset) => {
-    const expected = start + offset;
-    if (!Number.isSafeInteger(candidate) || candidate < 1 || candidate > MAX_CHAPTER_INDEX || candidate !== expected) {
-      throw new RangeError('Chỉ có thể tạo file tổng hợp cho dãy chương nguồn liên tục.');
+    if (!Number.isSafeInteger(candidate)
+      || candidate < 1
+      || candidate > MAX_CHAPTER_INDEX
+      || (offset > 0 && candidate <= sourceChapterNumbers[offset - 1])) {
+      throw new RangeError('Danh sách chương nguồn của file tổng hợp phải tăng dần và không trùng nhau.');
     }
     return candidate;
   });
+}
+
+function missingSourceChapterRanges(
+  sourceStartChapter: number,
+  sourceEndChapter: number,
+  sourceChapterNumbers: readonly number[],
+): string {
+  const selected = new Set(sourceChapterNumbers);
+  const ranges: string[] = [];
+  let rangeStart: number | undefined;
+  let previous: number | undefined;
+  for (let chapter = sourceStartChapter; chapter <= sourceEndChapter; chapter += 1) {
+    if (selected.has(chapter)) {
+      if (rangeStart !== undefined && previous !== undefined) {
+        ranges.push(rangeStart === previous ? String(rangeStart) : `${rangeStart}-${previous}`);
+      }
+      rangeStart = undefined;
+      previous = chapter;
+      continue;
+    }
+    if (rangeStart === undefined) rangeStart = chapter;
+    previous = chapter;
+  }
+  if (rangeStart !== undefined && previous !== undefined) {
+    ranges.push(rangeStart === previous ? String(rangeStart) : `${rangeStart}-${previous}`);
+  }
+  return ranges.length ? `, thiếu ${ranges.join(',')}` : '';
 }
 
 async function validateDirectory(directory: unknown): Promise<string> {
@@ -493,7 +526,7 @@ export async function exportCombinedChapterFile(
   // The filename range is the visible output sequence. It may have more
   // entries than the website source range when one source chapter is split
   // into several TXT files, so validate provenance independently.
-  validateContiguousSourceChapters(
+  validateSourceChapterNumbers(
     request.sourceChapterNumbers ?? Array.from({ length: endChapter - startChapter + 1 }, (_, index) => startChapter + index),
   );
   validateChapterList(request.chapters);
@@ -542,6 +575,14 @@ export async function exportCombinedSourceChapterFile(
   }
   const exportJobId = validateExportJobId(request.exportJobId);
   const sourceRange = validateCombinedRange(request.sourceStartChapter, request.sourceEndChapter);
+  const sourceChapterNumbers = validateSourceChapterNumbers(
+    request.sourceChapterNumbers
+      ?? Array.from({ length: sourceRange.endChapter - sourceRange.startChapter + 1 }, (_, index) => sourceRange.startChapter + index),
+  );
+  if (sourceChapterNumbers[0] !== sourceRange.startChapter
+    || sourceChapterNumbers.at(-1) !== sourceRange.endChapter) {
+    throw new RangeError('Danh sách chương nguồn không khớp dải chương gốc đã chọn.');
+  }
   const outputRange = validateCombinedRange(request.outputStartChapter, request.outputEndChapter);
   if ((request.splitOutputStartChapter === undefined) !== (request.splitOutputEndChapter === undefined)) {
     throw new RangeError('Dải chương mới sau chia phải có đủ số đầu và số cuối.');
@@ -556,7 +597,7 @@ export async function exportCombinedSourceChapterFile(
     throw new RangeError('Dải chương mới sau chia không bao phủ đầy đủ các chương gốc.');
   }
   validateChapterList(request.chapters);
-  const expectedChapterCount = sourceRange.endChapter - sourceRange.startChapter + 1;
+  const expectedChapterCount = sourceChapterNumbers.length;
   if (
     request.chapters.length !== expectedChapterCount
     || outputRange.endChapter - outputRange.startChapter + 1 !== expectedChapterCount
@@ -569,7 +610,7 @@ export async function exportCombinedSourceChapterFile(
     }
     if (
       chapter.sourceChapterNumber !== undefined
-      && chapter.sourceChapterNumber !== sourceRange.startChapter + offset
+      && chapter.sourceChapterNumber !== sourceChapterNumbers[offset]
     ) {
       throw new RangeError('Số chương gốc trong file tổng chương gốc không liên tục.');
     }
@@ -581,6 +622,7 @@ export async function exportCombinedSourceChapterFile(
     sourceRange.endChapter,
     splitOutputRange.startChapter,
     splitOutputRange.endChapter,
+    sourceChapterNumbers,
   );
   const content = request.chapters.map(chapterDocument).join('\r\n\r\n---\r\n\r\n');
   if (Buffer.byteLength(content, 'utf8') > MAX_TOTAL_BYTES) {

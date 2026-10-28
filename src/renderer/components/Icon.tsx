@@ -14,6 +14,7 @@ export type IconName =
   | 'play'
   | 'refresh'
   | 'save'
+  | 'search'
   | 'sparkles'
   | 'split'
   | 'stop'
@@ -40,6 +41,7 @@ const paths: Record<IconName, ReactNode> = {
   play: <path d="m7 4 13 8-13 8Z" />,
   refresh: <><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5" /><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5" /></>,
   save: <><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" /><path d="M17 21v-8H7v8M7 3v5h8" /></>,
+  search: <><circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" /></>,
   sparkles: <><path d="m12 3-1.3 3.7L7 8l3.7 1.3L12 13l1.3-3.7L17 8l-3.7-1.3Z" /><path d="m19 14-.8 2.2L16 17l2.2.8L19 20l.8-2.2L22 17l-2.2-.8ZM5 3l.7 1.8L7.5 5.5l-1.8.7L5 8l-.7-1.8-1.8-.7 1.8-.7Z" /></>,
   split: <><path d="M4 4v6a2 2 0 0 0 2 2h12" /><path d="m14 8 4 4-4 4" /><path d="M4 20v-2a6 6 0 0 1 6-6" /></>,
   stop: <rect width="14" height="14" x="5" y="5" rx="2" />,

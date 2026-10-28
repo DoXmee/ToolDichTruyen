@@ -12,16 +12,25 @@ const INLINE_NOISE = [
 ];
 
 const INVISIBLE_CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu;
-const XBANXIA_TERMINAL_AUTHOR_NOTE = /(?:^|\n)\s*(?:作者有[話话](?:要)?[說说]|p\.?\s*s\.?)\s*(?:[：:]\s*)?[^\n]*/iu;
+const XBANXIA_TERMINAL_AUTHOR_NOTE = /(?:^|\n)\s*(?:作者有[話话](?:要)?[說说]|p\.?\s*s\.?)\s*(?:[：:︰]\s*)?[^\n]*/iu;
 
-// These labels belong to Xbanxia's reader chrome. They are deliberately
-// line-anchored: prose that merely mentions a similar phrase stays untouched.
-const XBANXIA_EDGE_NOISE = /^(?:半夏小說\s*[，,]\s*快樂很多|每日推[薦荐](?:\s*[：:].*)?|錯誤提交|错误提交|問題類型|问题类型|章節錯誤|章节错误|閱讀全文|阅读全文|上一章(?:\s*[：:].*)?|下一章(?:\s*[：:].*)?|返回目錄|返回目录|加入書籤|加入书签)\s*$/iu;
+// These labels belong to Xbanxia's reader chrome and watermark ads.
+const XBANXIA_EDGE_NOISE = /^(?:半夏小說.*|每日推[薦荐](?:\s*[:：︰].*)?|錯誤提交|错误提交|問題類型|问题类型|章節錯誤|章节错误|閱讀全文|阅读全文|上一[章頁页](?:\s*[:：︰].*)?|下一[章頁页](?:\s*[:：︰].*)?|返回[目章]?[錄录]|回[目章]?[錄录]|加入書[籤签]|加入书[籤签]|如有[惡恶]意[廣广]告.*|[請请][將将]截[屏圖图].*|\[email\s*protected\]|[\w.+-]+@[\w-]+\.[\w.]+)\s*$/iu;
+
+const XBANXIA_TERMINAL_WATERMARK = /(?:^|\n)\s*(?:半夏小說\s*[，,]\s*快樂很多|如有[惡恶]意[廣广]告|[請请][將将]截[屏圖图])[\s\S]*$/iu;
 
 function trimXbanxiaEdgeNoise(text: string): string {
   const lines = text.split('\n');
-  while (lines[0] && XBANXIA_EDGE_NOISE.test(lines[0].trim())) lines.shift();
-  while (lines.at(-1) && XBANXIA_EDGE_NOISE.test(lines.at(-1)!.trim())) lines.pop();
+  while (lines.length > 0 && lines[0] && XBANXIA_EDGE_NOISE.test(lines[0].trim())) {
+    lines.shift();
+  }
+  while (lines.length > 0 && lines.at(-1) && (
+    !lines.at(-1)!.trim() ||
+    XBANXIA_EDGE_NOISE.test(lines.at(-1)!.trim()) ||
+    /^(?:上一[章頁页]|下一[章頁页]|返回|目錄|目录|書籤|书签|半夏小說).*$/iu.test(lines.at(-1)!.trim())
+  )) {
+    lines.pop();
+  }
   return lines.join('\n').trim();
 }
 
@@ -78,7 +87,12 @@ export function removeRepeatedHeading(text: string, title: string): string {
  * an occurrence inside the actual narrative is preserved.
  */
 export function cleanXbanxiaStoryText(raw: string, expectedChapterNumber?: number): string {
-  let text = trimXbanxiaEdgeNoise(normalizeText(raw));
+  let text = normalizeText(raw);
+  const watermark = XBANXIA_TERMINAL_WATERMARK.exec(text);
+  if (watermark?.index !== undefined && watermark.index >= Math.floor(text.length / 2)) {
+    text = text.slice(0, watermark.index).trim();
+  }
+  text = trimXbanxiaEdgeNoise(text);
   const authorNote = XBANXIA_TERMINAL_AUTHOR_NOTE.exec(text);
   if (authorNote?.index !== undefined && authorNote.index >= Math.floor(text.length / 2)) {
     text = text.slice(0, authorNote.index).trim();
@@ -99,9 +113,10 @@ export function cleanXbanxiaStoryText(raw: string, expectedChapterNumber?: numbe
 export function cleanXbanxiaChapterTitle(raw: string, expectedChapterNumber: number): string | undefined {
   const parsed = parseChapterLabel(normalizeText(raw));
   if (parsed.number !== expectedChapterNumber) return undefined;
-  const title = parsed.title
+  let title = parsed.title
     .replace(/^\s*[「『《][^」』》]*cx\d+[^」』》]*[」』》]\s*/iu, "")
     .trim();
+  title = title.replace(/^\s*第\s*\d+\s*章?\s*/iu, "").trim();
   if (!title || title === parsed.numberLabel || /\?{5,}|cx\d+/iu.test(title) || INVISIBLE_CONTROL_CHARACTERS.test(title)) {
     INVISIBLE_CONTROL_CHARACTERS.lastIndex = 0;
     return undefined;
@@ -114,22 +129,25 @@ export function cleanXbanxiaChapterTitle(raw: string, expectedChapterNumber: num
  * checkpoint. Narrative text and paragraph order are otherwise untouched. */
 export function repairLegacyXbanxiaCheckpointSegment(raw: string): string {
   const normalized = raw.normalize("NFC").replace(/\r\n?/gu, "\n").trim();
-  const heading = /^(?:Chương)\s+(\d+)(?:\s*:\s*([^\n]*))?\n+/iu.exec(normalized);
+  const heading = /^(?:Chương)[ \t]+(\d+)(?:[ \t]*:[ \t]*([^\r\n]*))?(?:\r?\n)+/iu.exec(normalized);
   if (!heading?.[1]) return cleanXbanxiaStoryText(normalized);
 
   const chapterNumber = Number.parseInt(heading[1], 10);
   const body = normalized.slice(heading[0].length);
-  const originalTitle = cleanXbanxiaChapterTitle(`第${chapterNumber}章 ${heading[2] ?? ""}`, chapterNumber);
+  const rawHeadingTitle = heading[2]?.trim();
+  const originalTitle = rawHeadingTitle
+    ? cleanXbanxiaChapterTitle(`第${chapterNumber}章 ${rawHeadingTitle}`, chapterNumber)
+    : undefined;
   const embeddedTitle = body.split("\n").slice(0, 3)
     .map((line) => cleanXbanxiaChapterTitle(line, chapterNumber))
     .find((title): title is string => Boolean(title));
   const title = originalTitle ?? embeddedTitle;
-  if (!title) throw new Error(`Không thể khôi phục tiêu đề sạch cho chương Xbanxia ${chapterNumber}.`);
 
   const cleanedBody = cleanXbanxiaStoryText(body, chapterNumber);
   assertCleanXbanxiaStoryText(cleanedBody);
   assertPlausibleStoryText(cleanedBody, `Xbanxia chương ${chapterNumber}`);
-  return `Chương ${chapterNumber}: ${title}\n\n${cleanedBody}`;
+  const formattedHeading = title ? `Chương ${chapterNumber}: ${title}` : `Chương ${chapterNumber}`;
+  return `${formattedHeading}\n\n${cleanedBody}`;
 }
 
 /** Removes only an explicit terminal Ixdzs author/new-book note. */

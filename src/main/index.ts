@@ -140,6 +140,7 @@ async function bootstrap(): Promise<void> {
     mainWindow = undefined;
   });
   void restoreJobs.catch(() => undefined);
+  void chatGpt?.autoCleanup().catch(() => undefined);
 }
 
 async function shutdown(): Promise<void> {

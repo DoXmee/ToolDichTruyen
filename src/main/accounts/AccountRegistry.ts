@@ -113,7 +113,7 @@ export class AccountRegistry {
   private readonly filePath: string;
   private writeQueue: Promise<void> = Promise.resolve();
 
-  public constructor(private readonly dataDirectory: string) {
+  public constructor(public readonly dataDirectory: string) {
     this.filePath = path.join(dataDirectory, "accounts.json");
   }
 
@@ -272,6 +272,61 @@ export class AccountRegistry {
         removed.push(target);
         freedBytes += size;
       }
+    }
+    return { removed, freedBytes };
+  }
+
+  /**
+   * Deletes obsolete backup folders (e.g. *.backup-*, checkpoint-backups, repair-backups, test-profile)
+   * and obsolete pre-migration drafts to reclaim disk space.
+   * If maxAgeDays is specified, deletes entries older than that age. If 0 or omitted, cleans all obsolete entries.
+   */
+  public async cleanupObsoleteBackups(
+    options: { maxAgeDays?: number } = {},
+  ): Promise<{ removed: string[]; freedBytes: number }> {
+    const maxAgeDays = options.maxAgeDays ?? 0;
+    const now = Date.now();
+    const cutoff = maxAgeDays > 0 ? now - maxAgeDays * 24 * 60 * 60 * 1000 : Infinity;
+    const removed: string[] = [];
+    let freedBytes = 0;
+    let entries: string[] = [];
+    try {
+      const { readdir } = await import("node:fs/promises");
+      entries = await readdir(this.dataDirectory);
+    } catch {
+      return { removed, freedBytes };
+    }
+
+    for (const entry of entries) {
+      const isObsoleteDir =
+        /^.*\.backup-.*$/iu.test(entry) ||
+        /^story-source.*backup.*$/iu.test(entry) ||
+        /^test-profile.*$/iu.test(entry) ||
+        entry === "checkpoint-backups" ||
+        entry === "repair-backups";
+      const isObsoleteFile = /^draft\.json\.pre-.*$/iu.test(entry);
+
+      if (!isObsoleteDir && !isObsoleteFile) continue;
+
+      const candidate = path.join(this.dataDirectory, entry);
+      try {
+        const stats = await stat(candidate);
+        if (stats.isDirectory() && isObsoleteDir) {
+          if (cutoff === Infinity || stats.mtimeMs < cutoff) {
+            const size = await directorySize(candidate);
+            await rm(candidate, { recursive: true, force: true }).catch(() => undefined);
+            removed.push(candidate);
+            freedBytes += size;
+          }
+        } else if (stats.isFile() && isObsoleteFile) {
+          if (cutoff === Infinity || stats.mtimeMs < cutoff) {
+            const size = stats.size;
+            await rm(candidate, { force: true }).catch(() => undefined);
+            removed.push(candidate);
+            freedBytes += size;
+          }
+        }
+      } catch {}
     }
     return { removed, freedBytes };
   }

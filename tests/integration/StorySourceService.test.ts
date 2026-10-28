@@ -685,7 +685,7 @@ describe("StorySourceService integration", () => {
       minRequestIntervalMs: 0,
       verificationWaitMs: 0,
     });
-    await expect(source.openManualVerification("https://www.timotxt.com/1509589610/13.html"))
+    await expect(source.openManualVerification("https://www.qingrenyouxi.com/book/114551/33074751.html"))
       .rejects.toMatchObject({ code: "UNSUPPORTED_URL" });
     expect(launcher).not.toHaveBeenCalled();
 
@@ -875,6 +875,68 @@ describe("StorySourceService integration", () => {
         code: "USER_ACTION_REQUIRED",
         message: expect.stringMatching(/đã đóng phiên đọc tự động[\s\S]*không bấm CAPTCHA\/Turnstile/iu),
       });
+  });
+
+  it("requires the normal-browser companion for TimoTXT instead of opening an owned source browser", async () => {
+    const catalogUrl = "https://www.timotxt.com/1509589610/dir";
+    const pageClientFactory = vi.fn(async () => new FakeClient(new Map()));
+    const source = new StorySourceService({
+      pageClientFactory,
+      minRequestIntervalMs: 0,
+    });
+
+    await expect(source.analyzeUrl(catalogUrl)).rejects.toMatchObject({
+      code: "USER_ACTION_REQUIRED",
+      message: expect.stringMatching(/TimoTXT[\s\S]*trình duyệt mặc định/iu),
+    });
+    expect(pageClientFactory).not.toHaveBeenCalled();
+  });
+
+  it("does not reload a paired TimoTXT tab when a selected chapter is still under passive verification", async () => {
+    const bookUrl = "https://www.timotxt.com/1509589610/";
+    const catalogUrl = "https://www.timotxt.com/1509589610/dir";
+    const chapterUrl = "https://www.timotxt.com/1509589610/1.html";
+    const catalog = page(catalogUrl, {
+      title: "村女吳秀麗",
+      elements: { h1: ["村女吳秀麗"], ".all": ["第1章 夜晚，槐樹下"] },
+      links: [link(chapterUrl, "第1章 夜晚，槐樹下", [".all"])],
+    });
+    const passive = page(chapterUrl, {
+      title: "Just a moment...",
+      bodyText: "Performing security verification",
+      challenge: "passive",
+    });
+    const companionClient = new FakeClient(new Map<string, StoryPageSnapshot | StoryPageSnapshot[]>([
+      [catalogUrl, catalog],
+      [chapterUrl, [passive, passive]],
+    ]));
+    const session = {
+      bridgeOrigin: "http://127.0.0.1:45678",
+      pairingUrl: "http://127.0.0.1:45678/v1/pair#tdt-pair=test-payload",
+      client: companionClient,
+      waitUntilPaired: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const source = new StorySourceService({
+      huliwangCompanionFactory: vi.fn(async () => session),
+      manualVerificationLauncher: vi.fn(async () => undefined),
+      minRequestIntervalMs: 0,
+      verificationWaitMs: 0,
+      manualVerificationWaitMs: 0,
+    });
+
+    await source.openManualVerification(bookUrl);
+    const analysis = await source.analyzeUrl(bookUrl);
+    await expect(source.fetchChapters({
+      analysisId: analysis.analysisId,
+      chapterIds: analysis.defaultSelectedChapterIds,
+    })).rejects.toMatchObject({
+      code: "SOURCE_BLOCKED",
+      message: expect.stringContaining("giữ nguyên tab Browser Helper"),
+    });
+    expect(companionClient.visits).toEqual([catalogUrl, chapterUrl]);
+    expect(companionClient.inspections).toEqual([]);
+    await source.close();
   });
 
   it("keeps the same visible CZBooks page alive and resumes after the user completes verification", async () => {

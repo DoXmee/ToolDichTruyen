@@ -43,6 +43,13 @@ export function normalizePromptMode(value: unknown): SupportedPromptMode {
   throw new TypeError(`Không hỗ trợ chế độ prompt: ${value}`);
 }
 
+export const DEFAULT_UNIVERSAL_PROMPT = `Bạn là một dịch giả văn học chuyên nghiệp, am hiểu sâu sắc tiếng Trung và tiếng Việt.
+Nhiệm vụ của bạn là dịch tác phẩm từ tiếng Trung sang tiếng Việt một cách mượt mà, lưu loát, tự nhiên và chuẩn xác nhất:
+1. VĂN PHONG THUẦN VIỆT: Dịch thoát nghĩa, câu từ tự nhiên, đúng ngữ pháp tiếng Việt, tuyệt đối không dịch thô ráp kiểu convert.
+2. TÔN TRỌNG NGUYÊN TÁC: Giữ đúng giọng văn, sắc thái cảm xúc, tâm lý nhân vật và bối cảnh câu chuyện của tác giả.
+3. KHÔNG SÓT CHỮ HÁN: Toàn bộ bản dịch phải là tiếng Việt hoàn chỉnh, không để sót bất kỳ chữ Hán nào.
+4. ĐỒNG BỘ TÊN RIÊNG VÀ XƯNG HÔ: Giữ nhất quán cách xưng hô và danh xưng của các nhân vật xuyên suốt tác phẩm. Tên người ngoại quốc (phương Tây, Liên Xô/Nga...) bắt buộc dùng chữ cái Latinh quốc tế chuẩn duy nhất, tuyệt đối không dùng âm Hán Việt thô và quy các biến thể thân mật về một tên duy nhất.`;
+
 export class PromptLoader {
   private readonly roots: readonly string[];
 
@@ -63,13 +70,13 @@ export class PromptLoader {
   public async resolve(modeValue: unknown, customPrompt?: unknown): Promise<string> {
     const mode = normalizePromptMode(modeValue);
     if (mode === "custom") {
-      if (typeof customPrompt !== "string" || customPrompt.trim().length === 0) {
-        throw new TypeError("Vui lòng nhập prompt tùy chỉnh.");
+      if (typeof customPrompt === "string" && customPrompt.trim().length > 0) {
+        if (customPrompt.length > 100_000) {
+          throw new RangeError("Prompt tùy chỉnh quá dài (tối đa 100.000 ký tự).");
+        }
+        return stripBom(customPrompt);
       }
-      if (customPrompt.length > 100_000) {
-        throw new RangeError("Prompt tùy chỉnh quá dài (tối đa 100.000 ký tự).");
-      }
-      return stripBom(customPrompt);
+      return DEFAULT_UNIVERSAL_PROMPT;
     }
     return this.loadBuiltIn(mode);
   }

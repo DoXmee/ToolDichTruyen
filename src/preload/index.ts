@@ -147,6 +147,9 @@ export interface StoryToolApi {
   renameAccount(id: string, label: string): Promise<AccountsSnapshot>;
   syncCurrentAccount(): Promise<AccountsSnapshot & { account?: StoryAccountSummary }>;
   cleanupJunk(): Promise<{ freedBytes: number; removed: number }>;
+  getStoryMemory(request?: { directory?: string; jobId?: string }): Promise<any>;
+  saveStoryMemory(request: { directory?: string; jobId?: string; memory: any }): Promise<any>;
+  clearStoryMemory(request?: { directory?: string; jobId?: string }): Promise<void>;
 }
 
 function subscribe<T>(channel: string, callback: (payload: T) => void): () => void {
@@ -294,6 +297,12 @@ const storyTool: StoryToolApi = Object.freeze({
     ipcRenderer.invoke(IPC_CHANNELS.accountsCleanup) as Promise<
       { freedBytes: number; removed: number }
     >,
+  getStoryMemory: (request?: { directory?: string; jobId?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.storyMemoryGet, request),
+  saveStoryMemory: (request: { directory?: string; jobId?: string; memory: any }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.storyMemorySave, request),
+  clearStoryMemory: (request?: { directory?: string; jobId?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.storyMemoryClear, request) as Promise<void>,
 });
 
 contextBridge.exposeInMainWorld("storyTool", storyTool);

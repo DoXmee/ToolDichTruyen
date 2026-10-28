@@ -1,4 +1,4 @@
-import { readdir, stat } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 import type { SafeStorage } from "electron";
@@ -176,6 +176,22 @@ export class PersistenceService {
     const safeId = safeJobId(id);
     await this.jobStore(safeId).remove();
     this.jobStores.delete(safeId);
+
+    const backupDirs = [
+      path.join(this.dataDirectory, "checkpoint-backups"),
+      path.join(this.dataDirectory, "repair-backups"),
+    ];
+    for (const dir of backupDirs) {
+      try {
+        const entries = await readdir(dir);
+        for (const entry of entries) {
+          if (entry.includes(safeId)) {
+            const target = path.join(dir, entry);
+            await rm(target, { recursive: true, force: true }).catch(() => undefined);
+          }
+        }
+      } catch {}
+    }
   }
 
   public async getGeminiConfiguration(): Promise<{ hasApiKey: boolean; model: string }> {

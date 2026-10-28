@@ -76,11 +76,26 @@ function commonEnvelope(input: TranslationPromptInput): string {
 
 export function buildTranslationPrompt(input: TranslationPromptInput): string {
   const basePrompt = requireText(input.basePrompt, 'basePrompt');
-  return `${basePrompt}\n\n---\nYÊU CẦU CHO ĐOẠN HIỆN TẠI:\n- Dịch đầy đủ toàn bộ phần nằm trong thẻ NGUYEN_BAN sang tiếng Việt.\n- Giữ nhất quán tên riêng, thuật ngữ và cách xưng hô với các đoạn trước.\n- Không để lại chữ Hán, không thêm lời dẫn, giải thích, ghi chú hay thẻ đánh dấu.\n- Chỉ trả về bản dịch hoàn chỉnh của đoạn này.\n\n${commonEnvelope(input)}`;
+  return `${basePrompt}\n\n---\nYÊU CẦU CHO ĐOẠN HIỆN TẠI:
+- Dịch đầy đủ toàn bộ phần nằm trong thẻ NGUYEN_BAN sang tiếng Việt, không để lại chữ Hán.
+- BẢO TOÀN TIÊU ĐỀ CHƯƠNG: Nếu trong NGUYEN_BAN có tiêu đề chương (ví dụ 'Chương 108: ...'), bản dịch BẮT BUỘC dịch đúng số chương đó, tuyệt đối không lặp lại số chương của đoạn trước.
+- ÁP DỤNG XƯNG HÔ THUẦN VIỆT: Đảo danh xưng lên trước họ tên (ông/bà/chú/bác/thím/anh/chị), tuyệt đối không dịch âm Hán Việt thô cứng (tẩu, thẩm, thúc, nãi nãi, ca). Giữ đồng nhất cách gọi của từng nhân vật từ đầu đến cuối bản dịch.
+- QUY ƯỚC TÊN NGOẠI QUỐC: Tên người ngoại quốc (phương Tây, Liên Xô/Nga...) BẮT BUỘC dùng chữ cái Latinh quốc tế chuẩn duy nhất (ví dụ: Jelina, Aina, Karijia, Edlian, John), TUYỆT ĐỐI CẤM dùng âm Hán Việt thô (Ái Na, Ca Lệ Giai, Giê-lin-ca, Na Mâu Nhĩ, E-đơ-lin). Mọi tên gọi thân mật kết thúc bằng đuôi -ka (như 耶莲卡 / 耶莲娜) BẮT BUỘC quy về MỘT tên Latinh duy nhất (Jelina).
+- Không thêm lời dẫn, giải thích hay ghi chú.
+- Chỉ trả về bản dịch hoàn chỉnh bên trong thẻ <BAN_DICH id="${safeSegmentId(input)}">...</BAN_DICH>. Bản dịch phải kết thúc sạch sẽ, tuyệt đối không chèn dấu "[" hay mã JSON vào cuối bài dịch.
+- BẮT BUỘC TRÍCH XUẤT TẤT CẢ TÊN RIÊNG, TÊN RÚT GỌN VÀ BIỆT DANH CHƯA KHÓA: Mọi tên riêng người thật (bao gồm cả tên gọi rút gọn bỏ họ như 秀麗 -> Tú Lệ, biệt danh cố định như 剛子 -> Cương Tử dù nhân vật đã từng xuất hiện), địa danh, hoặc trường học, cơ quan, đoàn thể, xí nghiệp, bệnh viện trong đoạn nguồn mà chưa có trong ngoặc ⟦ ⟧, dù chỉ xuất hiện 1 lần, BẮT BUỘC phải xuất vào thẻ <THUC_THE_MOI>[{"category": "character"|"location"|"organization", "zh": "tên Hán", "vi": "Tên Latinh (người ngoại quốc) hoặc Hán-Việt (người TQ)", "aliases": ["tên biến thể/thân mật Hán tự nếu có"], "gender": "Nam/Nữ/Chưa rõ", "role": "vai vế nếu có, chưa rõ thì ghi null", "notes": "mô tả nếu có, chưa rõ thì ghi null"}]</THUC_THE_MOI>. Không được vì chưa rõ thân phận mà bỏ qua tên riêng. Nếu không có tên mới nào thì trả về <THUC_THE_MOI>[]</THUC_THE_MOI>.\n\n${commonEnvelope(input)}`;
 }
 
 export function buildContinuationTranslationPrompt(input: TranslationPromptInput): string {
-  return `TIẾP TỤC TRONG CÙNG TÁC VỤ DỊCH:\n- Áp dụng toàn bộ quy tắc đã thống nhất ở đầu chat; giữ nguyên hệ thống tên riêng, thuật ngữ, cách xưng hô và giọng văn từ các đoạn trước.\n- Dịch đầy đủ phần trong thẻ NGUYEN_BAN, không để lại chữ Hán.\n- Không thêm lời dẫn, giải thích, ghi chú hay thẻ đánh dấu.\n- Chỉ trả về bản dịch hoàn chỉnh của đoạn hiện tại.\n\n${commonEnvelope(input)}`;
+  return `TIẾP TỤC TRONG CÙNG TÁC VỤ DỊCH:
+- Áp dụng toàn bộ quy tắc đã thống nhất ở đầu chat; giữ nguyên hệ thống tên riêng, thuật ngữ, cách xưng hô và giọng văn từ các đoạn trước.
+- BẢO TOÀN TIÊU ĐỀ CHƯƠNG: Dịch đúng số tiêu đề chương có trong thẻ NGUYEN_BAN, tuyệt đối không lặp lại số chương của đoạn trước.
+- XƯNG HÔ THUẦN VIỆT ĐỒNG NHẤT: Đảo danh xưng lên trước họ tên (ông/bà/chú/bác/thím/anh/chị), tránh âm Hán Việt thô (tẩu, thẩm, thúc, nãi nãi, ca).
+- QUY ƯỚC TÊN NGOẠI QUỐC: Tên người ngoại quốc (phương Tây, Nga...) BẮT BUỘC dùng chữ cái Latinh quốc tế chuẩn duy nhất (ví dụ: Jelina, Aina, Karijia, Edlian, John), TUYỆT ĐỐI CẤM dùng âm Hán Việt thô và quy các biến thể thân mật (-ka) về một tên Latinh duy nhất.
+- Dịch đầy đủ phần trong thẻ NGUYEN_BAN, không để lại chữ Hán.
+- Không thêm lời dẫn, giải thích hay ghi chú.
+- Chỉ trả về bản dịch hoàn chỉnh của đoạn hiện tại bên trong thẻ <BAN_DICH id="${safeSegmentId(input)}">...</BAN_DICH>. Tuyệt đối không để dấu "[" ở cuối bản dịch.
+- BẮT BUỘC XUẤT THỰC THỂ MỚI: Mọi tên riêng người thật (bao gồm cả tên gọi rút gọn bỏ họ như 秀麗 -> Tú Lệ, biệt danh cố định như 剛子 -> Cương Tử dù nhân vật đã từng xuất hiện), địa danh, trường học, cơ quan, xí nghiệp chưa có trong ngoặc ⟦ ⟧ BẮT BUỘC phải trích xuất vào thẻ <THUC_THE_MOI>[...]</THUC_THE_MOI> (dùng tên Latinh cho người ngoại quốc; chưa rõ vai vế ghi null, không được bỏ qua tên; nếu không có tên mới trả về <THUC_THE_MOI>[]</THUC_THE_MOI>).\n\n${commonEnvelope(input)}`;
 }
 
 export function buildRetryPrompt(input: RetryPromptInput): string {
@@ -158,7 +173,7 @@ export function buildLocalizedHanRepairPrompt(
     ? `\nKÝ TỰ HÁN CẦN LOẠI BỎ: ${input.hanSample.trim()}`
     : '';
   const stillFaultyNotice = attempt > 1
-    ? '\nVẪN LỖI: Phản hồi trước chưa sửa đúng câu được gửi hoặc vẫn còn ký tự Hán. Hãy sửa lại chính xác các câu dưới đây.'
+    ? '\nVẪN LỖI: Phản hồi trước chưa dịch hết chữ Hán hoặc câu trả về vẫn còn ký tự Hán. Hãy dịch triệt để các chữ Hán sang tiếng Việt thuần túy.'
     : '';
 
   const targetBlocks = targets
@@ -168,7 +183,7 @@ export function buildLocalizedHanRepairPrompt(
     .map((target) => `<CAU_DA_SUA id="${target.targetId}">câu tiếng Việt đã sửa</CAU_DA_SUA>`)
     .join('\n');
 
-  return `${promptPrefix}\n\n---\nSỬA CỤC BỘ ${targets.length} CÂU LỖI (LẦN ${attempt})${hanSample}${stillFaultyNotice}\n\nMỗi câu trong các thẻ CAU_CAN_SUA dưới đây có chữ Hán còn sót.\n- Sửa tất cả các câu, giữ nguyên ý nghĩa, giọng văn, tên riêng và dấu câu của từng câu.\n- Không viết lại bất kỳ nội dung nào ngoài các câu đã đưa.\n- Không thêm lời dẫn, giải thích, ghi chú, đánh số hoặc văn bản ngoài các thẻ trả lời.\n- Mỗi thẻ trả lời phải chứa đúng MỘT câu tiếng Việt đã sửa, không có chữ Hán.\n- Trả về đủ ${targets.length} thẻ CAU_DA_SUA, đúng mã id tương ứng, mỗi mã chỉ một lần, theo mẫu:\n${responseBlocks}\n\n${targetBlocks}\n\nChỉ trả về các thẻ CAU_DA_SUA đã sửa.`;
+  return `${promptPrefix}\n\n---\nSỬA CỤC BỘ ${targets.length} CÂU LỖI (LẦN ${attempt})${hanSample}${stillFaultyNotice}\n\nMỗi câu trong các thẻ CAU_CAN_SUA dưới đây có chữ Hán còn sót.\n- Dịch triệt để, thoát ý các chữ Hán còn sót sang từ ngữ tiếng Việt tự nhiên, phù hợp với ngữ cảnh câu chuyện (tuyệt đối KHÔNG giữ lại bất kỳ ký tự Hán nào, không phiên âm thô cứng nhắc, giữ nguyên các tên riêng và thuật ngữ đã dịch).\n- Sửa tất cả các câu, giữ nguyên ý nghĩa, giọng văn, tên riêng và dấu câu của từng câu.\n- Không viết lại bất kỳ nội dung nào ngoài các câu đã đưa.\n- Không thêm lời dẫn, giải thích, ghi chú, đánh số hoặc văn bản ngoài các thẻ trả lời.\n- Mỗi thẻ trả lời phải chứa đúng MỘT câu tiếng Việt đã sửa, không có chữ Hán.\n- Trả về đủ ${targets.length} thẻ CAU_DA_SUA, đúng mã id tương ứng, mỗi mã chỉ một lần, theo mẫu:\n${responseBlocks}\n\n${targetBlocks}\n\nChỉ trả về các thẻ CAU_DA_SUA đã sửa.`;
 }
 
 export const buildRepairPrompt = buildRetryPrompt;

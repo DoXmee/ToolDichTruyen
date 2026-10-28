@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { createHash } from "node:crypto";
+import { createHash, webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 // The runtime dependency is present through Vitest; this recovered workspace
@@ -20,9 +20,10 @@ describe("Huli normal-browser helper", () => {
   it("has a domain-flexible MV3 manifest with a stable extension id key", async () => {
     const manifest = JSON.parse(await readFile(resolve(root, "manifest.json"), "utf8"));
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("1.0.8");
+    expect(manifest.version).toBe("1.0.11");
     expect(manifest.name).toBe("Tool Dịch Truyện - Browser Helper");
     expect(manifest.description).toContain("Novel543");
+    expect(manifest.description).toContain("TimoTXT");
     expect(manifest.permissions).toEqual(["storage"]);
     expect(manifest.host_permissions).toEqual(["https://*/*", "http://127.0.0.1/*"]);
     expect(manifest.permissions).not.toEqual(expect.arrayContaining(["cookies", "history", "debugger", "webRequest", "scripting"]));
@@ -89,6 +90,22 @@ describe("Huli normal-browser helper", () => {
     ]) expect(() => protocol.normalizeNovel543Url(url)).toThrow();
   });
 
+  it("allow-lists and canonicalizes only exact TimoTXT routes", () => {
+    expect(protocol.normalizeTimotxtUrl("https://timotxt.com/1509589610/?from=x#y")).toBe("https://www.timotxt.com/1509589610/");
+    expect(protocol.normalizeTimotxtUrl("https://www.timotxt.com/1509589610/dir?q=x")).toBe("https://www.timotxt.com/1509589610/dir");
+    expect(protocol.normalizeTimotxtUrl("https://timotxt.com/1509589610/13_2.html#x")).toBe("https://www.timotxt.com/1509589610/13_2.html");
+    expect(protocol.companionSite("https://www.timotxt.com/1509589610/dir")).toBe("timotxt");
+    for (const url of [
+      "http://timotxt.com/1509589610/",
+      "https://evil.timotxt.com/1509589610/",
+      "https://www.timotxt.com.evil.test/1509589610/",
+      "https://user:pass@www.timotxt.com/1509589610/",
+      "https://www.timotxt.com:444/1509589610/",
+      "https://www.timotxt.com/not-a-book/",
+      "https://www.timotxt.com/1509589610/13.html/extra",
+    ]) expect(() => protocol.normalizeTimotxtUrl(url)).toThrow();
+  });
+
   it("ships a passive Novel543 content reader with fixed selectors and no verification clicks", async () => {
     const script = await readFile(resolve(root, "novel543-content.js"), "utf8");
     expect(script).toContain('".chaplist .all"');
@@ -98,12 +115,79 @@ describe("Huli normal-browser helper", () => {
     expect(script).not.toMatch(/\.click\s*\(|chrome\.scripting|executeScript|debugger/iu);
   });
 
+  it("ships a passive TimoTXT content reader with transcode support and no verification clicks", async () => {
+    const script = await readFile(resolve(root, "timotxt-content.js"), "utf8");
+    const huliScript = await readFile(resolve(root, "huli-content.js"), "utf8");
+    expect(script).toContain('".all"');
+    expect(script).toContain('".chapter-content .content"');
+    expect(script).toContain("/chapter/transcode.html");
+    expect(script).toContain("X-Requested-With");
+    expect(script).toContain("collectFontAssets");
+    expect(script).toContain("crypto.subtle.digest");
+    expect(script).toContain("CSSRule.FONT_FACE_RULE");
+    expect(script).toContain("fontAssets");
+    expect(huliScript).toMatch(/if \(isSupportedCurrentPage\(\)\) \{\s*chrome\.runtime\.onMessage\.addListener/su);
+    expect(script).not.toMatch(/\.click\s*\(|chrome\.scripting|executeScript|debugger/iu);
+  });
+
+  it("hashes active TimoTXT bqg font assets in the passive snapshot", async () => {
+    const chapterUrl = "https://www.timotxt.com/1509589610/12.html";
+    const fontBytes = new Uint8Array([9, 4, 2, 1, 7, 8]);
+    const expectedHash = createHash("sha256").update(fontBytes).digest("hex");
+    const dom = new JSDOM(`<!doctype html><html><head>
+      <title>第12章</title>
+      </head><body>
+      <h1>村女吴秀丽</h1>
+      <div class="chapter-content"><div class="content" style="font-family: bqg;">第12章<br>剛떚回來了，놛走누書房，這是一段被字體編碼的足夠長內容。</div></div>
+      </body></html>`, { url: chapterUrl, runScripts: "outside-only" });
+    let listener: ((message: unknown, sender: unknown, respond: (value: any) => void) => boolean) | undefined;
+    Object.defineProperty(dom.window, "TextEncoder", { value: TextEncoder });
+    Object.defineProperty(dom.window, "crypto", { value: webcrypto });
+    Object.defineProperty(dom.window.document, "styleSheets", { value: [{
+      cssRules: [{
+        type: dom.window.CSSRule.FONT_FACE_RULE,
+        style: { getPropertyValue: (name: string) => {
+          if (name === "font-family") return "bqg";
+          if (name === "src") return "url('/fonts/f24092.woff2') format('woff2')";
+          return "";
+        } },
+      }],
+    }] });
+    Object.defineProperty(dom.window, "fetch", {
+      value: async (rawUrl: string) => {
+        const url = String(rawUrl);
+        if (url.includes("/chapter/transcode.html")) return { ok: false };
+        if (url === "https://www.timotxt.com/fonts/f24092.woff2") {
+          return { ok: true, arrayBuffer: async () => fontBytes.buffer.slice(0) };
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      },
+    });
+    Object.defineProperty(dom.window, "chrome", { value: { runtime: {
+      connect: () => ({ onDisconnect: { addListener: () => undefined } }),
+      onMessage: { addListener: (value: typeof listener) => { listener = value; } },
+    } } });
+
+    dom.window.eval(await readFile(resolve(root, "timotxt-content.js"), "utf8"));
+    const response = await new Promise<any>((resolveResponse) => {
+      expect(listener?.({ type: "collect-snapshot", requestedUrl: chapterUrl }, {}, resolveResponse)).toBe(true);
+    });
+    expect(response.ok).toBe(true);
+    expect(response.snapshot.fontFamilies).toEqual(["bqg"]);
+    expect(response.snapshot.fontUrls).toEqual(["https://www.timotxt.com/fonts/f24092.woff2"]);
+    expect(response.snapshot.fontHashes).toEqual([expectedHash]);
+    expect(response.snapshot.fontAssets).toEqual([{ family: "bqg", url: "https://www.timotxt.com/fonts/f24092.woff2", sha256: expectedHash }]);
+    expect(response.snapshot.elements[".chapter-content .content"]?.[0]).toContain("剛떚回來了");
+  });
+
   it("accepts only fixed visit/catalog-next/chapter-next commands and does not put the token in a URL", () => {
     expect(protocol.validateVisitCommand({ id: "cmd_1", type: "visit", url: "https://m.huliwang.net/1703891/1.html" })).toEqual({ id: "cmd_1", type: "visit", url: "https://m.huliwang.net/1703891/1.html" });
     expect(protocol.validateCompanionCommand({ id: "cmd_2", type: "catalog-next", url: "https://m.huliwang.net/dir/1703891.html" })).toEqual({ id: "cmd_2", type: "catalog-next", url: "https://m.huliwang.net/dir/1703891.html" });
     expect(protocol.validateCompanionCommand({ id: "cmd_2b", type: "chapter-next", url: "https://m.huliwang.net/1703891/50/2.html" })).toEqual({ id: "cmd_2b", type: "chapter-next", url: "https://m.huliwang.net/1703891/50/2.html" });
     expect(protocol.validateVisitCommand({ id: "cmd_n", type: "visit", url: "https://novel543.com/1013669909/8096_1_2.html" })).toEqual({ id: "cmd_n", type: "visit", url: "https://www.novel543.com/1013669909/8096_1_2.html" });
+    expect(protocol.validateVisitCommand({ id: "cmd_t", type: "visit", url: "https://timotxt.com/1509589610/13.html" })).toEqual({ id: "cmd_t", type: "visit", url: "https://www.timotxt.com/1509589610/13.html" });
     expect(() => protocol.validateCompanionCommand({ id: "cmd_n2", type: "chapter-next", url: "https://www.novel543.com/1013669909/8096_1.html" })).toThrow();
+    expect(() => protocol.validateCompanionCommand({ id: "cmd_t2", type: "chapter-next", url: "https://www.timotxt.com/1509589610/13.html" })).toThrow();
     expect(() => protocol.validateVisitCommand({ id: "cmd_1", type: "script", url: "https://m.huliwang.net/1703891/1.html" })).toThrow();
     expect(() => protocol.validateVisitCommand({ id: "cmd_1", type: "visit", url: "https://m.huliwang.net/1703891/1.html", script: "x" })).toThrow();
     expect(() => protocol.validateCompanionCommand({ id: "cmd_3", type: "catalog-next", url: "https://m.huliwang.net/1703891/1.html" })).toThrow();
@@ -247,7 +331,7 @@ describe("Huli normal-browser helper", () => {
   });
 
   it("keeps both manifest content scripts valid classic scripts", async () => {
-    for (const file of ["pairing-content.js", "huli-content.js", "xszj-content.js"]) {
+    for (const file of ["pairing-content.js", "huli-content.js", "xszj-content.js", "timotxt-content.js"]) {
       const source = await readFile(resolve(root, file), "utf8");
       expect(source).not.toMatch(/^\s*(?:import|export)\s/mu);
       expect(() => new Function(source)).not.toThrow();
@@ -468,6 +552,7 @@ describe("Huli normal-browser helper", () => {
     const huli = await readFile(resolve(root, "huli-content.js"), "utf8");
     const xszj = await readFile(resolve(root, "xszj-content.js"), "utf8");
     const novel543 = await readFile(resolve(root, "novel543-content.js"), "utf8");
+    const timotxt = await readFile(resolve(root, "timotxt-content.js"), "utf8");
     const manifest = JSON.parse(await readFile(resolve(root, "manifest.json"), "utf8"));
     expect(worker).not.toMatch(/pollLoop|onStartup/u);
     expect(worker).not.toContain('message?.type === "poll"');
@@ -479,13 +564,16 @@ describe("Huli normal-browser helper", () => {
     expect(huli).toContain("chrome.runtime.connect({ name: HEARTBEAT_PORT_NAME })");
     expect(xszj).toContain("chrome.runtime.connect({ name: HEARTBEAT_PORT_NAME })");
     expect(novel543).toContain("chrome.runtime.connect({ name: HEARTBEAT_PORT_NAME })");
+    expect(timotxt).toContain("chrome.runtime.connect({ name: HEARTBEAT_PORT_NAME })");
     expect(pairing).not.toContain('sendMessage({ type: "poll" })');
     expect(huli).not.toContain('sendMessage({ type: "poll" })');
     expect(xszj).not.toContain('sendMessage({ type: "poll" })');
     expect(novel543).not.toContain('sendMessage({ type: "poll" })');
+    expect(timotxt).not.toContain('sendMessage({ type: "poll" })');
     expect(manifest.content_scripts.map((entry: { js: string[] }) => entry.js)).toEqual([
       ["novel543-content.js"],
       ["pairing-content.js"],
+      ["timotxt-content.js"],
       ["huli-content.js"],
       ["xszj-content.js"],
     ]);

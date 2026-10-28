@@ -1,5 +1,5 @@
-TOOLDICHTRUYEN - CÀI ĐẶT / CẬP NHẬT MÁY MỚI
-===============================================
+TOOLDICHTRUYEN v1.3.0 - CÀI ĐẶT / CẬP NHẬT MÁY MỚI
+=====================================================
 
 1. Giải nén TOÀN BỘ file ZIP vào một thư mục bất kỳ.
 2. Bấm đúp: CAI-DAT-CAP-NHAT-TOOLDICHTRUYEN.cmd

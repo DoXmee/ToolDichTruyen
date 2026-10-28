@@ -9,6 +9,7 @@ import type {
   TranslationJobSnapshot,
   TranslationAutoExportBinding,
   AiProvider,
+  StoryMemory,
 } from '../shared';
 
 export interface TranslationEvent {
@@ -102,6 +103,7 @@ export interface StoryToolApi {
     exportJobId: string;
     sourceStartChapter: number;
     sourceEndChapter: number;
+    sourceChapterNumbers: number[];
     outputStartChapter: number;
     outputEndChapter: number;
     splitOutputStartChapter?: number;
@@ -125,6 +127,9 @@ export interface StoryToolApi {
   renameAccount?(id: string, label: string): Promise<AccountsSnapshot>;
   syncCurrentAccount?(): Promise<AccountsSnapshot & { account?: StoryAccountSummary }>;
   cleanupJunk?(): Promise<{ freedBytes: number; removed: number }>;
+  getStoryMemory?(request?: { directory?: string; jobId?: string }): Promise<StoryMemory>;
+  saveStoryMemory?(request: { directory?: string; jobId?: string; memory: StoryMemory }): Promise<StoryMemory>;
+  clearStoryMemory?(request?: { directory?: string; jobId?: string }): Promise<void>;
 }
 
 export interface StoryAccountSummary {

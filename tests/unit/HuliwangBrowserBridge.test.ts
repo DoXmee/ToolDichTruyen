@@ -507,6 +507,37 @@ describe("HuliwangBrowserBridge", () => {
     }
   });
 
+  it("accepts TimoTXT font assets on a verified subdomain and rejects outside hosts", async () => {
+    const bridge = await new HuliwangBrowserBridge({ site: "timotxt", visitTimeoutMs: 500 }).start();
+    try {
+      const data = await pair(bridge);
+      const url = "https://www.timotxt.com/1509589610/13.html";
+      const fontUrl = "https://i1.timotxt.com/fonts/f24092.woff2";
+      const validVisit = bridge.client.visit(url);
+      const validCommand = await command(bridge, data);
+      const validSnapshot = snapshot(url, {
+        links: [],
+        fontFamilies: ["bqg"],
+        fontUrls: [fontUrl],
+        fontHashes: ["a".repeat(64)],
+        fontAssets: [{ family: "bqg", url: fontUrl, sha256: "a".repeat(64) }],
+      });
+      expect((await result(bridge, data, validCommand.id, validSnapshot)).status).toBe(204);
+      await expect(validVisit).resolves.toMatchObject({ fontAssets: [{ url: fontUrl }] });
+
+      const invalidVisit = bridge.client.visit(url);
+      const invalidCommand = await command(bridge, data);
+      const invalidOutcome = expect(invalidVisit).rejects.toMatchObject({ code: "INVALID_CONTENT" });
+      expect((await result(bridge, data, invalidCommand.id, snapshot(url, {
+        links: [],
+        fontUrls: ["https://evil.example/fonts/f24092.woff2"],
+      }))).status).toBe(400);
+      await invalidOutcome;
+    } finally {
+      await bridge.close();
+    }
+  });
+
   it("rejects non-Huli commands, unsafe snapshot URLs, wrong books, and oversized request bodies", async () => {
     const bridge = await new HuliwangBrowserBridge({ visitTimeoutMs: 500 }).start();
     try {

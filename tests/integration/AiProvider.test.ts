@@ -20,6 +20,7 @@ function fakeAdapter(initial: ChatGptStatusSnapshot = { status: 'closed' }) {
     }),
     openLogin: vi.fn(async () => ({ ...snapshot })),
     openManualLogin: vi.fn(async () => ({ ...snapshot })),
+    isManualLoginRunning: vi.fn(() => false),
     refreshStatus: vi.fn(async () => ({ ...snapshot })),
     currentProfileDirectory: vi.fn(() => 'fake-profile'),
     useProfileDirectory: vi.fn(async (_directory: string, _options?: { authuser?: number }) => undefined),
@@ -606,4 +607,124 @@ describe('AI provider integration', () => {
       'chatgpt', 'kimi', 'deepseek', 'gemini',
     ])
   })
+
+  it('automatically configures the adapter to use the saved account profile directory on startup and before invoke', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'ai-provider-accounts-'))
+    const accounts = new AccountRegistry(directory)
+    const chatgpt = fakeAdapter()
+    const kimi = fakeAdapter()
+    const deepseek = fakeAdapter()
+    const gemini = fakeAdapter()
+
+    await accounts.register({
+      provider: 'chatgpt',
+      label: 'Saved ChatGPT Account',
+      profileDirectory: 'C:\\Users\\Saved\\custom-profile',
+    })
+
+    const manager = new AiProviderManager({
+      initialProvider: 'chatgpt',
+      chatgpt: chatgpt as unknown as ChatGptWebAdapter,
+      kimi: kimi as unknown as ChatGptWebAdapter,
+      deepseek: deepseek as unknown as ChatGptWebAdapter,
+      gemini: gemini as unknown as ChatGptWebAdapter,
+      accounts,
+    })
+
+    await manager.adoptProfile('chatgpt', 'Tài khoản 1')
+
+    expect(chatgpt.useProfileDirectory).toHaveBeenCalledWith('C:\\Users\\Saved\\custom-profile', expect.anything())
+    expect(manager.activeAccountId('chatgpt')).toBeDefined()
+
+    await rm(directory, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it('adoptProfile for other providers does not change activeProvider from initialProvider', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'accounts-provider-isolation-'))
+    const accounts = new AccountRegistry(directory)
+    await accounts.register({
+      provider: 'gemini',
+      label: 'Saved Gemini Account',
+      profileDirectory: 'C:\\Users\\Saved\\gemini-profile',
+    })
+
+    const chatgpt = fakeAdapter()
+    const kimi = fakeAdapter()
+    const deepseek = fakeAdapter()
+    const gemini = fakeAdapter()
+
+    const manager = new AiProviderManager({
+      initialProvider: 'chatgpt',
+      chatgpt: chatgpt as unknown as ChatGptWebAdapter,
+      kimi: kimi as unknown as ChatGptWebAdapter,
+      deepseek: deepseek as unknown as ChatGptWebAdapter,
+      gemini: gemini as unknown as ChatGptWebAdapter,
+      accounts,
+    })
+
+    await manager.adoptProfile('gemini', 'Tài khoản 1')
+
+    expect(manager.activeProvider()).toBe('chatgpt')
+
+    await rm(directory, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it('openLogin while manual login is running does not revert to old account and verifies new profile', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'accounts-manual-verify-'))
+    const accounts = new AccountRegistry(directory)
+    const oldAccount = await accounts.register({
+      provider: 'chatgpt',
+      label: 'Old Account',
+      profileDirectory: 'C:\\Users\\Old\\chatgpt-profile',
+    })
+
+    const chatgpt = fakeAdapter()
+    let currentProfile = 'C:\\Users\\Old\\chatgpt-profile'
+    chatgpt.currentProfileDirectory = vi.fn(() => currentProfile)
+    chatgpt.useProfileDirectory = vi.fn(async (dir: string) => {
+      currentProfile = dir
+    })
+    chatgpt.accountHint = vi.fn(() => ({ profileDirectory: currentProfile }))
+
+    let manualRunning = false
+    chatgpt.isManualLoginRunning = vi.fn(() => manualRunning)
+
+    const manager = new AiProviderManager({
+      initialProvider: 'chatgpt',
+      chatgpt: chatgpt as unknown as ChatGptWebAdapter,
+      kimi: fakeAdapter() as unknown as ChatGptWebAdapter,
+      deepseek: fakeAdapter() as unknown as ChatGptWebAdapter,
+      gemini: fakeAdapter() as unknown as ChatGptWebAdapter,
+      accounts,
+      accountProfileRoot: path.join(directory, 'accounts'),
+    })
+
+    await manager.addAccount('chatgpt')
+    manualRunning = true
+    const newProfile = currentProfile
+    expect(newProfile).not.toBe(oldAccount.profileDirectory)
+
+    chatgpt.openLogin = vi.fn(async () => {
+      manualRunning = false
+      chatgpt.readAccountIdentity = vi.fn(async () => ({
+        label: 'New Account',
+        email: 'dthuong3072@gmail.com',
+      }))
+      return { status: 'ready' as const }
+    })
+
+    const result = await manager.openLogin()
+    expect(result.status).toBe('ready')
+
+    const activeId = manager.activeAccountId('chatgpt')
+    expect(activeId).not.toBe(oldAccount.id)
+    const activeAccount = (await accounts.listFor('chatgpt')).find((a) => a.id === activeId)
+    expect(activeAccount).toBeDefined()
+    expect(activeAccount?.email).toBe('dthuong3072@gmail.com')
+    expect(activeAccount?.profileDirectory).toBe(newProfile)
+
+    await rm(directory, { recursive: true, force: true }).catch(() => {})
+  })
 })
+
+

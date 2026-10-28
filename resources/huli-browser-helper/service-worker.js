@@ -11,6 +11,8 @@ import {
   huliPageIdentity,
   normalizeCompanionUrl,
   normalizeHuliUrl,
+  normalizeTimotxtAssetUrl,
+  normalizeTimotxtUrl,
   mustWaitForPairedTab,
   nextPollFailureState,
   pairedTabAction,
@@ -291,6 +293,30 @@ async function execute(pairing, command) {
   }
 }
 
+function assetBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+async function readTimotxtAsset(message, sender) {
+  if (!sender?.tab?.url) throw new Error("TimoTXT asset request has no tab.");
+  normalizeTimotxtUrl(sender.tab.url);
+  const kind = message?.kind;
+  const url = normalizeTimotxtAssetUrl(message?.url, kind);
+  const response = await fetch(url, { credentials: "include", cache: "force-cache", redirect: "error" });
+  if (!response.ok) throw new Error(`TimoTXT asset request failed (${response.status}).`);
+  const buffer = await response.arrayBuffer();
+  const maximum = kind === "stylesheet" ? 1_000_000 : 2_000_000;
+  if (buffer.byteLength > maximum) throw new Error("TimoTXT asset is too large.");
+  return kind === "stylesheet"
+    ? { ok: true, text: new TextDecoder().decode(buffer) }
+    : { ok: true, base64: assetBase64(buffer) };
+}
+
 async function pollOnce(pairing) {
   let response;
   try {
@@ -438,6 +464,13 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "read-timotxt-asset") {
+    void readTimotxtAsset(message, sender).then(
+      (result) => sendResponse(result),
+      (error) => sendResponse({ ok: false, error: safeError(error) }),
+    );
+    return true;
+  }
   if (message?.type === "pair") {
     const generation = ++pairingGeneration;
     pendingPairSessionId = typeof message.sessionId === "string" ? message.sessionId : "invalid";

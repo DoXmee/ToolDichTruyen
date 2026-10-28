@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 
@@ -41,6 +41,37 @@ function readAndParseOffThread(filePath: string, maxBytes: number): Promise<unkn
     worker.once("error", reject);
   });
 }
+
+async function renameWithRetry(
+  source: string,
+  destination: string,
+  maxAttempts = 8,
+  baseDelayMs = 50,
+): Promise<void> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await rename(source, destination);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code === "EPERM" || code === "EBUSY" || code === "EACCES") && attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, baseDelayMs * attempt));
+        continue;
+      }
+      if (attempt === maxAttempts && (code === "EPERM" || code === "EBUSY" || code === "EACCES")) {
+        try {
+          await copyFile(source, destination);
+          await rm(source, { force: true }).catch(() => undefined);
+          return;
+        } catch {
+          throw error;
+        }
+      }
+      throw error;
+    }
+  }
+}
+
 /**
  * A tiny, dependency-free JSON store. Writes are serialized and committed by
  * renaming a fully flushed temporary file in the same directory.
@@ -117,7 +148,7 @@ export class AtomicJsonStore<T> {
       await handle.sync();
       await handle.close();
       handle = undefined;
-      await rename(temporaryPath, this.filePath);
+      await renameWithRetry(temporaryPath, this.filePath);
     } catch (error) {
       await handle?.close().catch(() => undefined);
       await rm(temporaryPath, { force: true }).catch(() => undefined);

@@ -1441,7 +1441,7 @@ describe('App renderer', () => {
 
     fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
     fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), {
-      target: { value: 'https://www.timotxt.com/1509589610/13.html' },
+      target: { value: 'https://www.qingrenyouxi.com/book/114551/33074751.html' },
     });
     fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
 
@@ -1450,8 +1450,8 @@ describe('App renderer', () => {
   });
 
   it.each([
-    ['https://www.timotxt.com/1509589610/13.html', false],
-    ['https://www.timotxt.com/0108567756/dir', false],
+    ['https://www.timotxt.com/1509589610/13.html', true],
+    ['https://www.timotxt.com/0108567756/dir', true],
     ['https://www.qingrenyouxi.com/1234567/12.html', false],
     ['https://www.novel543.com/1013669909/8096_1_2.html', true],
     ['https://xszj.org/b/123456/c/1', true],
@@ -1500,8 +1500,10 @@ describe('App renderer', () => {
     await screen.findByText('ChatGPT đã kết nối');
     fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/i }));
 
-    expect(await screen.findByRole('button', { name: 'Kết nối trình duyệt mặc định' })).toBeEnabled();
-    expect(screen.getAllByText(/phân tích lại link/iu).length).toBeGreaterThan(0);
+    expect(await screen.findByRole('button', { name: 'Kết nối lại' })).toBeEnabled();
+    expect(screen.getAllByText(/Tiện ích Huliwang mất kết nối với trình duyệt mặc định/u).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Huliwang cần Microsoft Edge hoặc Google Chrome và profile bạn dùng hằng ngày.')).not.toBeInTheDocument();
+    expect(screen.getAllByText(/tiếp tục tải và dịch/u).length).toBeGreaterThan(0);
     expect(harness.startTranslation).not.toHaveBeenCalled();
   });
 
@@ -1990,6 +1992,139 @@ describe('App renderer', () => {
     expect(savedDrafts.some((draft) => draft.autoExportJobId === '' && draft.autoExportStartedAt === 0)).toBe(true);
   });
 
+  it('giữ catalog gọn và tiếp tục tải chương sau khi kết nối lại Browser Helper từ lỗi fetch TimoTXT', async () => {
+    const storyAnalysis = {
+      analysisId: 'timotxt-fetch-reconnect', site: 'timotxt' as const, inputKind: 'chapter' as const,
+      inputUrl: 'https://www.timotxt.com/1509589610/318.html', bookId: '1509589610', bookTitle: '村女吴秀丽',
+      bookUrl: 'https://www.timotxt.com/1509589610/', catalogUrl: 'https://www.timotxt.com/1509589610/dir',
+      chapters: [
+        { id: 'c318', order: 317, number: 318, numberLabel: 'Chương 318', title: '夜晚，城墙下', url: 'https://www.timotxt.com/1509589610/318.html', partUrls: ['https://www.timotxt.com/1509589610/318.html'], isIntroduction: false, selectedByDefault: true },
+      ],
+      defaultSelectedChapterIds: ['c318'], verification: 'not-needed' as const, notices: [],
+    };
+    const storyFetch = {
+      analysisId: storyAnalysis.analysisId, site: 'timotxt' as const, bookId: storyAnalysis.bookId,
+      bookTitle: storyAnalysis.bookTitle,
+      chapters: [{
+        id: 'c318', order: 317, number: 318, title: '夜晚，城墙下',
+        sourceText: 'Chương 318\n夜色很深，城墙下的脚步声越来越近，这是一段足够长的原文。',
+        sourceUrls: ['https://www.timotxt.com/1509589610/318.html'],
+        warnings: [],
+      }],
+      combinedSource: 'Chương 318: 夜晚，城墙下\n\n夜色很深，城墙下的脚步声越来越近，这是一段足够长的原文。',
+      warnings: [],
+    };
+    const harness = installStoryTool({ connectionStatus: 'ready', storyAnalysis, storyFetch });
+    harness.fetchStoryChapters
+      .mockRejectedValueOnce(new Error('Tiện ích trình duyệt không thể đọc trang TimoTXT. Browser Helper cần kết nối lại.'))
+      .mockResolvedValueOnce(storyFetch);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
+    fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), {
+      target: { value: storyAnalysis.inputUrl },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
+    await screen.findByText(storyAnalysis.bookTitle);
+    fireEvent.click(screen.getByRole('button', { name: /Chọn thư mục lưu/i }));
+    await connectViaAccountPanel();
+    await screen.findByText('ChatGPT đã kết nối');
+    fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/i }));
+
+    expect((await screen.findAllByText(/Tiện ích trình duyệt không thể đọc trang TimoTXT/u)).length).toBeGreaterThan(0);
+    expect(screen.queryByText('TimoTXT cần Microsoft Edge hoặc Google Chrome và profile bạn dùng hằng ngày.')).not.toBeInTheDocument();
+    expect(screen.getByText(storyAnalysis.bookTitle)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Kết nối lại' }));
+
+    await waitFor(() => expect(harness.openManualStoryVerification).toHaveBeenCalledWith(storyAnalysis.inputUrl));
+    await waitFor(() => expect(harness.fetchStoryChapters).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(harness.startTranslation).toHaveBeenCalledOnce());
+    expect(harness.analyzeStoryUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it('cho phép tải lại chương TimoTXT trên đúng tab đang xác minh mà không ghép nối lại', async () => {
+    const storyAnalysis = {
+      analysisId: 'timotxt-fetch-passive', site: 'timotxt' as const, inputKind: 'chapter' as const,
+      inputUrl: 'https://www.timotxt.com/1509589610/1.html', bookId: '1509589610', bookTitle: '村女吴秀丽',
+      bookUrl: 'https://www.timotxt.com/1509589610/', catalogUrl: 'https://www.timotxt.com/1509589610/dir',
+      chapters: [{
+        id: 'c1', order: 0, number: 1, numberLabel: 'Chương 1', title: '夜晚，槐樹下',
+        url: 'https://www.timotxt.com/1509589610/1.html', partUrls: ['https://www.timotxt.com/1509589610/1.html'], isIntroduction: false, selectedByDefault: true,
+      }],
+      defaultSelectedChapterIds: ['c1'], verification: 'not-needed' as const, notices: [],
+    };
+    const storyFetch = {
+      analysisId: storyAnalysis.analysisId, site: 'timotxt' as const, bookId: storyAnalysis.bookId,
+      bookTitle: storyAnalysis.bookTitle,
+      chapters: [{
+        id: 'c1', order: 0, number: 1, title: '夜晚，槐樹下',
+        sourceText: 'Chương 1\nĐoạn nội dung đủ dài để kiểm thử luồng tiếp tục tải chương.',
+        sourceUrls: ['https://www.timotxt.com/1509589610/1.html'], warnings: [],
+      }],
+      combinedSource: 'Chương 1: 夜晚，槐樹下\n\nĐoạn nội dung đủ dài để kiểm thử luồng tiếp tục tải chương.',
+      warnings: [],
+    };
+    const harness = installStoryTool({ connectionStatus: 'ready', storyAnalysis, storyFetch });
+    harness.fetchStoryChapters
+      .mockRejectedValueOnce(new Error('TimoTXT chưa hoàn tất xác minh thụ động. Hãy giữ nguyên tab Browser Helper, chờ trang hiện nội dung rồi bấm Tải lại chương.'))
+      .mockResolvedValueOnce(storyFetch);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
+    fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), { target: { value: storyAnalysis.inputUrl } });
+    fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
+    await screen.findByText(storyAnalysis.bookTitle);
+    fireEvent.click(screen.getByRole('button', { name: /Chọn thư mục lưu/i }));
+    await connectViaAccountPanel();
+    await screen.findByText('ChatGPT đã kết nối');
+    fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/i }));
+
+    const retry = await screen.findByRole('button', { name: 'Tải lại chương' });
+    expect(screen.queryByRole('button', { name: 'Kết nối lại' })).not.toBeInTheDocument();
+    expect(await screen.findByText(/Hoàn tất xác minh trong tab hiện tại/iu)).toBeInTheDocument();
+    fireEvent.click(retry);
+    await waitFor(() => expect(harness.fetchStoryChapters).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(harness.startTranslation).toHaveBeenCalledOnce());
+    expect(harness.openManualStoryVerification).not.toHaveBeenCalled();
+  });
+
+  it('hiện lỗi version Browser Helper thật trong catalog TimoTXT thay vì cảnh báo kết nối chung', async () => {
+    const storyAnalysis = {
+      analysisId: 'timotxt-stale-helper', site: 'timotxt' as const, inputKind: 'chapter' as const,
+      inputUrl: 'https://www.timotxt.com/1509589610/381.html', bookId: '1509589610', bookTitle: '村女吴秀丽',
+      bookUrl: 'https://www.timotxt.com/1509589610/', catalogUrl: 'https://www.timotxt.com/1509589610/dir',
+      chapters: [
+        { id: 'c381', order: 380, number: 381, numberLabel: 'Chương 381', title: '深夜的纠缠', url: 'https://www.timotxt.com/1509589610/381.html', partUrls: ['https://www.timotxt.com/1509589610/381.html'], isIntroduction: false, selectedByDefault: true },
+      ],
+      defaultSelectedChapterIds: ['c381'], verification: 'not-needed' as const, notices: [],
+    };
+    const helperVersionError = 'Tiện ích Browser Helper đang là phiên bản 1.0.9, nhưng tool cần tối thiểu 1.0.11 để đọc TimoTXT. Hãy mở edge://extensions hoặc chrome://extensions, bấm Tải lại tiện ích rồi kết nối lại.';
+    const harness = installStoryTool({ connectionStatus: 'ready', storyAnalysis });
+    harness.fetchStoryChapters.mockRejectedValueOnce(new Error(helperVersionError));
+    harness.openManualStoryVerification.mockRejectedValueOnce(new Error(helperVersionError));
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Nhập link truyện' }));
+    fireEvent.change(screen.getByLabelText('Link bộ truyện hoặc chương truyện'), {
+      target: { value: storyAnalysis.inputUrl },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Phân tích$/u }));
+    await screen.findByText(storyAnalysis.bookTitle);
+    fireEvent.click(screen.getByRole('button', { name: /Chọn thư mục lưu/i }));
+    await connectViaAccountPanel();
+    await screen.findByText('ChatGPT đã kết nối');
+    fireEvent.click(screen.getByRole('button', { name: /Tải, dịch và lưu/i }));
+
+    expect((await screen.findAllByText(helperVersionError)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Phiên TimoTXT cần kết nối lại bằng trình duyệt mặc định/u)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Kết nối lại' }));
+    await waitFor(() => expect(harness.openManualStoryVerification).toHaveBeenCalledWith(storyAnalysis.inputUrl));
+    expect((await screen.findAllByText(helperVersionError)).length).toBeGreaterThan(0);
+    expect(harness.fetchStoryChapters).toHaveBeenCalledTimes(1);
+    expect(harness.startTranslation).not.toHaveBeenCalled();
+  });
+
   it('giữ kết quả export đang chạy khi output thay đổi, không làm mất record', async () => {
     let resolveExport!: (value: Awaited<ReturnType<StoryToolApi['exportChapters']>>) => void;
     const deferred = new Promise<Awaited<ReturnType<StoryToolApi['exportChapters']>>>((resolve) => {
@@ -2285,7 +2420,7 @@ describe('App renderer', () => {
     }));
   });
 
-  it('does not create a misleading combined range when selected source chapters have a gap', async () => {
+  it('creates a combined range when selected source chapters have a gap', async () => {
     const first = Array.from({ length: 800 }, (_, index) => `mot${index + 1}`).join(' ');
     const third = Array.from({ length: 800 }, (_, index) => `ba${index + 1}`).join(' ');
     const harness = installStoryTool({
@@ -2309,8 +2444,12 @@ describe('App renderer', () => {
     }));
 
     await waitFor(() => expect(harness.exportChapters).toHaveBeenCalled());
-    expect(await screen.findByText(/Không xác định được phạm vi chương gốc/u)).toBeInTheDocument();
-    expect(harness.exportCombinedChapters).not.toHaveBeenCalled();
+    await waitFor(() => expect(harness.exportCombinedChapters).toHaveBeenCalledOnce());
+    expect(harness.exportCombinedChapters).toHaveBeenCalledWith(expect.objectContaining({
+      startChapter: 152,
+      endChapter: 154,
+      sourceChapterNumbers: [152, 154],
+    }));
   });
 
   it('keeps frozen numbering and the no-title choice through split, original and combined exports', async () => {
@@ -2380,6 +2519,7 @@ describe('App renderer', () => {
     expect(harness.exportCombinedSourceChapters).toHaveBeenCalledWith(expect.objectContaining({
       sourceStartChapter: 40,
       sourceEndChapter: 41,
+      sourceChapterNumbers: [40, 41],
       outputStartChapter: 101,
       outputEndChapter: 102,
       splitOutputStartChapter: 101,

@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import type { AiProvider } from "../../shared/types.js";
 import type { AccountRegistry, StoredAccount } from "../accounts/AccountRegistry.js";
+import { detectOfflineLoginIdentity } from "../accounts/offlineProbe.js";
 import { GeminiQuotaExceededError, parseQuotaResetAt } from "../chatgpt/geminiModel.js";
 import {
   ChatGptWebAdapter,
@@ -149,9 +150,48 @@ export class AiProviderManager {
   public async adoptProfile(provider: AiProvider, label: string): Promise<StoredAccount | undefined> {
     const registry = this.options.accounts;
     if (!registry) return undefined;
-    const existing = (await registry.listFor(provider));
-    if (existing.length) return existing[0];
+    const existing = await registry.listFor(provider);
+    if (existing.length) {
+      return await this.ensureActiveAccount(provider);
+    }
     const adapter = this.adapters[provider];
+    const defaultProfile = adapter.currentProfileDirectory();
+    const defaultOffline = await detectOfflineLoginIdentity(defaultProfile, provider).catch(() => undefined);
+    if (defaultOffline?.hasEvidence) {
+      const account = await registry.register({
+        provider,
+        label: defaultOffline.label || label,
+        profileDirectory: defaultProfile,
+        ...(defaultOffline.email ? { email: defaultOffline.email } : {}),
+      });
+      await registry.markVerified(account.id);
+      this.accountIds[provider] = account.id;
+      return account;
+    }
+    if (this.options.accountProfileRoot) {
+      try {
+        const fs = await import("node:fs/promises");
+        const entries = await fs.readdir(this.options.accountProfileRoot).catch(() => []);
+        for (const entry of entries) {
+          if (entry.startsWith(`${provider}-`)) {
+            const fullDir = path.join(this.options.accountProfileRoot, entry);
+            const offline = await detectOfflineLoginIdentity(fullDir, provider).catch(() => undefined);
+            if (offline?.hasEvidence) {
+              const account = await registry.register({
+                provider,
+                label: offline.label || label,
+                profileDirectory: fullDir,
+                ...(offline.email ? { email: offline.email } : {}),
+              });
+              await registry.markVerified(account.id);
+              this.accountIds[provider] = account.id;
+              await this.adapters[provider].useProfileDirectory(fullDir);
+              return account;
+            }
+          }
+        }
+      } catch {}
+    }
     const account = await registry.register({
       provider,
       label,
@@ -162,10 +202,71 @@ export class AiProviderManager {
   }
 
   /**
+   * Ensures that the adapter for the given provider is pointed at the
+   * active saved account profile rather than a fallback blank directory.
+   */
+  public async ensureActiveAccount(provider: AiProvider = this.provider): Promise<StoredAccount | undefined> {
+    const registry = this.options.accounts;
+    if (!registry) return undefined;
+    let accounts = await registry.listFor(provider);
+    if (accounts.length === 0) {
+      if (this.options.accountProfileRoot) {
+        try {
+          const fs = await import("node:fs/promises");
+          const entries = await fs.readdir(this.options.accountProfileRoot).catch(() => []);
+          for (const entry of entries) {
+            if (entry.startsWith(`${provider}-`)) {
+              const fullDir = path.join(this.options.accountProfileRoot, entry);
+              const offline = await detectOfflineLoginIdentity(fullDir, provider).catch(() => undefined);
+              if (offline?.hasEvidence) {
+                const label = offline.label || providerDefaultAccountLabel(provider);
+                await registry.register({
+                  provider,
+                  label,
+                  profileDirectory: fullDir,
+                  ...(offline.email ? { email: offline.email } : {}),
+                });
+              }
+            }
+          }
+          accounts = await registry.listFor(provider);
+        } catch {}
+      }
+      if (accounts.length === 0) return undefined;
+    }
+
+    const currentId = this.accountIds[provider];
+    let target = currentId ? accounts.find((candidate) => candidate.id === currentId) : undefined;
+    if (!target) {
+      const usable = accounts.filter((candidate) => !quotaBlocked(candidate));
+      target = usable.length > 0 ? usable[0] : accounts[0];
+    }
+    if (target) {
+
+
+      const adapter = this.adapters[provider];
+      if (adapter.isManualLoginRunning?.()) {
+        return target;
+      }
+      if (
+        this.accountIds[provider] !== target.id ||
+        adapter.currentProfileDirectory() !== target.profileDirectory
+      ) {
+        return await this.activateAccount(target.id, { switchProvider: false });
+      }
+      return target;
+    }
+    return undefined;
+  }
+
+  /**
    * Points a bot at one saved login. Google keeps several accounts inside a
    * single profile, so the account index travels with the profile directory.
    */
-  public async activateAccount(accountId: string): Promise<StoredAccount | undefined> {
+  public async activateAccount(
+    accountId: string,
+    options: { switchProvider?: boolean } = {},
+  ): Promise<StoredAccount | undefined> {
     const registry = this.options.accounts;
     if (!registry) return undefined;
     let account = (await registry.list()).find((candidate) => candidate.id === accountId);
@@ -181,7 +282,7 @@ export class AiProviderManager {
     });
     this.accountIds[account.provider] = account.id;
     await registry.markUsed(account.id);
-    if (this.provider !== account.provider) {
+    if (options.switchProvider && this.provider !== account.provider) {
       await this.selectProvider(account.provider);
     }
     return account;
@@ -216,7 +317,17 @@ export class AiProviderManager {
     if (!registry) return undefined;
     const provider = this.provider;
     const adapter = this.adapters[provider];
-    const identity = await adapter.readAccountIdentity();
+    let identity = await adapter.readAccountIdentity();
+    if (!identity) {
+      const profileDir = adapter.currentProfileDirectory();
+      const offline = await detectOfflineLoginIdentity(profileDir, provider).catch(() => undefined);
+      if (offline?.hasEvidence) {
+        identity = {
+          label: offline.label || providerDefaultAccountLabel(provider),
+          ...(offline.email ? { email: offline.email } : {}),
+        };
+      }
+    }
     return await this.storeIdentity(provider, identity);
   }
 
@@ -268,11 +379,22 @@ export class AiProviderManager {
   private async handleManualLoginWindowClosed(provider: AiProvider): Promise<void> {
     if (!this.options.accounts) return;
     try {
-      const identity = await this.adapters[provider].readAccountAfterManualLogin();
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      let identity = await this.adapters[provider].readAccountAfterManualLogin();
+      if (!identity) {
+        const profileDir = this.adapters[provider].currentProfileDirectory();
+        const offline = await detectOfflineLoginIdentity(profileDir, provider).catch(() => undefined);
+        if (offline?.hasEvidence) {
+          identity = {
+            label: offline.label || providerDefaultAccountLabel(provider),
+            ...(offline.email ? { email: offline.email } : {}),
+          };
+        }
+      }
       if (!identity) {
         this.setMessage(
-          `Cửa sổ đăng nhập ${providerLabel(provider)} đã đóng nhưng tool chưa đọc được tài khoản. `
-          + "Hãy bấm Thêm tài khoản và đăng nhập lại.",
+          `Cửa sổ đăng nhập ${providerLabel(provider)} đã đóng nhưng chưa phát hiện phiên đăng nhập. `
+          + "Hãy đăng nhập cho đến khi vào hẳn giao diện chính rồi đóng cửa sổ.",
         );
         return;
       }
@@ -308,13 +430,32 @@ export class AiProviderManager {
       Object.values(this.adapters).map((adapter) => adapter.currentProfileDirectory()),
     );
     for (const account of await registry.list()) profiles.add(account.profileDirectory);
+    if (registry.dataDirectory) {
+      profiles.add(path.join(registry.dataDirectory, "story-source-browser-profile"));
+    }
     // Nothing may run while its profile is being emptied.
     await this.close();
     const caches = await registry.cleanToolCaches([...profiles]);
     const orphans = await registry.cleanupOrphanProfiles();
+    const obsolete = await registry.cleanupObsoleteBackups();
     return {
-      freedBytes: caches.freedBytes + orphans.freedBytes,
-      removed: caches.removed.length + orphans.removed.length,
+      freedBytes: caches.freedBytes + orphans.freedBytes + obsolete.freedBytes,
+      removed: caches.removed.length + orphans.removed.length + obsolete.removed.length,
+    };
+  }
+
+  /**
+   * Safe automatic cleanup running on startup in the background.
+   * Cleans orphan account folders and backups older than 7 days without interrupting active windows.
+   */
+  public async autoCleanup(): Promise<{ freedBytes: number; removed: number }> {
+    const registry = this.options.accounts;
+    if (!registry) return { freedBytes: 0, removed: 0 };
+    const orphans = await registry.cleanupOrphanProfiles().catch(() => ({ removed: [], freedBytes: 0 }));
+    const obsolete = await registry.cleanupObsoleteBackups({ maxAgeDays: 7 }).catch(() => ({ removed: [], freedBytes: 0 }));
+    return {
+      freedBytes: orphans.freedBytes + obsolete.freedBytes,
+      removed: orphans.removed.length + obsolete.removed.length,
     };
   }
 
@@ -377,19 +518,35 @@ export class AiProviderManager {
 
   public async selectProvider(provider: AiProvider): Promise<void> {
     const next = normalizeProvider(provider);
-    if (next === this.provider) return;
+    if (next === this.provider) {
+      await this.ensureActiveAccount(next);
+      return;
+    }
     const previous = this.current();
     if (previous.status().status === "busy") {
       throw new Error("Không thể đổi AI khi tác vụ dịch đang chạy.");
     }
     await previous.close();
     this.provider = next;
+    await this.ensureActiveAccount(next);
     await this.options.persistProvider?.(next);
     this.emitter.emit("status", this.status());
   }
 
   public async openLogin(): Promise<AiProviderStatusSnapshot> {
-    const snapshot = await this.invoke((adapter) => adapter.openLogin());
+    const adapter = this.current();
+    if (adapter.isManualLoginRunning?.()) {
+      const snapshot = await adapter.openLogin();
+      if (snapshot.status === "ready") {
+        await this.syncCurrentAccount().catch(() => undefined);
+        if (this.accountIds[this.provider]) {
+          await this.invoke((readyAdapter) => readyAdapter.openLogin()).catch(() => undefined);
+        }
+      }
+      return this.decorate(this.provider, snapshot);
+    }
+
+    const snapshot = await this.invoke((targetAdapter) => targetAdapter.openLogin());
     if (snapshot.status === "ready") {
       await this.syncCurrentAccount().catch(() => undefined);
     }
@@ -397,7 +554,7 @@ export class AiProviderManager {
   }
 
   public async openManualLogin(): Promise<AiProviderStatusSnapshot> {
-    return this.decorate(this.provider, await this.invoke((adapter) => adapter.openManualLogin()));
+    return this.decorate(this.provider, await this.current().openManualLogin());
   }
 
   public async refreshStatus(waitMs = 0): Promise<AiProviderStatusSnapshot> {
@@ -408,11 +565,25 @@ export class AiProviderManager {
   }
 
   public async ensureReady(): Promise<void> {
+    await this.ensureActiveAccount();
+    const registry = this.options.accounts;
+    if (registry) {
+      const accounts = await registry.listFor(this.provider);
+      if (accounts.length === 0) {
+        throw new Error(
+          `Chưa có tài khoản ${providerLabel(this.provider)} nào. Hãy bấm "Thêm tài khoản" để đăng nhập trước khi dịch.`,
+        );
+      }
+    }
     await this.invoke((adapter) => adapter.ensureReady());
   }
 
   public async startNewConversation(): Promise<void> {
     await this.invoke((adapter) => adapter.startNewConversation());
+  }
+
+  public async setReasoning(enabled: boolean): Promise<boolean> {
+    return await this.invoke((adapter) => adapter.setReasoning(enabled));
   }
 
   public async sendAndWait(message: string, options?: SendMessageOptions): Promise<string> {
@@ -459,6 +630,7 @@ export class AiProviderManager {
   }
 
   private async invoke<T>(operation: (adapter: ChatGptWebAdapter) => Promise<T>): Promise<T> {
+    await this.ensureActiveAccount();
     try {
       return await operation(this.current());
     } catch (error) {

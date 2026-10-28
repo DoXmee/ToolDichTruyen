@@ -512,6 +512,18 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     const exportJobId = stringField(payload, "exportJobId", { required: true, max: 200 })!;
     const sourceStartChapter = boundedPositiveInteger(payload.sourceStartChapter, 'sourceStartChapter');
     const sourceEndChapter = boundedPositiveInteger(payload.sourceEndChapter, 'sourceEndChapter');
+    let sourceChapterNumbers: number[] | undefined;
+    if (payload.sourceChapterNumbers !== undefined) {
+      if (!Array.isArray(payload.sourceChapterNumbers) || payload.sourceChapterNumbers.length > 10_000) {
+        throw new TypeError('Danh sách chương nguồn của file tổng chương gốc không hợp lệ.');
+      }
+      sourceChapterNumbers = payload.sourceChapterNumbers.map((value, index) => {
+        if (!Number.isSafeInteger(value) || value < 1) {
+          throw new TypeError(`Chương nguồn ${index + 1} không hợp lệ.`);
+        }
+        return value;
+      });
+    }
     const outputStartChapter = boundedPositiveInteger(payload.outputStartChapter, 'outputStartChapter');
     const outputEndChapter = boundedPositiveInteger(payload.outputEndChapter, 'outputEndChapter');
     const splitOutputStartChapter = payload.splitOutputStartChapter === undefined
@@ -526,6 +538,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
       exportJobId,
       sourceStartChapter,
       sourceEndChapter,
+      sourceChapterNumbers,
       outputStartChapter,
       outputEndChapter,
       splitOutputStartChapter,
@@ -572,7 +585,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
   handle(IPC_CHANNELS.accountSelect, async (_event, rawPayload) => {
     const payload = objectPayload(rawPayload, "Chọn tài khoản");
     const id = stringField(payload, "id", { required: true, max: 100 })!;
-    await dependencies.chatGpt.activateAccount(id);
+    await dependencies.chatGpt.activateAccount(id, { switchProvider: true });
     return accountSnapshot();
   });
   handle(IPC_CHANNELS.accountAdd, async (_event, rawPayload) => {
@@ -609,6 +622,28 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
       throw new Error("Hãy dừng tiến trình dịch trước khi dọn rác.");
     }
     return dependencies.chatGpt.cleanJunk();
+  });
+  handle(IPC_CHANNELS.storyMemoryGet, async (_event, rawPayload) => {
+    const payload = rawPayload ? objectPayload(rawPayload, "Yêu cầu bộ nhớ") : {};
+    const directory = typeof payload.directory === "string" ? payload.directory : undefined;
+    const jobId = typeof payload.jobId === "string" ? payload.jobId : undefined;
+    return dependencies.translator.getStoryMemory({ directory, jobId });
+  });
+  handle(IPC_CHANNELS.storyMemorySave, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, "Dữ liệu bộ nhớ");
+    const directory = typeof payload.directory === "string" ? payload.directory : undefined;
+    const jobId = typeof payload.jobId === "string" ? payload.jobId : undefined;
+    const memory = payload.memory as any;
+    if (!memory || typeof memory !== "object") {
+      throw new TypeError("Dữ liệu bộ nhớ không hợp lệ.");
+    }
+    return dependencies.translator.saveStoryMemory({ directory, jobId, memory });
+  });
+  handle(IPC_CHANNELS.storyMemoryClear, async (_event, rawPayload) => {
+    const payload = rawPayload ? objectPayload(rawPayload, "Yêu cầu dọn bộ nhớ") : {};
+    const directory = typeof payload.directory === "string" ? payload.directory : undefined;
+    const jobId = typeof payload.jobId === "string" ? payload.jobId : undefined;
+    return dependencies.translator.clearStoryMemory({ directory, jobId });
   });
 
   const unsubscribeTranslation = dependencies.translator.onEvent((event) =>

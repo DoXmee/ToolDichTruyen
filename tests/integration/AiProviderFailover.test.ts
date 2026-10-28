@@ -480,7 +480,7 @@ describe('automatic AI provider failover', () => {
     })
     await completed
 
-    expect(sends.filter((send) => send.provider === 'chatgpt' && send.repair)).toHaveLength(10)
+    expect(sends.filter((send) => send.provider === 'chatgpt' && send.repair)).toHaveLength(3)
     expect(sends.at(-1)).toEqual({ provider: 'kimi', repair: true })
   }, 20_000)
 

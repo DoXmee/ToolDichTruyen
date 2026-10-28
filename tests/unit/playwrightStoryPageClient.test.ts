@@ -66,10 +66,11 @@ describe("PlaywrightPageClient Cloudflare status tracking", () => {
     const responseHandlers: Array<(response: Response) => void> = [];
     let currentDocument = documentData();
 
-    const response = (status: number): Response => ({
+    const response = (status: number, url = "https://m.huliwang.net/dir/1703891.html"): Response => ({
       status: () => status,
+      url: () => url,
       frame: () => mainFrame,
-      request: () => ({ isNavigationRequest: () => true }),
+      request: () => ({ isNavigationRequest: () => true, url: () => url }),
     } as unknown as Response);
 
     const page = {
@@ -111,5 +112,48 @@ describe("PlaywrightPageClient Cloudflare status tracking", () => {
       challenge: "none",
       title: "Mục lục truyện",
     });
+  });
+
+  it("ignores stale main-frame responses from the previous requested URL", async () => {
+    const mainFrame = {};
+    const responseHandlers: Array<(response: Response) => void> = [];
+    const requestedUrl = "https://www.timotxt.com/1509589610/13.html";
+    let currentDocument = documentData({
+      url: requestedUrl,
+      title: "第13章",
+      bodyText: "Nội dung chương TimoTXT đã tải xong.",
+      challenge: "none",
+    });
+
+    const response = (status: number, url: string): Response => ({
+      status: () => status,
+      url: () => url,
+      frame: () => mainFrame,
+      request: () => ({ isNavigationRequest: () => true, url: () => url }),
+    } as unknown as Response);
+
+    const page = {
+      on: (event: string, handler: (value: Response) => void) => {
+        if (event === "response") responseHandlers.push(handler);
+      },
+      mainFrame: () => mainFrame,
+      goto: async () => {
+        responseHandlers.forEach((handler) => handler(response(403, "https://www.timotxt.com/1509589610/dir")));
+        return response(200, requestedUrl);
+      },
+      evaluate: async () => currentDocument,
+      url: () => currentDocument.url,
+      close: async () => undefined,
+    } as unknown as Page;
+    const context = { newPage: async () => page } as unknown as BrowserContext;
+    const networkGuard = {
+      assert: async () => undefined,
+      clearNavigationFailure: () => undefined,
+      takeNavigationFailure: () => undefined,
+    };
+    const client = new PlaywrightPageClient(context, networkGuard as never);
+
+    const snapshot = await client.visit(requestedUrl);
+    expect(snapshot).toMatchObject({ status: 200, title: "第13章" });
   });
 });

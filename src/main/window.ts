@@ -120,6 +120,12 @@ export async function createMainWindow(options: CreateMainWindowOptions = {}): P
   };
 
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("before-input-event", (event, input) => {
+    if (input.type === "keyDown" && (input.control || input.meta) && input.key.toLowerCase() === "r") {
+      event.preventDefault();
+      window.webContents.reloadIgnoringCache();
+    }
+  });
   window.webContents.on("will-navigate", (event, targetUrl) => {
     if (!navigationAllowed(targetUrl, options.devServerUrl)) event.preventDefault();
   });

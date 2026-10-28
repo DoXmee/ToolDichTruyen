@@ -44,6 +44,30 @@ Singleton*
 *.exe
 *.blockmap
 
+# Tài liệu cá nhân, báo cáo, scratch
+*.docx
+*.pdf
+scratch/
+inspect_turn.cjs
+deploy_update.bat
+scripts/audit_*
+scripts/check_*
+scripts/clean_*
+scripts/compare_*
+scripts/compile_*
+scripts/deep_audit_*
+scripts/diagnose_*
+scripts/extract_*
+scripts/find_*
+scripts/fix_*
+scripts/inspect_*
+scripts/list_*
+scripts/monitor_*
+scripts/read_*
+scripts/standardize_*
+scripts/test_kinship_*
+scripts/verify_*
+
 # Generated local bundles and recovery artifacts. Source lives in src/, resources/ and tests/.
 *.asar
 index.js

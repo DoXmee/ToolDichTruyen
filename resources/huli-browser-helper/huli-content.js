@@ -379,41 +379,42 @@ function collect(requestedUrl) {
   return snapshot;
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "collect-snapshot") {
-    if (isCatalogPage()) {
-      void collectCatalogSnapshotWhenReady(message.requestedUrl).then(
+// The paired tab is replaced during navigation, so every Huli document opens
+// its own Port from this content script immediately after it loads.
+if (isSupportedCurrentPage()) {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "collect-snapshot") {
+      if (isCatalogPage()) {
+        void collectCatalogSnapshotWhenReady(message.requestedUrl).then(
+          (snapshot) => sendResponse({ ok: true, snapshot }),
+          (error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "Catalog snapshot failed." }),
+        );
+        return true;
+      }
+      try {
+        sendResponse({ ok: true, snapshot: collect(message.requestedUrl) });
+      } catch (error) {
+        sendResponse({ ok: false, error: error instanceof Error ? error.message : "Snapshot failed." });
+      }
+      return false;
+    }
+    if (message?.type === "advance-catalog-page") {
+      void advanceCatalogPage(message.requestedUrl).then(
         (snapshot) => sendResponse({ ok: true, snapshot }),
-        (error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "Catalog snapshot failed." }),
+        (error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "Catalog page advance failed." }),
       );
       return true;
     }
-    try {
-      sendResponse({ ok: true, snapshot: collect(message.requestedUrl) });
-    } catch (error) {
-      sendResponse({ ok: false, error: error instanceof Error ? error.message : "Snapshot failed." });
+    if (message?.type === "resolve-chapter-next") {
+      try {
+        sendResponse({ ok: true, nextUrl: resolveChapterNextPage(message.requestedUrl) });
+      } catch (error) {
+        sendResponse({ ok: false, error: error instanceof Error ? error.message : "Chapter next-page target failed." });
+      }
+      return false;
     }
     return false;
-  }
-  if (message?.type === "advance-catalog-page") {
-    void advanceCatalogPage(message.requestedUrl).then(
-      (snapshot) => sendResponse({ ok: true, snapshot }),
-      (error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "Catalog page advance failed." }),
-    );
-    return true;
-  }
-  if (message?.type === "resolve-chapter-next") {
-    try {
-      sendResponse({ ok: true, nextUrl: resolveChapterNextPage(message.requestedUrl) });
-    } catch (error) {
-      sendResponse({ ok: false, error: error instanceof Error ? error.message : "Chapter next-page target failed." });
-    }
-    return false;
-  }
-  return false;
-});
-
-// The paired tab is replaced during navigation, so every Huli document opens
-// its own Port from this content script immediately after it loads.
-if (isSupportedCurrentPage()) connectHeartbeat();
+  });
+  connectHeartbeat();
+}
 }

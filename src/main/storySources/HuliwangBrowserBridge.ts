@@ -23,11 +23,11 @@ export const HULIWANG_COMPANION_EXTENSION_ORIGIN =
  * expose the narrowly scoped `catalog-next` command, so pairing them would
  * otherwise fail later with a misleading empty/partial catalog error.
  */
-// Version 1.0.8 isolates broad-match content scripts and accepts Huliwang's
-// ihuliwang.com migration. Older helpers can pair but cannot read that host.
-export const HULIWANG_COMPANION_MINIMUM_VERSION = "1.0.8";
+// Version 1.0.11 adds verified TimoTXT font asset reporting while keeping all broad-match content scripts isolated by strict
+// per-site allow-lists, including TimoTXT/Huli pages loaded in the same browser.
+export const HULIWANG_COMPANION_MINIMUM_VERSION = "1.0.11";
 
-export type BrowserCompanionSite = "huliwang" | "xszj" | "novel543";
+export type BrowserCompanionSite = "huliwang" | "xszj" | "novel543" | "timotxt";
 
 const MAX_RESULT_BYTES = 2 * 1024 * 1024;
 const MAX_PAIR_BYTES = 4 * 1024;
@@ -145,6 +145,7 @@ function isExtensionVersionAtLeast(
 function companionSiteLabel(site: BrowserCompanionSite): string {
   if (site === "huliwang") return "Huliwang";
   if (site === "xszj") return "XSZJ/爱下电子书";
+  if (site === "timotxt") return "TimoTXT";
   return "Novel543";
 }
 
@@ -182,6 +183,30 @@ function assertCompanionHttpsUrl(value: unknown, name: string, site: BrowserComp
   return parsed.toString();
 }
 
+function assertCompanionAssetHttpsUrl(value: unknown, name: string, site: BrowserCompanionSite): string {
+  const raw = boundedString(value, name, 2_048, false);
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new TypeError(`${name} is not a valid URL.`);
+  }
+  const host = parsed.hostname.toLowerCase();
+  const isTimotxtHost = host === "timotxt.com" || host === "www.timotxt.com" || host.endsWith(".timotxt.com");
+  if (
+    site !== "timotxt"
+    || parsed.protocol !== "https:"
+    || parsed.username
+    || parsed.password
+    || parsed.port
+    || !isTimotxtHost
+    || !/\.(?:woff2?|ttf)$/iu.test(parsed.pathname)
+  ) {
+    throw new TypeError(`${name} is outside the companion asset allow-list.`);
+  }
+  return parsed.toString();
+}
+
 function validateStoryUrl(value: unknown, name: string, site: BrowserCompanionSite) {
   const raw = assertCompanionHttpsUrl(value, name, site);
   const parsed = parseStoryUrl(raw);
@@ -206,7 +231,7 @@ function validateFontAsset(value: unknown, site: BrowserCompanionSite): StoryPag
   if (!/^[a-f\d]{64}$/iu.test(sha256)) throw new TypeError("snapshot.fontAssets.sha256 is invalid.");
   return {
     family: boundedString(value.family, "snapshot.fontAssets.family", 512, false),
-    url: assertCompanionHttpsUrl(value.url, "snapshot.fontAssets.url", site),
+    url: assertCompanionAssetHttpsUrl(value.url, "snapshot.fontAssets.url", site),
     sha256: sha256.toLowerCase(),
   };
 }
@@ -305,7 +330,7 @@ function validateSnapshot(
   const links = value.links.map((link) => validateLink(link, site));
   const fontFamilies = stringArray(value.fontFamilies, "snapshot.fontFamilies", 256, 512);
   const fontUrls = stringArray(value.fontUrls, "snapshot.fontUrls", 256, 2_048)
-    .map((url) => assertCompanionHttpsUrl(url, "snapshot.fontUrls", site));
+    .map((url) => assertCompanionAssetHttpsUrl(url, "snapshot.fontUrls", site));
   const fontHashes = stringArray(value.fontHashes, "snapshot.fontHashes", 256, 64)
     .map((hash) => {
       if (!/^[a-f\d]{64}$/iu.test(hash)) throw new TypeError("snapshot.fontHashes is invalid.");
@@ -529,7 +554,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
         timer: setTimeout(() => {
           waiter.reject(new StorySourceError(
             "USER_ACTION_REQUIRED",
-            "Chưa nhận được kết nối từ tiện ích Huliwang Companion. Hãy cài/bật tiện ích trong trình duyệt mặc định rồi thử kết nối lại.",
+            `Chưa nhận được kết nối từ Browser Helper cho ${companionSiteLabel(this.site)}. Hãy cài/bật tiện ích trong trình duyệt mặc định rồi thử kết nối lại.`,
           ));
         }, this.pairingTimeoutMs),
         ...(signal ? { signal } : {}),
@@ -575,7 +600,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
     if (!this.paired) {
       return Promise.reject(new StorySourceError(
         "USER_ACTION_REQUIRED",
-        "Huliwang Companion chưa kết nối với trình duyệt mặc định.",
+        `Browser Helper cho ${companionSiteLabel(this.site)} chưa kết nối với trình duyệt mặc định.`,
       ));
     }
     if (signal?.aborted) return Promise.reject(abortReason(signal));
@@ -697,12 +722,12 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
     } catch (error) {
       return Promise.reject(new StorySourceError(
         "UNSUPPORTED_URL",
-        "Cầu nối trình duyệt chỉ nhận URL truyện Huliwang hợp lệ.",
+        `Cầu nối trình duyệt chỉ nhận URL truyện ${companionSiteLabel(this.site)} hợp lệ.`,
         { cause: error },
       ));
     }
     if (this.pending) {
-      return Promise.reject(new StorySourceError("SOURCE_BLOCKED", "Cầu nối Huliwang đang xử lý một trang khác."));
+      return Promise.reject(new StorySourceError("SOURCE_BLOCKED", `Cầu nối ${companionSiteLabel(this.site)} đang xử lý một trang khác.`));
     }
 
     return new Promise<StoryPageSnapshot>((resolve, reject) => {
@@ -717,7 +742,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
         timer: setTimeout(() => {
           this.rejectPending(new StorySourceError(
             "USER_ACTION_REQUIRED",
-            "Trình duyệt mặc định chưa gửi lại trang Huliwang. Hãy giữ tab ghép nối và tiện ích Huliwang Companion đang bật rồi thử lại.",
+            `Trình duyệt mặc định chưa gửi lại trang ${companionSiteLabel(this.site)}. Hãy giữ tab ghép nối và Browser Helper đang bật rồi thử lại.`,
           ));
         }, this.visitTimeoutMs),
         ...(signal ? { signal } : {}),
@@ -735,7 +760,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
   private inspectCurrent(signal?: AbortSignal): Promise<StoryPageSnapshot> {
     if (signal?.aborted) return Promise.reject(abortReason(signal));
     if (!this.lastRequestedUrl || !this.lastSnapshot) {
-      return Promise.reject(new StorySourceError("SOURCE_BLOCKED", "Trình duyệt mặc định chưa gửi snapshot Huliwang nào."));
+      return Promise.reject(new StorySourceError("SOURCE_BLOCKED", `Trình duyệt mặc định chưa gửi snapshot ${companionSiteLabel(this.site)} nào.`));
     }
     // Ask the extension for a fresh snapshot of the same URL. The companion
     // recognizes that its paired tab is already at this exact URL and reads
@@ -890,7 +915,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
     }
 
     if (!body.ok) {
-      let message = "Tiện ích trình duyệt không thể đọc trang Huliwang.";
+      let message = `Tiện ích trình duyệt không thể đọc trang ${companionSiteLabel(this.site)}.`;
       try {
         const detail = boundedString(body.error, "error", 512, false);
         message = `${message} ${detail}`;
@@ -925,7 +950,7 @@ export class HuliwangBrowserBridge implements HuliwangCompanionSession {
       this.consumePending();
       pending.reject(new StorySourceError(
         "INVALID_CONTENT",
-        "Snapshot do tiện ích Huliwang gửi về không hợp lệ hoặc vượt ngoài phạm vi an toàn.",
+        `Snapshot do tiện ích ${companionSiteLabel(this.site)} gửi về không hợp lệ hoặc vượt ngoài phạm vi an toàn.`,
         { cause: error },
       ));
       this.sendText(response, 400, "Invalid snapshot.");

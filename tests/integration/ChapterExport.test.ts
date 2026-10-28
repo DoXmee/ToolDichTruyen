@@ -440,17 +440,40 @@ describe('chapter TXT export', () => {
     expect(await readdir(directory)).toEqual([]);
   });
 
-  it('rejects a combined TXT whose claimed source range contains a gap', async () => {
+  it('exports a combined TXT whose selected source range contains a gap', async () => {
     const directory = await temporaryDirectory();
-    await expect(exportCombinedChapterFile({
+    const result = await exportCombinedChapterFile({
       directory,
       exportJobId: 'job-gap',
       startChapter: 152,
       endChapter: 154,
       sourceChapterNumbers: [152, 154],
-      chapters: [chapter()],
-    })).rejects.toThrow(/tổng hợp/u);
-    expect(await readdir(directory)).toEqual([]);
+      chapters: [
+        chapter({ index: 152, sourceChapterNumber: 152, title: 'Chương 152' }),
+        chapter({ index: 153, sourceChapterNumber: 154, title: 'Chương 154' }),
+      ],
+    });
+    expect(result.status).toBe('saved');
+    await expect(readFile(result.filePath, 'utf8')).resolves.toContain('Chương 154');
+  });
+
+  it('exports a source aggregate with a gap and marks missing chapters in its filename', async () => {
+    const directory = await temporaryDirectory();
+    const result = await exportCombinedSourceChapterFile({
+      directory,
+      exportJobId: 'job-source-gap',
+      sourceStartChapter: 152,
+      sourceEndChapter: 154,
+      sourceChapterNumbers: [152, 154],
+      outputStartChapter: 152,
+      outputEndChapter: 153,
+      chapters: [
+        chapter({ index: 152, sourceChapterNumber: 152, title: 'Chương 152' }),
+        chapter({ index: 153, sourceChapterNumber: 154, title: 'Chương 153' }),
+      ],
+    });
+    expect(result.fileName).toBe('File tổng c.gốc (152-154, thiếu 153)_c.mới (152-153).txt');
+    await expect(readFile(result.filePath, 'utf8')).resolves.toContain('Chương 153');
   });
 
   it('fails closed when an occupied destination cannot be read as the expected TXT', async () => {

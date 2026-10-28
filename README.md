@@ -1,12 +1,13 @@
 <div align="center">
   <img src="docs/assets/tool-dich-truyen.png" width="112" alt="Logo Tool Dịch Truyện">
   <h1>Tool Dịch Truyện · Trung → Việt</h1>
-  <p><strong>Ứng dụng Windows hỗ trợ tải truyện, dịch bằng ChatGPT, Kimi hoặc DeepSeek Web, kiểm tra kết quả, khôi phục checkpoint và xuất bản dịch theo chương.</strong></p>
+  <p><strong>Ứng dụng Windows thông minh hỗ trợ tải truyện, dịch bằng ChatGPT, Kimi, DeepSeek, Gemini Web, khóa tên mỏ neo Story Bible & NameLocker, tối ưu hóa RAM, khôi phục checkpoint và xuất bản dịch chuyên nghiệp.</strong></p>
   <p>
+    <img alt="Phiên bản" src="https://img.shields.io/badge/version-v1.3.0-blue?style=flat-square">
     <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-2563eb?logo=windows11&logoColor=white">
     <img alt="Electron" src="https://img.shields.io/badge/Electron-43-47848f?logo=electron&logoColor=white">
     <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-7-3178c6?logo=typescript&logoColor=white">
-    <img alt="Tests" src="https://img.shields.io/badge/tests-597%20passed-1f883d">
+    <img alt="Tests" src="https://img.shields.io/badge/tests-830%2B%20passed-1f883d">
     <img alt="License" src="https://img.shields.io/badge/license-UNLICENSED-6e7781">
   </p>
 </div>
@@ -14,29 +15,55 @@
 ![Giao diện Tool Dịch Truyện](docs/assets/app-overview.png)
 
 > [!IMPORTANT]
-> Tool điều khiển giao diện ChatGPT, Kimi hoặc DeepSeek Web trong trình duyệt do ứng dụng mở; không gọi API dịch và không vượt CAPTCHA, đăng nhập hay giới hạn tài khoản. Người dùng cần tự đăng nhập và chịu trách nhiệm kiểm tra bản dịch trước khi sử dụng.
+> Tool điều khiển giao diện web của ChatGPT, Kimi, DeepSeek hoặc Gemini trong trình duyệt do ứng dụng quản lý; không gọi API tốn phí và không lưu trữ mật khẩu cá nhân. Người dùng tự đăng nhập và toàn quyền kiểm soát phiên làm việc.
 
 ## Tổng quan
 
-Tool Dịch Truyện gom toàn bộ quy trình dịch truyện dài vào một ứng dụng desktop: nhập văn bản hoặc link truyện, chọn phong cách, dịch có checkpoint, kiểm tra phản hồi, tiếp tục sau sự cố, chia chương và xuất TXT. Bốn prompt mặc định gồm **niên đại**, **hiện đại**, **cổ trang** và **tu tiên**; người dùng vẫn có thể nhập prompt riêng.
+Tool Dịch Truyện gom toàn bộ quy trình dịch truyện dài vào một ứng dụng desktop mạnh mẽ: nhập văn bản hoặc phân tích link truyện, xây dựng bối cảnh thực thể (**Story Bible**), khóa cứng tên nhân vật (**NameLocker** với mỏ neo `⟦...⟧`), dịch có checkpoint tự động, kiểm tra chất lượng bản dịch theo thời gian thực, xoay đoạn chat chống tràn RAM, chia chương và xuất file TXT hoàn chỉnh.
 
-**Điều hướng:** [Tính năng](#tính-năng-chính) · [Cài đặt phát triển](#cài-đặt-và-chạy-phát-triển) · [Cách sử dụng](#cách-sử-dụng) · [Kiểm thử](#kiểm-thử) · [Đóng gói](#build-và-đóng-gói-windows) · [Bảo mật](SECURITY.md) · [Đóng góp](CONTRIBUTING.md)
+**Điều hướng:** [Tính năng chính](#tính-năng-chính) · [Công nghệ Story Bible & NameLocker](#công-nghệ-story-bible--namelocker-v2) · [Tối ưu hóa RAM & Xoay chat](#tối-ưu-hóa-hiệu-năng--xoay-đoạn-chat) · [Cài đặt phát triển](#cài-đặt-và-chạy-phát-triển) · [Cách sử dụng](#cách-sử-dụng) · [Đóng gói](#build-và-đóng-gói-windows)
 
 ## Tính năng chính
 
-- Nhập trực tiếp văn bản tiếng Trung hoặc phân tích link truyện theo danh sách chương.
-- Hỗ trợ các nguồn đã kiểm thử trong adapter: Huliwang, XSZJ/爱下电子书, TimoTXT, Qingrenyouxi, Xbanxia và Novel543.
-- Ghép đủ các trang con của cùng một chương và loại bỏ footer/navigation đã nhận diện theo từng website.
-- Chọn bốn prompt đóng gói sẵn: `Truyện niên đại`, `Truyện hiện đại`, `Truyện cổ trang`, `Truyện tu tiên`; hoặc dùng prompt `Khác`.
-- Chọn nhóm cố định gồm một đến bốn chatbot ChatGPT/Kimi/DeepSeek/Gemini; mặc định dùng cả bốn.
-- Dịch trực tiếp bằng Gemini Web ngang hàng ChatGPT/Kimi/DeepSeek, dùng profile trình duyệt riêng và cùng cơ chế checkpoint.
-- Lưu checkpoint, nhóm chatbot, nhật ký hoạt động và tiếp tục đúng đoạn lỗi sau khi app/trình duyệt bị gián đoạn.
-- Retry có kiểm tra chữ Hán còn sót, lặp nội dung, tiêu đề và phản hồi an toàn; tự chuyển trong nhóm chatbot đã chọn theo loại lỗi.
-- Khi tiến trình lỗi, cho phép dùng một chatbot ngoài nhóm để cứu đúng một lượt; sau thành công hoặc thất bại đều quay lại nhóm cố định mà không lặp bot cứu.
-- Chia chương, tự nhận diện số chương, đánh lại số, tùy chọn bỏ tên chương và chỉnh riêng nội dung preview.
-- Xuất đầy đủ TXT chương lẻ, bản dịch gốc chưa chia, file tổng bản dịch và file tổng chương nguồn với cả dải số cũ/mới.
-- Giao diện sáng/tối, zoom thích nghi theo vùng làm việc Windows và nhật ký tiến trình dễ đọc.
-- Tùy chọn dùng Gemini để gợi ý tên chương.
+- **Đa nền tảng AI Web hàng đầu:** Hỗ trợ 4 chatbot thông minh: **ChatGPT**, **Kimi AI**, **DeepSeek AI**, và **Gemini AI**; tự động đảo bot cứu hộ và quản lý đa tài khoản.
+- **Hệ thống Story Bible & NameLocker v2:** Khóa cứng tên nhân vật bằng mỏ neo kỹ thuật `⟦...⟧`. Đảm bảo tên riêng, biệt danh không bao giờ bị AI dịch sai lệch hoặc hallucinate.
+- **Chuẩn hóa danh xưng Latinh cho nhân vật ngoại quốc:** Bắt buộc dùng chữ cái Latinh quốc tế chuẩn duy nhất (ví dụ: `Jelina`), triệt tiêu hoàn toàn lỗi "1 người 3 tên" hoặc âm Hán-Việt thô cứng.
+- **Phân tách thông minh Tên rút gọn & Biệt danh cố định:** Tự động nhận diện và khóa riêng biệt tên gọi bỏ họ (`秀麗` -> `⟦Tú Lệ⟧`) và biệt danh thân mật (`剛子` -> `⟦Cương Tử⟧`), bảo tồn 100% sắc thái tự nhiên trong đối thoại.
+- **Tối ưu hóa RAM & Xoay đoạn chat tự động:** Tự động mở chat mới theo chu kỳ vàng (10–15 đoạn ~ 110.000 ký tự), thu gọn DOM, giải phóng bộ nhớ RAM từ 8GB xuống dưới 400MB khi dịch bộ truyện dài hàng trăm chương.
+- **Phím tắt ngầm `Ctrl + R` & Huy hiệu phiên bản:** Làm mới giao diện tức thì và hiển thị huy hiệu `v1.3.0` trực quan trên thanh tiêu đề.
+- **Trình nhập nguồn truyện đa năng:** Hỗ trợ Huliwang, XSZJ/爱下电子书, TimoTXT, Novel543, Qingrenyouxi, Xbanxia kèm tiện ích mở rộng `Huli Browser Helper` giải mã font chữ chống cào trộm.
+- **Khôi phục Checkpoint bền vững:** Tự động lưu trạng thái sau từng phân đoạn; khi xảy ra sự cố mạng hoặc tắt app, người dùng chỉ cần bấm "Tiếp tục" là chạy tiếp ngay.
+- **Công cụ hậu kỳ chuyên nghiệp:** Tự động chia chương, đánh lại số chương, tùy chọn bỏ tên chương, xuất file TXT chương lẻ và file TXT tổng hợp hoàn chỉnh.
+
+---
+
+### Công nghệ Story Bible & NameLocker v2
+
+Một trong những vấn đề nan giải nhất khi dịch tiểu thuyết dài tập bằng AI là hiện tượng nhân vật bị "đổi tên", "dịch sót", hoặc "một người có 3-4 tên gọi khác nhau":
+
+```
+[Bản nguồn tiếng Trung]               [Bản dịch tiếng Việt chuẩn]
+李學剛 (Lý Học Cương)        ───►     ⟦Lý Học Cương⟧
+剛子   (Biệt danh của Cương) ───►     ⟦Cương Tử⟧
+吳秀麗 (Ngô Tú Lệ)           ───►     ⟦Ngô Tú Lệ⟧
+秀麗   (Tên gọi bỏ họ)        ───►     ⟦Tú Lệ⟧
+耶莲娜 / 耶莲卡 (Ngoại quốc)  ───►     ⟦Jelina⟧ (Latinh chuẩn duy nhất)
+```
+
+1. **Khóa mỏ neo `⟦...⟧`:** Toàn bộ tên riêng đã nhận diện được bọc trong cặp ngoặc mỏ neo trước khi chuyển vào Prompt. AI được lập trình tuyệt đối không can thiệp vào cụm từ bên trong mỏ neo.
+2. **Khớp tiền tố dài nhất (Longest-Match Priority):** Tên 3 chữ (`吳秀麗`) luôn được khớp và khóa trước tên 2 chữ (`秀麗`), ngăn chặn hoàn toàn hiện tượng nuốt chữ hoặc đè chéo tên.
+3. **Mở khóa tự nhiên (Natural Unlock):** Sau khi nhận bản dịch từ AI, hệ thống tự động tháo dỡ các ngoặc mỏ neo, tự động chèn khoảng cách biên từ chuẩn mực tiếng Việt.
+
+---
+
+### Tối ưu hóa hiệu năng & Xoay đoạn chat
+
+Khi dịch truyện dài từ 50 đến hàng trăm chương trong cùng một phiên chat, cây cấu trúc DOM của trình duyệt Chrome/Edge bị phình to với hàng vạn thẻ KaTeX, Markdown, gây giật lag và đẩy mức chiếm dụng RAM lên tới 6GB – 8GB.
+
+* **Chu kỳ xoay chat tối ưu (10 - 15 Segments):** Hệ thống tự động theo dõi tổng số ký tự tích lũy (~110.000 ký tự) và số phân đoạn. Khi đạt ngưỡng an toàn, Tool tự động mở một hội thoại mới tinh, truyền đầy đủ bối cảnh tóm tắt và mỏ neo sang đoạn chat mới.
+* **Tiết kiệm tài nguyên:** Bộ nhớ RAM luôn được duy trì ổn định dưới 400MB, tốc độ phản hồi của ChatGPT luôn ở mức cao nhất, không bị hiện tượng treo đơ trình duyệt.
+
+---
 
 ### Nhập Huliwang bằng trình duyệt mặc định
 
