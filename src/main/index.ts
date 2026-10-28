@@ -1,3 +1,9 @@
+/**
+ * Tool Dịch Truyện · Trung → Việt
+ * Tác giả: ThanhDongg (DoXmee)
+ * GitHub: https://github.com/DoXmee/ToolDichTruyen
+ */
+
 import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage } from "electron";
 import path from "node:path";
 import { AiProviderManager } from "./ai/AiProviderManager.js";

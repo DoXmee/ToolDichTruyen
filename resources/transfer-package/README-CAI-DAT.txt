@@ -1,4 +1,7 @@
 TOOLDICHTRUYEN v1.3.0 - CÀI ĐẶT / CẬP NHẬT MÁY MỚI
+Tác giả & Phát triển: ThanhDongg (DoXmee)
+GitHub: https://github.com/DoXmee/ToolDichTruyen
+Liên hệ: tdongg3072@gmail.com
 =====================================================
 
 1. Giải nén TOÀN BỘ file ZIP vào một thư mục bất kỳ.

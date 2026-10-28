@@ -3,7 +3,12 @@
   "version": "1.3.0",
   "description": "Ứng dụng Windows dịch truyện Trung - Việt qua ChatGPT, Kimi AI, DeepSeek AI hoặc Gemini AI, có checkpoint và chia chương tự động.",
   "main": "./out/main/index.js",
-  "author": "Local",
+  "author": "ThanhDongg (DoXmee) <tdongg3072@gmail.com>",
+  "homepage": "https://github.com/DoXmee/ToolDichTruyen",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DoXmee/ToolDichTruyen.git"
+  },
   "license": "UNLICENSED",
   "private": true,
   "packageManager": "pnpm@11.16.0",

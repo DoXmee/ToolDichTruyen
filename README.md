@@ -10,6 +10,9 @@
     <img alt="Tests" src="https://img.shields.io/badge/tests-830%2B%20passed-1f883d">
     <img alt="License" src="https://img.shields.io/badge/license-UNLICENSED-6e7781">
   </p>
+  <p>
+    Tác giả & Phát triển: <b><a href="https://github.com/DoXmee">ThanhDongg (DoXmee)</a></b> · Liên hệ: <code>tdongg3072@gmail.com</code>
+  </p>
 </div>
 
 ![Giao diện Tool Dịch Truyện](docs/assets/app-overview.png)
@@ -383,6 +386,13 @@ ChatGPT có thể vừa thay đổi DOM hoặc đang chạy một biến thể g
 - Trích đoạn chương được gửi tới Gemini chỉ khi dùng tính năng đặt tên AI.
 - Tệp TXT chỉ được ghi tới vị trí người dùng chọn.
 - Trước khi chia sẻ log hoặc screenshot, hãy xóa nội dung truyện, token, API key và thông tin tài khoản.
+
+## Tác giả & Bản quyền
+
+* **Tác giả / Nhà phát triển:** **ThanhDongg (DoXmee)**
+* **GitHub:** [https://github.com/DoXmee/ToolDichTruyen](https://github.com/DoXmee/ToolDichTruyen)
+* **Email liên hệ:** `tdongg3072@gmail.com`
+* **Bản quyền:** Copyright © 2026 ThanhDongg (DoXmee). Toàn quyền bảo lưu.
 
 ## Giấy phép
 

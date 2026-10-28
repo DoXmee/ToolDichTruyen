@@ -1,3 +1,9 @@
+/**
+ * Tool Dịch Truyện · Trung → Việt
+ * Tác giả: ThanhDongg (DoXmee)
+ * GitHub: https://github.com/DoXmee/ToolDichTruyen
+ */
+
 export * from './chapterSplitter';
 export * from './assistantResponse';
 export * from './chapterOutputNumbering';

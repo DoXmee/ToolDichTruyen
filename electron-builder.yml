@@ -1,5 +1,6 @@
 appId: com.local.tooldichtruyen
 productName: Tool dịch truyện
+copyright: Copyright © 2026 ThanhDongg (DoXmee)
 directories:
   output: release
 files:

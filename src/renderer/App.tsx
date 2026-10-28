@@ -1,3 +1,9 @@
+/**
+ * Tool Dịch Truyện · Trung → Việt
+ * Tác giả: ThanhDongg (DoXmee)
+ * GitHub: https://github.com/DoXmee/ToolDichTruyen
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeTextLanguage,
@@ -2553,7 +2559,7 @@ export default function App() {
       <div className="window-titlebar">
         <span className="window-titlebar__mark" aria-hidden="true"><Icon name="book" size={16} /></span>
         <span className="window-titlebar__title">
-          Dịch Truyện · Trung → Việt <span className="window-titlebar__version">v1.3.0</span>
+          Dịch Truyện · Trung → Việt <span className="window-titlebar__version">v1.3.0</span> <span style={{ opacity: 0.7, fontSize: '11px', marginLeft: '6px' }}>by ThanhDongg (DoXmee)</span>
         </span>
         <div className="window-titlebar__controls" aria-label="Điều khiển cửa sổ">
           <button aria-label="Thu nhỏ" className="window-titlebar__control" onClick={() => void getStoryTool().minimizeWindow?.()} type="button"><span aria-hidden="true" className="window-control-icon window-control-icon--minimize" /></button>
@@ -2566,7 +2572,7 @@ export default function App() {
           <span className="brand__mark"><Icon name="book" size={24} /></span>
           <div>
             <h1>Dịch Truyện</h1>
-            <p>Trung <span>→</span> Việt</p>
+            <p>Trung <span>→</span> Việt <span style={{ opacity: 0.75, fontSize: '12px', marginLeft: '6px' }}>· by ThanhDongg</span></p>
           </div>
           <button
             aria-expanded={isSupportedSitesOpen}
@@ -3077,7 +3083,7 @@ export default function App() {
 
       <footer className="app-footer">
         <span>Dữ liệu bản thảo được lưu trên thiết bị của bạn.</span>
-        <span>{providerLabel} chỉ nhận nội dung khi bạn bắt đầu dịch.</span>
+        <span>Phát triển bởi <b>ThanhDongg (DoXmee)</b> · <a href="https://github.com/DoXmee/ToolDichTruyen" target="_blank" rel="noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>GitHub: DoXmee/ToolDichTruyen</a></span>
       </footer>
 
       <StoryMemoryModal
