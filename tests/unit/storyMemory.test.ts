@@ -101,7 +101,7 @@ describe('storyMemory core engine', () => {
     expect(snippet).toContain('萧炎 -> Tiêu Viêm (Nam, Nhân vật chính)');
     expect(snippet).toContain('乌坦城 -> Ô Thản thành (Địa danh)');
     expect(snippet).toContain('斗气 -> Đấu khí (Cảnh giới/Công pháp)');
-    expect(snippet).toContain('NGUYÊN TẮC LINH HOẠT TÂM LÝ');
+    expect(snippet).toContain('NGUYÊN TẮC BÁM SÁT CỐT TRUYỆN');
     expect(snippet).toContain('QUY TẮC ĐẶC BIỆT CỦA BỘ TRUYỆN:');
     expect(snippet).toContain('MẪU ĐỐI THOẠI GẦN NHẤT ĐÃ DỊCH');
     expect(snippet).toContain('Sư phụ, lần này chúng ta đi đâu?');

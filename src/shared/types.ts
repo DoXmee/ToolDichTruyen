@@ -549,6 +549,7 @@ export interface CharacterRelation {
   targetCharacter: string;
   relationType: string;
   pronounSample: string;
+  samples?: string[];
   toneInstruction?: string;
   milestoneChapter?: number;
   directionalAddress?: {

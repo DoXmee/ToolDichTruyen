@@ -124,39 +124,51 @@ export class PersistenceService {
               throw error;
             }
           }
+          const validNames = names.filter((name) => /^[a-zA-Z0-9_-]{1,100}\\.json$/.test(name));
+          const withStats = [];
+          for (const name of validNames) {
+            try {
+              const stat = fs.statSync(path.join(workerData.directory, name));
+              withStats.push({ name, mtime: stat.mtimeMs });
+            } catch {}
+          }
+          withStats.sort((a, b) => b.mtime - a.mtime);
+          const topNames = withStats.slice(0, 40).map((s) => s.name);
+
           const value = [];
-          for (const name of names) {
-            if (!/^[a-zA-Z0-9_-]{1,100}\\.json$/.test(name)) continue;
-            const job = JSON.parse(fs.readFileSync(path.join(workerData.directory, name), 'utf8'));
-            if (!job || typeof job.id !== 'string' || !Array.isArray(job.segments)) continue;
-            value.push({
-              id: job.id,
-              createdAt: job.createdAt,
-              updatedAt: job.updatedAt,
-              status: job.status,
-              aiProvider: job.aiProvider === 'kimi' || job.aiProvider === 'deepseek' || job.aiProvider === 'gemini'
-                ? job.aiProvider
-                : 'chatgpt',
-              totalSegments: job.segments.length,
-              completedSegments: job.segments.filter((segment) => segment.status === 'completed').length,
-              segments: job.segments.map((segment) => ({
-                id: segment.id,
-                index: segment.index,
-                status: segment.status,
-                ...(segment.error ? { error: segment.error } : {}),
-              })),
-              ...(job.currentSegmentIndex === undefined ? {} : { currentSegmentIndex: job.currentSegmentIndex }),
-              ...(job.error ? { error: job.error } : {}),
-              ...(job.autoExport ? {
-                autoExport: {
-                  ...job.autoExport,
-                  sourceChapterNumbers: [...job.autoExport.sourceChapterNumbers],
-                },
-              } : {}),
-              ...(Array.isArray(job.activityLog) && job.activityLog.length
-                ? { activityLog: job.activityLog.slice(-240) }
-                : {}),
-            });
+          for (const name of topNames) {
+            try {
+              const job = JSON.parse(fs.readFileSync(path.join(workerData.directory, name), 'utf8'));
+              if (!job || typeof job.id !== 'string' || !Array.isArray(job.segments)) continue;
+              value.push({
+                id: job.id,
+                createdAt: job.createdAt,
+                updatedAt: job.updatedAt,
+                status: job.status,
+                aiProvider: job.aiProvider === 'kimi' || job.aiProvider === 'deepseek' || job.aiProvider === 'gemini'
+                  ? job.aiProvider
+                  : 'chatgpt',
+                totalSegments: job.segments.length,
+                completedSegments: job.segments.filter((segment) => segment.status === 'completed').length,
+                segments: job.segments.map((segment) => ({
+                  id: segment.id,
+                  index: segment.index,
+                  status: segment.status,
+                  ...(segment.error ? { error: segment.error } : {}),
+                })),
+                ...(job.currentSegmentIndex === undefined ? {} : { currentSegmentIndex: job.currentSegmentIndex }),
+                ...(job.error ? { error: job.error } : {}),
+                ...(job.autoExport ? {
+                  autoExport: {
+                    ...job.autoExport,
+                    sourceChapterNumbers: [...job.autoExport.sourceChapterNumbers],
+                  },
+                } : {}),
+                ...(Array.isArray(job.activityLog) && job.activityLog.length
+                  ? { activityLog: job.activityLog.slice(-240) }
+                  : {}),
+              });
+            } catch {}
           }
           parentPort.postMessage({ ok: true, value });
         } catch (error) {

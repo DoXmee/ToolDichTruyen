@@ -63,7 +63,7 @@ describe('promptCompilerV2 module', () => {
     expect(compiled.fullPrompt).toContain('Đại từ dẫn truyện: "ông"');
 
     // Check Block E
-    expect(compiled.fullPrompt).toContain('### KHỐI E: MA TRẬN XƯNG HÔ CÓ HƯỚNG');
+    expect(compiled.fullPrompt).toContain('### KHỐI E: MẪU XƯNG HÔ THAM KHẢO');
     expect(compiled.fullPrompt).toContain('Cố Quốc Cường -> Thẩm Ngọc Lan: Tự xưng "anh", gọi đối phương "em"');
 
     // Check Block F (matched glossary terms: 大队, 供销社)
@@ -137,7 +137,7 @@ describe('promptCompilerV2 module', () => {
     });
 
     expect(compiled.characterCount).toBeLessThanOrEqual(12_000);
-    expect(compiled.fullPrompt).toContain('### KHỐI E: MA TRẬN XƯNG HÔ CÓ HƯỚNG');
+    expect(compiled.fullPrompt).toContain('### KHỐI E: MẪU XƯNG HÔ THAM KHẢO');
     expect(compiled.fullPrompt).toContain('Nhân vật 1 -> Nhân vật 2');
     // Ensure character pairs without relation were NOT generated
     expect(compiled.fullPrompt).not.toContain('Nhân vật 3 -> Nhân vật 4');
@@ -183,10 +183,10 @@ describe('promptCompilerV2 module', () => {
     expect(continuationCompiled.fullPrompt).toContain('BẢO TOÀN 100% DANH TỪ TRONG NGOẶC ⟦...⟧');
     expect(continuationCompiled.fullPrompt).toContain('QUY ƯỚC TÊN NGOẠI QUỐC: Tên người ngoại quốc');
     expect(continuationCompiled.fullPrompt).toContain('chữ cái Latinh quốc tế chuẩn duy nhất');
-    expect(continuationCompiled.fullPrompt).toContain('QUY CHUẨN XƯNG HÔ THUẦN VIỆT TOÀN DIỆN');
-    expect(continuationCompiled.fullPrompt).toContain('TUYỆT ĐỐI CẤM giữ nguyên âm Hán-Việt thô: CẤM "Trương Tử", "Kha Tử"');
-    expect(continuationCompiled.fullPrompt).toContain('Mẹ Kha Tiểu Hoa BẮT BUỘC gọi là "thím Kha"');
-    expect(continuationCompiled.fullPrompt).toContain('bà góa phụ (chồng họ Phương) BẮT BUỘC gọi là "thím Phương"');
+    expect(continuationCompiled.fullPrompt).toContain('QUY CHUẨN XƯNG HÔ THUẦN VIỆT & MẪU XƯNG HÔ THAM KHẢO');
+    expect(continuationCompiled.fullPrompt).toContain('MẪU XƯNG HÔ THAM KHẢO TỪ CÁC PHÂN CẢNH TRƯỚC');
+    expect(continuationCompiled.fullPrompt).toContain('TUYỆT ĐỐI CẤM giữ nguyên âm Hán-Việt thô');
+    expect(continuationCompiled.fullPrompt).not.toContain('Mẹ Kha Tiểu Hoa BẮT BUỘC');
     expect(continuationCompiled.fullPrompt).toContain('Cố Quốc Cường');
     expect(continuationCompiled.fullPrompt).toContain('<BAN_DICH id="segment-2">');
     expect(continuationCompiled.fullPrompt).toContain('<THUC_THE_MOI>');

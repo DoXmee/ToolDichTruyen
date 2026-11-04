@@ -142,4 +142,50 @@ describe('nameLocker module', () => {
     );
     expect(result.lockedCount).toBe(6);
   });
+
+  it('correctly locks base names and aliases when entity has parenthetical annotations', () => {
+    const source = '宁峥嵘走下车，他其实也是蓝鹤清，但他更习惯别人叫他宁峥嵘。';
+    const entities = [
+      {
+        chinese: '宁峥嵘（蓝鹤清）',
+        vietnamese: 'Ninh Tranh Vanh (Lam Hạc Thanh)',
+      },
+    ];
+
+    const result = lockNamesInSource(source, entities);
+    expect(result.lockedSourceText).toBe(
+      '⟦Ninh Tranh Vanh⟧走下车，他其实也是⟦Lam Hạc Thanh⟧，但他更习惯别人叫他⟦Ninh Tranh Vanh⟧。',
+    );
+    expect(result.lockedCount).toBe(3);
+  });
+
+  it('skips single-character Chinese entities to prevent polluting common words', () => {
+    const source = '单先生去买单，孤单地看着白小姐穿着白衣服。';
+    const entities = [
+      { chinese: '单', vietnamese: 'Thiện' },
+      { chinese: '白', vietnamese: 'Bạch' },
+      { chinese: '单先生', vietnamese: 'Thiện tiên sinh' },
+      { chinese: '白小姐', vietnamese: 'Bạch tiểu thư' },
+    ];
+
+    const result = lockNamesInSource(source, entities);
+    expect(result.lockedSourceText).toBe(
+      '⟦Thiện tiên sinh⟧去买单，孤单地看着⟦Bạch tiểu thư⟧穿着白衣服。',
+    );
+    expect(result.lockedCount).toBe(2);
+  });
+
+  it('skips generic locations, directions, and clan terms (like 大院, 军区, 康家, 袁家) from being locked', () => {
+    const source = '康家的人来到大院和军区，遇到了袁家的人。';
+    const entities = [
+      { chinese: '大院', vietnamese: 'Đại Viện' },
+      { chinese: '军区', vietnamese: 'Quân Khu' },
+      { chinese: '康家', vietnamese: 'Khang Gia' },
+      { chinese: '袁家', vietnamese: 'Viên Gia' },
+    ];
+
+    const result = lockNamesInSource(source, entities);
+    expect(result.lockedSourceText).toBe('康家的人来到大院和军区，遇到了袁家的人。');
+    expect(result.lockedCount).toBe(0);
+  });
 });

@@ -1829,8 +1829,8 @@ describe('App renderer', () => {
     expect(request.chapters).toHaveLength(2);
     expect(request.chapters.every((chapter) => chapter.wordCount >= 750 && chapter.wordCount <= 800)).toBe(true);
     expect(request.chapters.map((chapter) => chapter.title)).toEqual([
-      'Chương 1: Hôm nay anh đã về',
-      'Chương 2: Hôm nay anh đã về',
+      'Chương 1: Hôm nay anh đã về (1)',
+      'Chương 2: Hôm nay anh đã về (2)',
     ]);
   });
 
@@ -1868,8 +1868,8 @@ describe('App renderer', () => {
     expect(harness.exportChapters.mock.calls[0]?.[0]).toMatchObject({
       directory: 'D:\\Truyện đã dịch',
       chapters: [
-        expect.objectContaining({ index: 5, title: 'Chương 5: Gặp lại', wordCount: 750 }),
-        expect.objectContaining({ index: 6, title: 'Chương 6: Gặp lại', wordCount: 750 }),
+        expect.objectContaining({ index: 5, title: 'Chương 5: Gặp lại (1)', wordCount: 750 }),
+        expect.objectContaining({ index: 6, title: 'Chương 6: Gặp lại (2)', wordCount: 750 }),
       ],
     });
   });

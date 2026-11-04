@@ -174,20 +174,24 @@ export function formatStoryMemoryForPrompt(
   // 2. Character Pronoun & Relationship Rules
   if (relevantRelations.length > 0) {
     const relationLines = relevantRelations.map((rel) => {
+      const sampleText = rel.samples?.length
+        ? rel.samples.join(' / ')
+        : rel.pronounSample;
       if (rel.directionalAddress) {
         const dir = rel.directionalAddress;
-        return `- ${rel.sourceCharacter} -> ${rel.targetCharacter}: Tự xưng "${dir.aToB.self}", gọi đối phương "${dir.aToB.call}"\n- ${rel.targetCharacter} -> ${rel.sourceCharacter}: Tự xưng "${dir.bToA.self}", gọi đối phương "${dir.bToA.call}"`;
+        const extraSamples = rel.samples && rel.samples.length > 1 ? ` (Mẫu đã ghi nhận: ${sampleText})` : '';
+        return `- ${rel.sourceCharacter} -> ${rel.targetCharacter}: Tự xưng "${dir.aToB.self}", gọi đối phương "${dir.aToB.call}"${extraSamples}\n- ${rel.targetCharacter} -> ${rel.sourceCharacter}: Tự xưng "${dir.bToA.self}", gọi đối phương "${dir.bToA.call}"`;
       }
       const tone = rel.toneInstruction
         ? ` | Lưu ý cảm xúc: ${rel.toneInstruction}`
         : '';
-      return `- ${rel.sourceCharacter} x ${rel.targetCharacter} [${rel.relationType}]: Xưng hô chuẩn "${rel.pronounSample}"${tone}`;
+      return `- ${rel.sourceCharacter} x ${rel.targetCharacter} [${rel.relationType}]: Mẫu xưng hô tham khảo "${sampleText}"${tone}`;
     });
 
     sections.push(
-      `QUY ƯỚC QUAN HỆ & XƯNG HÔ Ở GIAI ĐOẠN HIỆN TẠI:\n${relationLines.join(
+      `MẪU XƯNG HÔ THAM KHẢO (ĐÃ GHI NHẬN TỪ CÁC PHÂN CẢNH TRƯỚC):\n${relationLines.join(
         '\n',
-      )}\n* NGUYÊN TẮC LINH HOẠT TÂM LÝ: Giữ đúng ngôi xưng mặc định khi bình thường; khi nhân vật cãi vã, tức giận, đối đầu hoặc cần ẩn giấu thân phận thì tự động chuyển ngôi xưng (ngươi - ta, các hạ) cho tự nhiên và đúng cảm xúc ngữ cảnh.`,
+      )}\n* NGUYÊN TẮC BÁM SÁT CỐT TRUYỆN: Mẫu xưng hô trên dùng để tham khảo. Nếu cốt truyện đã bước sang giai đoạn mới (kết hôn chuyển sang gọi vợ - chồng, phân cảnh cãi vã mâu thuẫn chuyển sang tôi - anh) có dữ kiện rõ ràng, hãy linh hoạt chuyển đổi xưng hô cho đúng với thực tế phân cảnh, KHÔNG bị gò ép bởi mẫu cũ.`,
     );
   }
 
@@ -484,20 +488,35 @@ export function mergeStoryMemory(
 
   if (incoming.relations?.length) {
     const relationMap = new Map<string, CharacterRelation>();
+    const makeKey = (a: string, b: string) =>
+      [a.trim().toLowerCase(), b.trim().toLowerCase()].sort().join('___');
+
     for (const r of existing.relations || []) {
-      const key = `${r.sourceCharacter.trim()}_x_${r.targetCharacter.trim()}`;
+      if (!r.sourceCharacter || !r.targetCharacter) continue;
+      const key = makeKey(r.sourceCharacter, r.targetCharacter);
       relationMap.set(key, r);
     }
     for (const r of incoming.relations) {
-      const key = `${r.sourceCharacter?.trim()}_x_${r.targetCharacter?.trim()}`;
       if (!r.sourceCharacter || !r.targetCharacter) continue;
+      const key = makeKey(r.sourceCharacter, r.targetCharacter);
       const prev = relationMap.get(key);
+
+      const combinedSamples = Array.from(
+        new Set([
+          ...(prev?.samples || []),
+          ...(r.samples || []),
+          ...(r.pronounSample ? [r.pronounSample] : []),
+          ...(prev?.pronounSample ? [prev.pronounSample] : []),
+        ]),
+      ).filter(Boolean);
+
       relationMap.set(key, {
         id: prev?.id || r.id || `rel-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        sourceCharacter: r.sourceCharacter.trim(),
-        targetCharacter: r.targetCharacter.trim(),
-        relationType: r.relationType || prev?.relationType || 'Bằng hữu',
-        pronounSample: r.pronounSample || prev?.pronounSample || 'Ngươi - Ta',
+        sourceCharacter: prev?.sourceCharacter || r.sourceCharacter.trim(),
+        targetCharacter: prev?.targetCharacter || r.targetCharacter.trim(),
+        relationType: r.relationType || prev?.relationType || 'Quan hệ',
+        pronounSample: r.pronounSample || prev?.pronounSample || 'Quan hệ',
+        samples: combinedSamples.length ? combinedSamples : undefined,
         directionalAddress: r.directionalAddress || prev?.directionalAddress,
         toneInstruction: r.toneInstruction || prev?.toneInstruction,
         milestoneChapter: r.milestoneChapter ?? prev?.milestoneChapter,

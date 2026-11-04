@@ -24,6 +24,15 @@ export interface ValidationLockIssue {
   sample?: string;
 }
 
+const NON_LOCKABLE_WORDS = new Set([
+  '大院', '军区', '軍區', '大队', '大隊', '公社', '兵团', '兵團',
+  '南方', '北方', '内地', '內地', '东北', '東北', '西北', '东南', '東南', '西南',
+  '医院', '醫院', '工厂', '工廠', '厂房', '廠房', '车间', '車間',
+  '学校', '學校', '招待所', '饭店', '飯店', '供销社', '食堂',
+  '家属院', '家屬院', '筒子楼', '筒子樓', '卫生所', '衛生所', '卫生院', '衛生院',
+  '火车站', '火車站', '车站', '車站', '机场', '機場', '码头', '碼頭',
+]);
+
 /**
  * Replaces recognized Chinese proper names with bracketed Vietnamese placeholders
  * using mechanical code substitution before sending to AI.
@@ -48,6 +57,13 @@ export function lockNamesInSource(
   const validEntities = entities
     .filter((e) => {
       if (!e.chinese?.trim() || !e.vietnamese?.trim() || e.ambiguous) return false;
+      const zh = e.chinese.trim();
+      // Chặn thực thể 1 chữ Hán đơn lẻ để bảo vệ từ vựng thông thường
+      if (zh.length <= 1) return false;
+      // Chặn danh từ chung, phương hướng, địa điểm chung không được đóng ngoặc khóa cứng
+      if (NON_LOCKABLE_WORDS.has(zh)) return false;
+      // Chặn thực thể họ tộc [Họ] + 家 (như 康家, 袁家, 褚家) bị khóa thành ⟦Khang Gia⟧
+      if (zh.length <= 3 && zh.endsWith('家')) return false;
       const vi = e.vietnamese.trim();
       // Chặn các chuỗi ghi chú / mô tả / từ phủ định bị lưu nhầm vào trường tên tiếng Việt
       if (/không phải|chưa rõ|lỗi|ghi chú|tạm thời|danh từ chung/i.test(vi)) return false;
@@ -69,14 +85,17 @@ export function lockNamesInSource(
   const replacementMap = new Map<string, ReplacementEntry>();
 
   for (const ent of validEntities) {
-    const addKey = (rawKey: string) => {
+    const addKey = (rawKey: string, customVi?: string) => {
       const k = rawKey.trim();
-      if (!k) return;
+      if (!k || k.length <= 1) return;
+      if (NON_LOCKABLE_WORDS.has(k)) return;
+      if (k.length <= 3 && k.endsWith('家')) return;
+      const vi = customVi?.trim() || ent.vietnamese;
       if (!replacementMap.has(k)) {
         replacementMap.set(k, {
           chinese: k,
-          vietnamese: ent.vietnamese,
-          token: `⟦${ent.vietnamese}⟧`,
+          vietnamese: vi,
+          token: `⟦${vi}⟧`,
         });
       }
       // Add both Simplified and Traditional Chinese equivalents for multi-character keys
@@ -85,22 +104,34 @@ export function lockNamesInSource(
         if (!replacementMap.has(sKey)) {
           replacementMap.set(sKey, {
             chinese: sKey,
-            vietnamese: ent.vietnamese,
-            token: `⟦${ent.vietnamese}⟧`,
+            vietnamese: vi,
+            token: `⟦${vi}⟧`,
           });
         }
         const tKey = tify(k);
         if (!replacementMap.has(tKey)) {
           replacementMap.set(tKey, {
             chinese: tKey,
-            vietnamese: ent.vietnamese,
-            token: `⟦${ent.vietnamese}⟧`,
+            vietnamese: vi,
+            token: `⟦${vi}⟧`,
           });
         }
       }
     };
 
     addKey(ent.chinese);
+
+    // If entity has parenthetical notation like "宁峥嵘（蓝鹤清）" -> "Ninh Tranh Vanh (Lam Hạc Thanh)"
+    const parenMatch = /^([^（(]+)[（(]([^）)]+)[）)]$/u.exec(ent.chinese);
+    if (parenMatch) {
+      const baseZh = parenMatch[1]?.trim();
+      const innerZh = parenMatch[2]?.trim();
+      const viParenMatch = /^([^（(]+)[（(]([^）)]+)[）)]$/u.exec(ent.vietnamese);
+      const baseVi = viParenMatch ? viParenMatch[1]?.trim() : ent.vietnamese;
+      const innerVi = viParenMatch ? viParenMatch[2]?.trim() : undefined;
+      if (baseZh) addKey(baseZh, baseVi);
+      if (innerZh && innerVi) addKey(innerZh, innerVi);
+    }
     if (ent.aliases?.length) {
       for (const alias of ent.aliases) {
         if (!alias) continue;

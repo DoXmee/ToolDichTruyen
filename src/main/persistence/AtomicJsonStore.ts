@@ -112,7 +112,7 @@ export class AtomicJsonStore<T> {
   public write(value: T): Promise<void> {
     let json: string;
     try {
-      json = JSON.stringify(value, null, 2);
+      json = JSON.stringify(value);
     } catch (error) {
       return Promise.reject(new TypeError("Dữ liệu không thể chuyển thành JSON.", { cause: error }));
     }

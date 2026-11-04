@@ -1,12 +1,14 @@
 import { parseChapterHeaderLine } from './titleParser';
 import { unlockNamesInTranslation } from './nameLocker.js';
 import {
+  CHINESE_SURNAMES,
   COMMON_NOUN_BLACKLIST,
   DIRECTIONS_AND_REGIONS,
   INVALID_NAME_ENDINGS,
   URBAN_ARCHITECTURAL_LOCATIONS,
   transcribeHanViet,
 } from './storyMemoryExtractor.js';
+import { isNonEntityOrCommonWord } from './storyDigestScanner.js';
 
 interface ResponseLine {
   text: string;
@@ -42,6 +44,44 @@ export function isHorizontalRule(value: string): boolean {
 }
 
 /**
+ * Normalizes mid-sentence capitalization of common words that are not proper names
+ * (e.g. "ở Đại Viện" -> "ở đại viện", "đến Quân Khu" -> "đến quân khu", "người của Nhà họ" -> "người của nhà họ").
+ * Never touches the beginning of a sentence, newline, or a quote.
+ */
+export function normalizeCommonCapitalization(text: string): string {
+  if (!text) return text;
+
+  const midSentenceTerms = [
+    { target: /(?<![\p{L}\p{N}])Đại\s+Viện(?![\p{L}\p{N}])/gu, replacement: 'đại viện' },
+    { target: /(?<![\p{L}\p{N}])Quân\s+Khu(?![\p{L}\p{N}])/gu, replacement: 'quân khu' },
+    { target: /(?<![\p{L}\p{N}])Công\s+Xưởng(?![\p{L}\p{N}])/gu, replacement: 'công xưởng' },
+    { target: /(?<![\p{L}\p{N}])Phân\s+Xưởng(?![\p{L}\p{N}])/gu, replacement: 'phân xưởng' },
+    { target: /(?<![\p{L}\p{N}])Ký\s+Túc\s+Xá(?![\p{L}\p{N}])/gu, replacement: 'ký túc xá' },
+    { target: /(?<![\p{L}\p{N}])Cung\s+Tiêu\s+Xã(?![\p{L}\p{N}])/gu, replacement: 'cung tiêu xã' },
+    { target: /(?<![\p{L}\p{N}])Đại\s+Đội(?![\p{L}\p{N}])/gu, replacement: 'đại đội' },
+    { target: /(?<![\p{L}\p{N}])Binh\s+Đoàn(?![\p{L}\p{N}])/gu, replacement: 'binh đoàn' },
+    { target: /(?<![\p{L}\p{N}])Tiểu\s+Đoàn\s+Trưởng(?![\p{L}\p{N}])/gu, replacement: 'tiểu đoàn trưởng' },
+    { target: /(?<![\p{L}\p{N}])Trung\s+Đoàn\s+Trưởng(?![\p{L}\p{N}])/gu, replacement: 'trung đoàn trưởng' },
+    { target: /(?<![\p{L}\p{N}])Bệnh\s+Viện(?![\p{L}\p{N}])/gu, replacement: 'bệnh viện' },
+    { target: /(?<![\p{L}\p{N}])Nhà\s+họ(?![\p{L}\p{N}])/gu, replacement: 'nhà họ' },
+    { target: /(?<![\p{L}\p{N}])Nhà\s+Họ(?![\p{L}\p{N}])/gu, replacement: 'nhà họ' },
+  ];
+
+  let result = text;
+  for (const { target, replacement } of midSentenceTerms) {
+    result = result.replace(target, (match, offset, str) => {
+      const prefix = str.slice(Math.max(0, offset - 10), offset);
+      if (!prefix || /[\n\r.?!:;“"‘'—–-]\s*$/u.test(prefix)) {
+        return match;
+      }
+      return replacement;
+    });
+  }
+
+  return result;
+}
+
+/**
  * ChatGPT can expose the localized writing-block label ("Bài viết") through
  * innerText even though it is browser chrome rather than model prose. Remove
  * it only when it is the first meaningful line and is immediately followed
@@ -63,9 +103,11 @@ export function sanitizeTranslationResponse(sourceText: string, responseText: st
     }
   }
 
-  // Remove any remaining <THUC_THE_MOI>...</THUC_THE_MOI> block from translation text
+  // Remove any remaining <THUC_THE_MOI> or <QUAN_HE_MOI> block from translation text
   response = response.replace(/<THUC_THE_MOI[^>]*>[\s\S]*?<\/THUC_THE_MOI>/gi, '').trim();
   response = response.replace(/<THUC_THE_MOI[^>]*>[\s\S]*$/gi, '').trim();
+  response = response.replace(/<QUAN_HE_MOI[^>]*>[\s\S]*?<\/QUAN_HE_MOI>/gi, '').trim();
+  response = response.replace(/<QUAN_HE_MOI[^>]*>[\s\S]*$/gi, '').trim();
 
   // Active JSON Stripper: Strip any bare JSON array or markdown codefence containing entity metadata
   // (e.g. ```json [...] ``` or bare [ { "category": ... } ])
@@ -84,6 +126,8 @@ export function sanitizeTranslationResponse(sourceText: string, responseText: st
   if (response.includes('⟦') && response.includes('⟧')) {
     response = unlockNamesInTranslation(response);
   }
+
+  response = normalizeCommonCapitalization(response);
 
   const sourceHeader = source
     .split(/\r\n|\r|\n/u)
@@ -144,52 +188,62 @@ export function extractDiscoveredDataFromResponse(
 ): DiscoveredStoryData {
   if (!responseText) return { entities: [], relations: [] };
 
-  let rawContent = '';
-  const match = responseText.match(/<THUC_THE_MOI[^>]*>([\s\S]*?)<\/THUC_THE_MOI>/i);
-  if (match && match[1]) {
-    rawContent = match[1].trim();
+  const rawBlocks: string[] = [];
+
+  const thucTheMatch = responseText.match(/<THUC_THE_MOI[^>]*>([\s\S]*?)<\/THUC_THE_MOI>/i);
+  if (thucTheMatch && thucTheMatch[1]) {
+    rawBlocks.push(thucTheMatch[1].trim());
   } else {
-    // Fallback: look for unclosed <THUC_THE_MOI> or bare JSON array containing "category"
     const openMatch = responseText.match(/<THUC_THE_MOI[^>]*>([\s\S]*)$/i);
     if (openMatch && openMatch[1]) {
-      rawContent = openMatch[1].trim();
-    } else {
-      const bareArrayMatch = responseText.match(/\[\s*\{[\s\S]*?"category"[\s\S]*?\}\s*\]/);
-      if (bareArrayMatch) {
-        rawContent = bareArrayMatch[0].trim();
+      rawBlocks.push(openMatch[1].trim());
+    }
+  }
+
+  const quanHeMatch = responseText.match(/<QUAN_HE_MOI[^>]*>([\s\S]*?)<\/QUAN_HE_MOI>/i);
+  if (quanHeMatch && quanHeMatch[1]) {
+    rawBlocks.push(quanHeMatch[1].trim());
+  } else {
+    const openRelMatch = responseText.match(/<QUAN_HE_MOI[^>]*>([\s\S]*)$/i);
+    if (openRelMatch && openRelMatch[1]) {
+      rawBlocks.push(openRelMatch[1].trim());
+    }
+  }
+
+  if (rawBlocks.length === 0) {
+    const bareArrayMatch = responseText.match(/\[\s*\{[\s\S]*?"category"[\s\S]*?\}\s*\]/);
+    if (bareArrayMatch) {
+      rawBlocks.push(bareArrayMatch[0].trim());
+    }
+  }
+
+  if (rawBlocks.length === 0) return { entities: [], relations: [] };
+
+  const parsedItems: unknown[] = [];
+  for (let rawContent of rawBlocks) {
+    rawContent = rawContent.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    try {
+      const p = JSON.parse(rawContent);
+      if (Array.isArray(p)) parsedItems.push(...p);
+      else if (p && typeof p === 'object') parsedItems.push(p);
+    } catch {
+      const arrayMatch = rawContent.match(/\[\s*\{[\s\S]*\}\s*\]/);
+      if (arrayMatch) {
+        try {
+          const p = JSON.parse(arrayMatch[0]);
+          if (Array.isArray(p)) parsedItems.push(...p);
+        } catch {}
       }
     }
   }
 
-  if (!rawContent) return { entities: [], relations: [] };
-
-  // Remove markdown code fences if AI wrapped JSON inside ```json ... ```
-  rawContent = rawContent.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawContent);
-  } catch {
-    // If direct parse fails, try extracting array [...]
-    const arrayMatch = rawContent.match(/\[\s*\{[\s\S]*\}\s*\]/);
-    if (arrayMatch) {
-      try {
-        parsed = JSON.parse(arrayMatch[0]);
-      } catch {
-        return { entities: [], relations: [] };
-      }
-    } else {
-      return { entities: [], relations: [] };
-    }
-  }
-
-  if (!Array.isArray(parsed)) return { entities: [], relations: [] };
+  if (parsedItems.length === 0) return { entities: [], relations: [] };
 
   const entities: DiscoveredStoryEntity[] = [];
   const relations: DiscoveredCharacterRelation[] = [];
   const seenZh = new Set<string>();
 
-  for (const item of parsed) {
+  for (const item of parsedItems) {
     if (!item || typeof item !== 'object') continue;
 
     const rawCategory = typeof (item as Record<string, unknown>).category === 'string'
@@ -318,20 +372,18 @@ export function extractDiscoveredDataFromResponse(
     if (!new RegExp(`^[\\u4e00-\\u9fa5]{2,${maxLen}}$`, 'u').test(rawZh)) continue;
     if (seenZh.has(rawZh)) continue;
 
-    // Reject common words or invalid endings
+    // Reject common words, directions, or architectural common nouns
     if (COMMON_NOUN_BLACKLIST.has(rawZh)) continue;
+    if (category === 'character' && (URBAN_ARCHITECTURAL_LOCATIONS.has(rawZh) || DIRECTIONS_AND_REGIONS.has(rawZh))) continue;
+    if (category === 'location' && URBAN_ARCHITECTURAL_LOCATIONS.has(rawZh)) continue;
+    if (isNonEntityOrCommonWord(rawZh, rawVi, rawRole, rawNotes)) continue;
+    if (rawZh.length === 2 && CHINESE_SURNAMES.has(rawZh[0]!) && (rawZh[1] === '家' || rawZh[1] === '氏')) continue;
+
     const lastChar = rawZh[rawZh.length - 1]!;
     if (INVALID_NAME_ENDINGS.has(lastChar)) {
       const isSchoolEnding =
         lastChar === '中' && (category === 'faction' || category === 'location') && rawZh.length >= 3;
       if (!isSchoolEnding) {
-        continue;
-      }
-    }
-
-    // Reject architectural / directions as character names
-    if (category === 'character') {
-      if (URBAN_ARCHITECTURAL_LOCATIONS.has(rawZh) || DIRECTIONS_AND_REGIONS.has(rawZh)) {
         continue;
       }
     }

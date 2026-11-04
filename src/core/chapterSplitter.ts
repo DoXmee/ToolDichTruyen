@@ -397,11 +397,14 @@ export function splitStory(content: string, config: SplitConfig): Chapter[] {
       const isLastPart = part === slices.length - 1;
       const firstParagraph = region.paragraphs[0];
       const lastParagraph = region.paragraphs.at(-1);
+      const partSuffix = slices.length > 1
+        ? (region.suffix ? `${region.suffix} (${part + 1})` : `(${part + 1})`)
+        : region.suffix;
 
       chapters.push({
         id: `chapter-${ordinal + 1}-${chapterIndex}`,
         index: chapterIndex,
-        title: constructTitle(chapterIndex, region.suffix, config.prefix),
+        title: constructTitle(chapterIndex, partSuffix, config.prefix),
         content: content.slice(slice.start, slice.end),
         wordCount: slice.wordCount,
         paragraphs: fragments,

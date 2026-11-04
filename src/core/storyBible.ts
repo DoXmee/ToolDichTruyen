@@ -44,6 +44,7 @@ export interface StoryBibleRelation {
   from: string; // Entity ID
   to: string;   // Entity ID
   type: string;
+  samples?: readonly string[];
   validFrom?: number;
   validTo?: number;
   confidence?: number;

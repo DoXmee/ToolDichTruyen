@@ -2551,8 +2551,27 @@ export default function App() {
   const providerAccounts = savedAccounts.filter((account) => account.provider === aiProvider);
   const activeAccountRow = savedAccounts.find((account) => account.id === activeAccountId)
     ?? providerAccounts[0];
-  const outputHanCount = useMemo(() => (output.match(/\p{Script=Han}/gu) ?? []).length, [output]);
-  const outputWords = useMemo(() => analyzeTextLanguage(output, 'vi').totalWords, [output]);
+  const outputStats = useMemo(() => {
+    if (!output) return { words: 0, hanCount: 0 };
+    let hanCount = 0;
+    const hanRegex = /\p{Script=Han}/gu;
+    while (hanRegex.exec(output) !== null) hanCount++;
+
+    let wordCount = 0;
+    let inWord = false;
+    for (let i = 0; i < output.length; i++) {
+      const code = output.charCodeAt(i);
+      if (code <= 32) {
+        inWord = false;
+      } else if (!inWord) {
+        inWord = true;
+        wordCount++;
+      }
+    }
+    return { words: wordCount, hanCount };
+  }, [output]);
+  const outputHanCount = outputStats.hanCount;
+  const outputWords = outputStats.words;
   const canStart = Boolean(source.trim());
 
   return (
@@ -2969,7 +2988,7 @@ export default function App() {
               value={output}
               onChange={(event) => setOutput(event.target.value)}
               placeholder="Bản dịch sẽ được ghép vào đây theo đúng thứ tự. Bạn cũng có thể nhập hoặc dán bản dịch để dùng riêng công cụ chia chương."
-              spellCheck
+              spellCheck={false}
             />
             <div className="output-toolbar">
               <div className="output-stats">

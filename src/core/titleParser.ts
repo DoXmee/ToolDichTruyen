@@ -162,7 +162,9 @@ export function constructTitle(index: number, suffix = '', prefix = ''): string 
   if (cleanSuffix) {
     chapterPart = /^[:\-–—.]/u.test(cleanSuffix)
       ? `${main}${cleanSuffix}`
-      : `${main}: ${cleanSuffix}`;
+      : cleanSuffix.startsWith('(')
+        ? `${main} ${cleanSuffix}`
+        : `${main}: ${cleanSuffix}`;
   }
 
   return cleanPrefix ? `${cleanPrefix} ${chapterPart}` : chapterPart;

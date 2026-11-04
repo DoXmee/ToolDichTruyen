@@ -27,7 +27,8 @@ function trimXbanxiaEdgeNoise(text: string): string {
   while (lines.length > 0 && lines.at(-1) && (
     !lines.at(-1)!.trim() ||
     XBANXIA_EDGE_NOISE.test(lines.at(-1)!.trim()) ||
-    /^(?:上一[章頁页]|下一[章頁页]|返回|目錄|目录|書籤|书签|半夏小說).*$/iu.test(lines.at(-1)!.trim())
+    /^(?:上一[章頁页]|下一[章頁页]|返回|目錄|目录|書籤|书签|半夏小說).*$/iu.test(lines.at(-1)!.trim()) ||
+    /^[?？]{1,5}/u.test(lines.at(-1)!.trim())
   )) {
     lines.pop();
   }
@@ -150,16 +151,26 @@ export function repairLegacyXbanxiaCheckpointSegment(raw: string): string {
   return `${formattedHeading}\n\n${cleanedBody}`;
 }
 
-/** Removes only an explicit terminal Ixdzs author/new-book note. */
+const IXDZS_JUNK_LINE = /^[?？]{1,5}\s*(?:.*?(?:求|发|六点|三十六|洗漱|吃饭|月票|包|推荐|推|年代文|新书|新書|好久不见|作者|我能不能|暂时|大家|谢谢|感謝|打赏|打賞|留言|收藏|更新|加更|请假|請假|群|粉丝|晚安|明天|今天|ps|p\.s|投|票|评论|評論|章节|章節|订阅|訂閱|营养液|營養液|\d{2,})|[\s\d]*$)/iu;
+
+/** Removes terminal Ixdzs author notes, new-book notes, and scraped junk lines. */
 export function cleanIxdzsStoryText(raw: string): string {
   let text = normalizeText(raw);
-  const lines = text.split("\n");
+  let lines = text.split("\n");
   const markerLine = lines.findIndex((line) => /(?:好久不见[，,]\s*作者新书献上|作者有[话話]要[说說])/iu.test(line));
   if (markerLine >= 0) {
-    const before = lines.slice(0, markerLine).join("\n").trim();
-    if (before.length) text = before;
+    const before = lines.slice(0, markerLine);
+    if (before.length) lines = before;
   }
-  return text;
+  while (lines.length > 0 && lines.at(-1) && (
+    !lines.at(-1)!.trim() ||
+    /^[?？]{1,5}/u.test(lines.at(-1)!.trim()) ||
+    /^(?:作者有[话話]要[说說]|ps[：:]|p\.s\.?[：:]|求[月推荐收藏]|求票|新书献上).*/iu.test(lines.at(-1)!.trim())
+  )) {
+    lines.pop();
+  }
+  lines = lines.filter((line) => !IXDZS_JUNK_LINE.test(line.trim()));
+  return lines.join("\n").trim();
 }
 
 function longestOverlap(left: string, right: string): number {

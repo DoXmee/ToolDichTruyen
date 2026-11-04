@@ -104,8 +104,8 @@ describe('chapter splitter — paragraph boundaries only', () => {
     expect(result.map((chapter) => chapter.index)).toEqual([7, 8, 20]);
     expect(result.map((chapter) => chapter.wordCount)).toEqual([750, 750, 749]);
     expect(result.map((chapter) => chapter.title)).toEqual([
-      'Chương 7: Mở đầu',
-      'Chương 8: Mở đầu',
+      'Chương 7: Mở đầu (1)',
+      'Chương 8: Mở đầu (2)',
       'Chương 20: Kết thúc',
     ]);
     expect(result[0]?.source?.header?.chapterNumber).toBe(7);
@@ -127,9 +127,24 @@ describe('chapter splitter — paragraph boundaries only', () => {
     expect(result.map((chapter) => chapter.index)).toEqual([1, 2, 3]);
     expect(new Set(result.map((chapter) => chapter.id)).size).toBe(3);
     expect(result.map((chapter) => chapter.title)).toEqual([
-      'Chương 1: Mở đầu',
-      'Chương 2: Mở đầu',
+      'Chương 1: Mở đầu (1)',
+      'Chương 2: Mở đầu (2)',
       'Chương 3: Tiếp nối',
+    ]);
+  });
+
+  it('appends part numbers to untitled split chapters cleanly', () => {
+    const source = [
+      'Chương 1',
+      words(750, 'a'),
+      words(750, 'b'),
+    ].join('\n');
+    const result = splitStory(source, { ...baseConfig, autoDetectTitle: true });
+
+    expect(result.map((chapter) => chapter.index)).toEqual([1, 2]);
+    expect(result.map((chapter) => chapter.title)).toEqual([
+      'Chương 1 (1)',
+      'Chương 2 (2)',
     ]);
   });
 

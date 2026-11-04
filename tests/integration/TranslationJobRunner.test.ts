@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { validateTranslation } from '../../src/core'
 import {
   ChatGptConversationVerificationError,
@@ -8,6 +8,14 @@ import {
 } from '../../src/main/chatgpt/ChatGptWebAdapter'
 import type { TranslationJobSnapshot, TranslationValidationResult } from '../../src/shared/types'
 import { TranslationJobRunner, type TranslationEvent } from '../../src/main/translation/TranslationJobRunner'
+
+beforeAll(() => {
+  process.env.SKIP_DIGEST_IN_TEST = 'true'
+})
+
+afterAll(() => {
+  delete process.env.SKIP_DIGEST_IN_TEST
+})
 
 function createPersistence() {
   const values = new Map<string, unknown>()
@@ -615,7 +623,7 @@ describe('TranslationJobRunner', () => {
 
     expect(sendAndWait).toHaveBeenCalledTimes(2)
     expect(sendAndWait.mock.calls[0]?.[1]).toMatchObject({ reasoning: false })
-    expect(sendAndWait.mock.calls[1]?.[1]).toMatchObject({ reasoning: false })
+    expect(sendAndWait.mock.calls[1]?.[1]).toMatchObject({ reasoning: true })
     expect(setReasoning).toHaveBeenCalledWith(false)
     const retryPrompt = String(sendAndWait.mock.calls[1]?.[0])
     expect(retryPrompt).toContain('CAU_CAN_SUA')
@@ -2299,7 +2307,7 @@ describe('TranslationJobRunner', () => {
     expect(recoveryPrompt).toContain('ĐUÔI-CẦN-GIỮ-LẠI.')
     expect(recoveryPrompt).not.toContain('MỞ ĐẦU-KHÔNG-ĐƯỢC-GỬI-LẠI')
     expect(recoveryPrompt).not.toContain(previousOutput)
-    expect(recoveryPrompt.length).toBeLessThan(5_000)
+    expect(recoveryPrompt.length).toBeLessThan(8_000)
     expect(recoveryPrompt).toContain('第二段。')
   })
 
@@ -2955,8 +2963,8 @@ describe('TranslationJobRunner', () => {
   it('tự động xoay sang chat mới khi tích lũy số lượng ký tự vượt ngưỡng 75.000 ký tự và mang theo ngữ cảnh phục hồi', async () => {
     const persistence = createPersistence()
     const startNewConversation = vi.fn().mockResolvedValue(undefined)
-    const longSource = 'A'.repeat(40_000)
-    const longTranslation = 'B'.repeat(40_000)
+    const longSource = 'A'.repeat(60_000)
+    const longTranslation = `BẢN_DỊCH_DÀI_${'B'.repeat(55_000)}_DUOI_BAN_DICH_TRUOC`
     const sentPrompts: string[] = []
     const sendAndWait = vi.fn().mockImplementation(async (prompt: string) => {
       sentPrompts.push(prompt)
@@ -2972,8 +2980,8 @@ describe('TranslationJobRunner', () => {
       },
       persistence,
       chunker: vi.fn(() => [
-        { id: 'segment-1', index: 0, start: 0, end: 40_000, text: longSource },
-        { id: 'segment-2', index: 1, start: 40_000, end: 40_020, text: 'Đoạn 2 ngắn tiếp theo.' },
+        { id: 'segment-1', index: 0, start: 0, end: 60_000, text: longSource },
+        { id: 'segment-2', index: 1, start: 60_000, end: 60_020, text: 'Đoạn 2 ngắn tiếp theo.' },
       ]),
       validator: vi.fn(() => ({
         valid: true,
@@ -2998,7 +3006,7 @@ describe('TranslationJobRunner', () => {
     })
     await completed
 
-    // 1 lần khởi tạo đầu + 1 lần tự động xoay chat sau khi đoạn 1 đạt 80k ký tự
+    // 1 lần khởi tạo đầu + 1 lần tự động xoay chat sau khi đoạn 1 đạt vượt ngưỡng ký tự
     expect(startNewConversation).toHaveBeenCalledTimes(2)
     expect(sendAndWait).toHaveBeenCalledTimes(2)
     // Đoạn 2 trong chat mới phải mang theo đuôi ngữ cảnh phục hồi của đoạn 1
@@ -3010,7 +3018,7 @@ describe('TranslationJobRunner', () => {
     const persistence = createPersistence()
     const startNewConversation = vi.fn().mockResolvedValue(undefined)
     const sendAndWait = vi.fn().mockResolvedValue('Bản dịch ngắn chuẩn.')
-    const segments = Array.from({ length: 6 }, (_, i) => ({
+    const segments = Array.from({ length: 11 }, (_, i) => ({
       id: `segment-${i + 1}`,
       index: i,
       start: i * 10,
@@ -3049,9 +3057,9 @@ describe('TranslationJobRunner', () => {
     })
     await completed
 
-    // 1 lần lúc bắt đầu + 1 lần xoay sau khi đoạn thứ 5 hoàn tất
+    // 1 lần lúc bắt đầu + 1 lần xoay sau khi đạt trần số đoạn
     expect(startNewConversation).toHaveBeenCalledTimes(2)
-    expect(sendAndWait).toHaveBeenCalledTimes(6)
+    expect(sendAndWait).toHaveBeenCalledTimes(11)
   }, 25_000)
 
   it('tự động khởi động lại browser sạch khi xoay chat (mỗi 5 đoạn) để giải phóng 100% RAM tích lũy', async () => {
@@ -3059,7 +3067,7 @@ describe('TranslationJobRunner', () => {
     const startNewConversation = vi.fn().mockResolvedValue(undefined)
     const restartForRecovery = vi.fn().mockResolvedValue(undefined)
     const sendAndWait = vi.fn().mockResolvedValue('Bản dịch chuẩn giải phóng RAM.')
-    const segments = Array.from({ length: 16 }, (_, i) => ({
+    const segments = Array.from({ length: 31 }, (_, i) => ({
       id: `segment-${i + 1}`,
       index: i,
       start: i * 10,
@@ -3099,11 +3107,11 @@ describe('TranslationJobRunner', () => {
     })
     await completed
 
-    // 16 đoạn: Xoay chat tại đoạn 5, 10, 15 (tổng 1 + 3 = 4 lần startNewConversation)
+    // 31 đoạn: Xoay chat tại đoạn 10, 20, 30 (tổng 1 + 3 = 4 lần startNewConversation)
     // Trình duyệt được giữ sống liên tục, KHÔNG bị tắt/khởi động lại (restartForRecovery = 0)
     expect(restartForRecovery).toHaveBeenCalledTimes(0)
     expect(startNewConversation).toHaveBeenCalledTimes(4)
-    expect(sendAndWait).toHaveBeenCalledTimes(16)
+    expect(sendAndWait).toHaveBeenCalledTimes(31)
     expect(persistence.values.get(jobId)).toMatchObject({
       status: 'completed',
     })

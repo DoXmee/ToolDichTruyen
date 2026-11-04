@@ -372,4 +372,55 @@ Tú Lệ chợt thắt lòng. Cô mang sách vở của Cương Tử giao cho c�
       role: 'Biệt danh của Lý Học Cương',
     });
   });
+
+  it('correctly extracts relations from QUAN_HE_MOI and strips it from translation', () => {
+    const source = 'Chương 100\n原文。';
+    const response = `<BAN_DICH id="100">
+Trữ Khiết nhìn Viên Hòa Tụng cười: "Chồng, chúng ta về nhà thôi."
+</BAN_DICH>
+<QUAN_HE_MOI>
+[
+  {
+    "charA": "Trữ Khiết",
+    "charB": "Viên Hòa Tụng",
+    "relationType": "vợ chồng",
+    "aToB": {"self": "em", "call": "chồng"},
+    "bToA": {"self": "anh", "call": "vợ"}
+  }
+]
+</QUAN_HE_MOI>`;
+
+    const cleaned = sanitizeTranslationResponse(source, response);
+    expect(cleaned).toBe('Trữ Khiết nhìn Viên Hòa Tụng cười: "Chồng, chúng ta về nhà thôi."');
+    expect(cleaned).not.toContain('QUAN_HE_MOI');
+
+    const data = extractDiscoveredDataFromResponse(response);
+    expect(data.relations).toHaveLength(1);
+    expect(data.relations[0]).toMatchObject({
+      charA: 'Trữ Khiết',
+      charB: 'Viên Hòa Tụng',
+      relationType: 'vợ chồng',
+      aToB: { self: 'em', call: 'chồng' },
+      bToA: { self: 'anh', call: 'vợ' },
+    });
+  });
+
+  it('filters out generic locations, directions, and clan terms from discovered entities', () => {
+    const response = `<BAN_DICH id="101">
+Nội dung chương dịch.
+</BAN_DICH>
+<THUC_THE_MOI>
+[
+  {"category": "location", "zh": "大院", "vi": "Đại Viện"},
+  {"category": "location", "zh": "军区", "vi": "Quân Khu"},
+  {"category": "character", "zh": "康家", "vi": "Khang Gia"},
+  {"category": "character", "zh": "袁和颂", "vi": "Viên Hòa Tụng", "gender": "Nam"}
+]
+</THUC_THE_MOI>`;
+
+    const data = extractDiscoveredDataFromResponse(response);
+    expect(data.entities).toHaveLength(1);
+    expect(data.entities[0]!.zh).toBe('袁和颂');
+    expect(data.entities[0]!.vi).toBe('Viên Hòa Tụng');
+  });
 });

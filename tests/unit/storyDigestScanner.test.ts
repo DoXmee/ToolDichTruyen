@@ -4,6 +4,7 @@ import {
   createCharacterClusters,
   harvestCharacterContext,
   harvestLocationContext,
+  isNonEntityOrCommonWord,
   parseStoryDigestResponse,
   scanBookForEntities,
   scanBookForLocations,
@@ -217,5 +218,177 @@ describe('Story Digest Scanner Unit Tests', () => {
     expect(parsed.locations[0]?.category).toBe('location');
     expect(parsed.locations[1]?.vietnamese).toBe('Đại đội Hồng Tinh');
     expect(parsed.locations[1]?.category).toBe('faction');
+  });
+
+  it('correctly filters non-proper entities and common words with isNonEntityOrCommonWord', () => {
+    // 1-char tokens
+    expect(isNonEntityOrCommonWord('单')).toBe(true);
+    expect(isNonEntityOrCommonWord('白')).toBe(true);
+
+    // Common words / items / pronouns / adverbs
+    expect(isNonEntityOrCommonWord('东西')).toBe(true);
+    expect(isNonEntityOrCommonWord('毛衣')).toBe(true);
+    expect(isNonEntityOrCommonWord('马路')).toBe(true);
+    expect(isNonEntityOrCommonWord('家门')).toBe(true);
+    expect(isNonEntityOrCommonWord('那你')).toBe(true);
+    expect(isNonEntityOrCommonWord('那么')).toBe(true);
+    expect(isNonEntityOrCommonWord('简直')).toBe(true);
+    expect(isNonEntityOrCommonWord('老桂同')).toBe(true);
+    expect(isNonEntityOrCommonWord('朱阿')).toBe(true);
+    expect(isNonEntityOrCommonWord('县城')).toBe(true);
+
+    // Negative notes or roles
+    expect(
+      isNonEntityOrCommonWord('测试', 'Thử Nghiệm', 'Không phải nhân vật, là danh từ chỉ đồ vật', 'Chỉ đồ đạc')
+    ).toBe(true);
+    expect(
+      isNonEntityOrCommonWord('某地', 'Mỗ Địa', undefined, 'Đây là danh từ chỉ vị trí, không phải địa danh riêng')
+    ).toBe(true);
+
+    // Real proper characters and locations
+    expect(isNonEntityOrCommonWord('袁和颂', 'Viên Hòa Tụng', 'Bác sĩ quân y', 'Nam chính')).toBe(false);
+    expect(isNonEntityOrCommonWord('向阳村', 'Thôn Hướng Dương', undefined, 'Địa danh chính')).toBe(false);
+  });
+
+  it('prevents scanBookForEntities from generating chopped title fragments like 老桂同 or 朱阿', () => {
+    const chapters = [
+      {
+        index: 0,
+        sourceText: `
+          老桂同志今天心情很好，跟老伴说话。
+          老桂同志又去买菜了。
+          朱阿姨也在大院里散步，朱阿姨笑着打招呼。
+          袁和颂从医院回来了。袁和颂去找林子夜。
+        `,
+      },
+    ];
+
+    const candidates = scanBookForEntities(chapters, { minOccurrences: 1 });
+    const zhs = candidates.map((c) => c.chinese);
+
+    // Chopped fragments must NOT be present
+    expect(zhs).not.toContain('老桂同');
+    expect(zhs).not.toContain('朱阿');
+
+    // Real candidate is kept
+    expect(zhs).toContain('林子夜');
+  });
+
+  it('automatically skips non-proper entities when parsing story digest response', () => {
+    const responseWithDirtyEntities = `
+\`\`\`json
+{
+  "characters": [
+    {
+      "chinese": "袁和颂",
+      "vietnamese": "Viên Hòa Tụng",
+      "gender": "male",
+      "role": "Nam chính",
+      "notes": "Bác sĩ quân y"
+    },
+    {
+      "chinese": "东西",
+      "vietnamese": "Đông Tây",
+      "gender": "male",
+      "role": "Không phải nhân vật, là danh từ chỉ đồ vật",
+      "notes": "Chỉ đồ đạc hoặc vật dụng cá nhân. Không phải tên riêng và không được đưa vào phả hệ."
+    },
+    {
+      "chinese": "毛衣",
+      "vietnamese": "Mao Y",
+      "gender": "male",
+      "role": "Danh từ chỉ áo len, không phải nhân vật",
+      "notes": "Chiếc áo len mà Viên Hòa Tụng mong Trữ Khiết đan tặng."
+    },
+    {
+      "chinese": "老桂同",
+      "vietnamese": "Lão Quế Đồng",
+      "gender": "female",
+      "role": "Bà nội của Trữ Khiết"
+    }
+  ],
+  "relationships": [],
+  "locations": [
+    {
+      "chinese": "向阳村",
+      "vietnamese": "Thôn Hướng Dương",
+      "category": "location",
+      "notes": "Thôn làng bối cảnh"
+    },
+    {
+      "chinese": "马路",
+      "vietnamese": "Mã Lộ",
+      "category": "location",
+      "notes": "Đường phố hoặc đường giao thông... không phải địa danh riêng."
+    },
+    {
+      "chinese": "家门",
+      "vietnamese": "Gia Môn",
+      "category": "location",
+      "notes": "Cách gọi cổng hoặc lối vào nhà. Đây là danh từ chỉ vị trí, không phải địa danh riêng."
+    }
+  ]
+}
+\`\`\`
+    `;
+
+    const parsed = parseStoryDigestResponse(responseWithDirtyEntities);
+
+    // Characters: Only Viên Hòa Tụng is kept, all dirty ones skipped
+    expect(parsed.characters).toHaveLength(1);
+    expect(parsed.characters[0]?.chinese).toBe('袁和颂');
+    expect(parsed.characters[0]?.vietnamese).toBe('Viên Hòa Tụng');
+
+    // Locations: Only Thôn Hướng Dương is kept, Mã Lộ and Gia Môn skipped
+    expect(parsed.locations).toHaveLength(1);
+    expect(parsed.locations[0]?.chinese).toBe('向阳村');
+    expect(parsed.locations[0]?.vietnamese).toBe('Thôn Hướng Dương');
+  });
+
+  it('normalizes convert location names like 京市 -> Bắc Kinh and filters 县城', () => {
+    const rawAiResponse = `
+\`\`\`json
+{
+  "characters": [],
+  "relationships": [],
+  "locations": [
+    {
+      "chinese": "京市",
+      "vietnamese": "Kinh Thị",
+      "category": "location"
+    },
+    {
+      "chinese": "广省",
+      "vietnamese": "Quảng Tỉnh",
+      "category": "location"
+    },
+    {
+      "chinese": "港区",
+      "vietnamese": "Khu cảng",
+      "category": "location"
+    },
+    {
+      "chinese": "县城",
+      "vietnamese": "Huyện Thành",
+      "category": "location"
+    }
+  ]
+}
+\`\`\`
+    `;
+
+    const parsed = parseStoryDigestResponse(rawAiResponse);
+    // 县城 is filtered out
+    expect(parsed.locations.some((l) => l.chinese === '县城')).toBe(false);
+
+    // 京市, 广省, 港区 are normalized to standard Vietnamese
+    const beijing = parsed.locations.find((l) => l.chinese === '京市');
+    expect(beijing?.vietnamese).toBe('Bắc Kinh');
+
+    const guangdong = parsed.locations.find((l) => l.chinese === '广省');
+    expect(guangdong?.vietnamese).toBe('tỉnh Quảng Đông');
+
+    const hk = parsed.locations.find((l) => l.chinese === '港区');
+    expect(hk?.vietnamese).toBe('Hồng Kông');
   });
 });

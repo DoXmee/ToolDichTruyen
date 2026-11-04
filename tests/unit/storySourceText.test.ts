@@ -159,6 +159,19 @@ describe("story source text safety", () => {
     expect(cleanIxdzsStoryText(raw)).toBe("故事正文第一段，人物仍然在继续行动，并且仔细交代了这段故事发生的背景与动机。\n故事正文第二段，情节自然结束在这里，同时留下了足够明确而自然的后续线索。");
   });
 
+  it("removes Ixdzs author junk lines starting with ?? or ? such as red packets, tips, and votes", () => {
+    const raw = [
+      "故事正文第一段，人物仍然在继续行动。",
+      "故事正文第二段，情节自然结束在这里。",
+      "??六点我过来发十个月包。洗漱去",
+      "?吃饭饭，三十六回来发十个月包。",
+      "??发个66推",
+      "?? 99",
+      "??我能不能求几张月票，月底了快！",
+    ].join("\n");
+    expect(cleanIxdzsStoryText(raw)).toBe("故事正文第一段，人物仍然在继续行动。\n故事正文第二段，情节自然结束在这里。");
+  });
+
   it.each(["作者有話要說", "作者有话要说"])("removes a trailing Xbanxia %s note only from the latter half", (marker) => {
     const story = [
       "夜色漸深，他們沿著山路繼續前行，誰也沒有回頭。",

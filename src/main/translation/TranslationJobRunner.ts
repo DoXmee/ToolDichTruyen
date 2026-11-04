@@ -19,6 +19,7 @@ import {
   getGenreProfile,
   harvestCharacterContext,
   harvestLocationContext,
+  isNonEntityOrCommonWord,
   mergeStoryMemory,
   parseStoryDigestResponse,
   sanitizeStoryMemory,
@@ -87,6 +88,7 @@ function storyMemoryToStoryBible(memory: StoryMemory, promptMode?: string): Stor
       from: resolveId(rel.sourceCharacter),
       to: resolveId(rel.targetCharacter),
       type: rel.relationType,
+      samples: rel.samples,
       address: {
         aToB: {
           self: addr.aToB?.self ?? "tôi",
@@ -1930,11 +1932,12 @@ export class TranslationJobRunner {
             attempt: segment.attempts,
           }
         : undefined;
-      const hasEntities = (job.memory?.entities?.length ?? 0) > 0;
+      job.memory ??= createEmptyStoryMemory({ storyId: job.id, genre: job.promptMode });
+      const shouldUseStoryBible = true;
       const isContinuationTurn = !includeBasePrompt && job.aiProvider === "chatgpt";
       let prompt: string;
 
-      if (hasEntities) {
+      if (shouldUseStoryBible) {
         const bible = storyMemoryToStoryBible(job.memory, job.promptMode);
         const genreProfile = getGenreProfile(job.promptMode ?? "universal");
         const prevCompletedSegment = job.segments
@@ -2694,7 +2697,7 @@ export class TranslationJobRunner {
           const response = await this.dependencies.chatGpt.sendAndWait(promptWithRecovery, {
             timeoutMs: Math.max(responseTimeoutForProvider(job), 300_000),
             signal,
-            reasoning: false,
+            reasoning: true,
           });
           if (this.shouldStop(job, signal)) return "stopped";
           this.consumeRecoveryContext(job);
@@ -2797,14 +2800,40 @@ export class TranslationJobRunner {
       for (const d of discoveredData.entities) {
         if (!d.zh) continue;
 
+        let targetZh = d.zh.trim();
+        let targetVi = d.vi.trim();
+        const parenZhMatch = /^([^（(]+)[（(]([^）)]+)[）)]$/u.exec(targetZh);
+        let extraAliasZh: string | undefined;
+        let extraAliasVi: string | undefined;
+        if (parenZhMatch) {
+          targetZh = parenZhMatch[1]!.trim();
+          extraAliasZh = parenZhMatch[2]!.trim();
+          const parenViMatch = /^([^（(]+)[（(]([^）)]+)[）)]$/u.exec(targetVi);
+          if (parenViMatch) {
+            targetVi = parenViMatch[1]!.trim();
+            extraAliasVi = parenViMatch[2]!.trim();
+          }
+        }
+
+        // Chặn thực thể 1 chữ Hán đơn lẻ (ví dụ: 单, 白, 解...) hoặc từ thông thường/không phải tên riêng
+        if (targetZh.length <= 1) continue;
+        if (isNonEntityOrCommonWord(targetZh, targetVi, d.role, d.notes)) continue;
+        if (extraAliasZh && extraAliasZh.length <= 1) {
+          extraAliasZh = undefined;
+          extraAliasVi = undefined;
+        }
+
         // 1. Kiểm tra nếu đã có thực thể cùng tên Latinh / tiếng Việt (Ví dụ: Jelina với zh: 耶莲娜, nay gặp biến thể zh: 耶莲卡)
         const sameViEntity = (job.memory.entities ?? []).find(
-          (e) => e.category === d.category && e.vietnamese.trim().toLowerCase() === d.vi.trim().toLowerCase(),
+          (e) => e.category === d.category && e.vietnamese.trim().toLowerCase() === targetVi.toLowerCase(),
         );
         if (sameViEntity) {
           sameViEntity.aliases ??= [];
-          if (sameViEntity.chinese !== d.zh && !sameViEntity.aliases.includes(d.zh)) {
-            sameViEntity.aliases.push(d.zh);
+          if (sameViEntity.chinese !== targetZh && !sameViEntity.aliases.includes(targetZh)) {
+            sameViEntity.aliases.push(targetZh);
+          }
+          if (extraAliasZh && sameViEntity.chinese !== extraAliasZh && !sameViEntity.aliases.includes(extraAliasZh)) {
+            sameViEntity.aliases.push(extraAliasZh);
           }
           if (d.aliases?.length) {
             for (const a of d.aliases) {
@@ -2813,16 +2842,17 @@ export class TranslationJobRunner {
               }
             }
           }
-          existingChinese.add(d.zh);
+          existingChinese.add(targetZh);
+          if (extraAliasZh) existingChinese.add(extraAliasZh);
           aiAddedCount++;
           continue;
         }
 
-        if (existingChinese.has(d.zh)) continue;
+        if (existingChinese.has(targetZh)) continue;
 
         // Bỏ qua nếu là danh xưng kèm vai vế của một nhân vật đã có (ví dụ: 大飛哥 khi đã có 陳大飛/大飛, 海松叔 khi đã có 向海松)
-        if (d.category === "character" && KINSHIP_SUFFIX_REGEX.test(d.zh)) {
-          const stem = d.zh.slice(0, -1);
+        if (d.category === "character" && KINSHIP_SUFFIX_REGEX.test(targetZh)) {
+          const stem = targetZh.slice(0, -1);
           const hasBase = [...existingChinese].some((c) => c === stem || c.endsWith(stem));
           const isNotSeparate = Boolean(d.notes && /không phải nhân vật riêng|cách gọi/i.test(d.notes));
           if (hasBase || isNotSeparate) {
@@ -2830,24 +2860,53 @@ export class TranslationJobRunner {
           }
         }
 
+        const combinedAliases = [...(d.aliases ?? [])];
+        // Nếu chỉ có bí danh chữ Hán mà không có tên tiếng Việt riêng, đưa vào alias của thực thể chính
+        if (extraAliasZh && !extraAliasVi && !combinedAliases.includes(extraAliasZh)) {
+          combinedAliases.push(extraAliasZh);
+        }
+
         const newEntity: StoryEntity = {
           id: `ent-${randomUUID().slice(0, 8)}`,
           category: d.category === "faction" ? "faction" : d.category === "location" ? "location" : "character",
-          chinese: d.zh,
-          vietnamese: d.vi,
+          chinese: targetZh,
+          vietnamese: targetVi,
           gender: d.gender,
           role: d.role,
           notes: d.notes,
-          aliases: d.aliases,
+          aliases: combinedAliases.length ? combinedAliases : undefined,
           status: "active",
         };
         job.memory.entities = [...(job.memory.entities ?? []), newEntity];
-        existingChinese.add(d.zh);
+        existingChinese.add(targetZh);
         aiAddedCount++;
         if (newEntity.category === "character") {
           aiCharCount++;
         } else {
           aiLocCount++;
+        }
+
+        // Nếu có thân phận kép / bí danh có tên tiếng Việt riêng (ví dụ: "宁峥嵘（蓝鹤清）" -> "Ninh Tranh Vanh (Lam Hạc Thanh)")
+        // Bóc tách thành thực thể độc lập thứ 2 để cả 2 mặt chữ đều được gán đúng tên tương ứng
+        if (extraAliasZh && extraAliasVi && !existingChinese.has(extraAliasZh)) {
+          const secondEntity: StoryEntity = {
+            id: `ent-${randomUUID().slice(0, 8)}`,
+            category: newEntity.category,
+            chinese: extraAliasZh,
+            vietnamese: extraAliasVi,
+            gender: d.gender,
+            role: d.role,
+            notes: `Thân phận khác / bí danh của ${targetVi}`,
+            status: "active",
+          };
+          job.memory.entities = [...(job.memory.entities ?? []), secondEntity];
+          existingChinese.add(extraAliasZh);
+          aiAddedCount++;
+          if (secondEntity.category === "character") {
+            aiCharCount++;
+          } else {
+            aiLocCount++;
+          }
         }
       }
     }
@@ -2867,13 +2926,27 @@ export class TranslationJobRunner {
         const aToBObj = rel.aToB?.self || rel.aToB?.call ? { self: rel.aToB.self || '', call: rel.aToB.call || '' } : undefined;
         const bToAObj = rel.bToA?.self || rel.bToA?.call ? { self: rel.bToA.self || '', call: rel.bToA.call || '' } : undefined;
 
+        const newSample =
+          rel.aToB?.call && rel.bToA?.call
+            ? `${rel.aToB.call} - ${rel.bToA.call}`
+            : rel.aToB?.call
+              ? `gọi ${rel.aToB.call}`
+              : rel.bToA?.call
+                ? `gọi ${rel.bToA.call}`
+                : '';
+
         if (existingIdx !== -1) {
           const prevRel = existingRelations[existingIdx]!;
           const isDirect = prevRel.sourceCharacter.toLowerCase() === normA;
+          const currentSamples = prevRel.samples ? [...prevRel.samples] : (prevRel.pronounSample ? [prevRel.pronounSample] : []);
+          if (newSample && !currentSamples.includes(newSample)) {
+            currentSamples.push(newSample);
+          }
           existingRelations[existingIdx] = {
             ...prevRel,
             relationType: rel.relationType || prevRel.relationType,
-            pronounSample: rel.aToB?.call && rel.bToA?.call ? `${rel.aToB.call} - ${rel.bToA.call}` : prevRel.pronounSample,
+            pronounSample: newSample || prevRel.pronounSample,
+            samples: currentSamples.length ? currentSamples : undefined,
             directionalAddress: {
               aToB: isDirect ? (aToBObj || prevRel.directionalAddress?.aToB || { self: '', call: '' }) : (bToAObj || prevRel.directionalAddress?.aToB || { self: '', call: '' }),
               bToA: isDirect ? (bToAObj || prevRel.directionalAddress?.bToA || { self: '', call: '' }) : (aToBObj || prevRel.directionalAddress?.bToA || { self: '', call: '' }),
@@ -2885,7 +2958,8 @@ export class TranslationJobRunner {
             sourceCharacter: rel.charA,
             targetCharacter: rel.charB,
             relationType: rel.relationType,
-            pronounSample: rel.aToB?.call && rel.bToA?.call ? `${rel.aToB.call} - ${rel.bToA.call}` : 'Quan hệ',
+            pronounSample: newSample || 'Quan hệ',
+            samples: newSample ? [newSample] : undefined,
             directionalAddress: {
               aToB: aToBObj || { self: '', call: '' },
               bToA: bToAObj || { self: '', call: '' },
@@ -3509,6 +3583,9 @@ export class TranslationJobRunner {
           let newChars = 0;
           let newLocs = 0;
           for (const ch of parsed.characters) {
+            if (isNonEntityOrCommonWord(ch.chinese, ch.vietnamese, ch.role, ch.notes)) {
+              continue;
+            }
             if (!existingChinese.has(ch.chinese)) {
               job.memory.entities.push(ch);
               existingChinese.add(ch.chinese);
@@ -3516,6 +3593,9 @@ export class TranslationJobRunner {
             }
           }
           for (const loc of parsed.locations) {
+            if (isNonEntityOrCommonWord(loc.chinese, loc.vietnamese, undefined, loc.notes)) {
+              continue;
+            }
             if (!existingChinese.has(loc.chinese)) {
               job.memory.entities.push(loc);
               existingChinese.add(loc.chinese);

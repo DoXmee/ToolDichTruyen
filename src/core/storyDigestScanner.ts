@@ -42,31 +42,36 @@ export interface ParsedStoryDigest {
 
 // Common Chinese words that start with surname characters or honorifics but are common words, not names
 const CHINESE_COMMON_WORD_BLACKLIST = new Set([
-  '如果', '突然', '因為', '他們', '她們', '我們', '自己', '雖然', '這個', '那個',
-  '什麼', '怎麼', '已經', '開始', '現在', '時候', '看到', '聽到', '知道', '覺得',
-  '沒有', '不是', '就是', '只是', '但是', '而且', '然後', '最後', '一邊', '一直',
-  '一起', '一下', '一會', '一點', '今天', '明天', '昨天', '剛才', '過去', '出來',
-  '進去', '起來', '過來', '回去', '回來', '地方', '東西', '事情', '問題', '辦法',
-  '模樣', '聲音', '眼神', '臉色', '腳步', '房間', '門口', '窗戶', '桌子', '椅子',
-  '床邊', '廚房', '院子', '門外', '屋裏', '裏面', '外面', '上門', '下來', '上去',
-  '大家', '有人', '誰也', '那麼', '這麼', '這樣', '那樣', '有些', '那些', '這些',
-  '很多', '不少', '一點', '一些', '一下', '一眼', '一口', '一身', '一聲', '一臉',
-  '心裏', '手中', '眼前', '身邊', '身後', '頭上', '臉上', '地上', '半天', '半晌',
+  '如果', '突然', '因為', '他们', '他們', '她们', '她們', '我们', '我們', '自己', '雖然', '虽然', '这个', '這個', '那个', '那個',
+  '什麼', '什么', '怎麼', '怎么', '已經', '已经', '開始', '开始', '現在', '现在', '時候', '时候', '看到', '聽到', '听到', '知道', '覺得', '觉得',
+  '沒有', '没有', '不是', '就是', '只是', '但是', '而且', '然後', '然后', '最後', '最后', '一邊', '一边', '一直',
+  '一起', '一下', '一會', '一会儿', '一點', '一点', '今天', '明天', '昨天', '剛才', '刚才', '過去', '过去', '出來', '出来',
+  '進去', '进去', '起來', '起来', '過來', '过来', '回去', '回來', '回来', '地方', '東西', '东西', '事情', '問題', '问题', '辦法', '办法',
+  '模樣', '模样', '聲音', '声音', '眼神', '臉色', '脸色', '腳步', '脚步', '房間', '房间', '門口', '门口', '窗戶', '窗户', '桌子', '椅子',
+  '床邊', '床边', '廚房', '厨房', '院子', '門外', '门外', '屋裏', '屋里', '裏面', '里面', '外面', '上門', '上门', '下來', '下来', '上去',
+  '大家', '有人', '誰也', '谁也', '那麼', '那么', '這麼', '这么', '這樣', '这样', '那樣', '那样', '有些', '那些', '這些',
+  '很多', '不少', '一點', '一些', '一下', '一眼', '一口', '一身', '一聲', '一声', '一臉', '一脸',
+  '心裏', '心里', '手中', '眼前', '身邊', '身边', '身後', '身后', '頭上', '头上', '臉上', '脸上', '地上', '半天', '半晌',
   '高高', '慢慢', '常常', '早早', '天天', '多多', '好好', '看看', '走走', '大大',
-  '老天', '老家', '老人', '老漢', '老婦', '老爺', '老媽', '老婆', '老鄉', '老頭',
-  '小聲', '小心', '小臉', '小手', '小孩', '小夥', '姑娘', '同誌', '同志', '領導',
-  '隊長', '大隊', '書記', '主任', '經理', '幹事', '軍官', '營長', '連長', '團長',
+  '老天', '老家', '老人', '老漢', '老汉', '老婦', '老妇', '老爺', '老爷', '老媽', '老妈', '老婆', '老鄉', '老乡', '老頭', '老头',
+  '小聲', '小声', '小心', '小臉', '小脸', '小手', '小孩', '小夥', '小伙', '姑娘', '同誌', '同志', '領導', '领导',
+  '隊長', '队长', '大隊', '大队', '書記', '书记', '主任', '經理', '经理', '幹事', '干事', '軍官', '军官', '營長', '营长', '連長', '连长', '團長', '团长',
   '時間', '时间', '家屬', '家属', '家屬院', '家属院', '都是', '都不', '都沒', '都没', '都很',
   '家裏', '家里', '家的', '家人', '家都', '那就', '那邊', '那边', '那些人', '明白', '能夠', '能够',
   '關系', '关系', '關係', '麻煩', '麻烦', '居然', '安排', '謝謝', '谢谢', '任務', '任务', '相信',
   '高興', '高兴', '能力', '容易', '段時間', '段时间', '和江望', '白了', '空間', '空间', '解釋',
   '解释', '錢票', '钱票', '水果', '方面', '解決', '解决', '明顯', '明显', '安全', '那麽',
-  '那我', '那種', '都有', '都沒有', '家屬們', '蔬菜', '季蔬菜', '文工團', '文工团', '武器',
+  '那我', '那種', '那种', '都有', '都沒有', '都没有', '家屬們', '家属们', '蔬菜', '季蔬菜', '文工團', '文工团', '武器',
   '方便', '成功', '辛苦', '相互', '公安', '松了口', '松了口气', '任何', '畢竟', '毕竟',
   '全村', '房子', '小學', '小学', '宿舍', '都會', '都会', '舒的小', '房間', '房间', '門口', '门口',
   '小道', '小路', '小院', '大院', '院子', '學校', '学校', '課堂', '课堂', '食堂', '大堂', '禮堂', '礼堂',
   '大門', '大门', '正門', '正门', '後門', '后门', '木屋', '磚房', '砖房', '草屋', '茅屋', '屋子', '瓦房',
   '廚房', '厨房', '床頭', '床头', '門外', '门外', '屋裏', '屋里', '裏面', '里面', '外面', '大隊部', '大队部',
+  // Specific common words, pronouns, chopped tokens, and items:
+  '毛衣', '马路', '馬路', '家门', '家門', '那你', '那张', '那張', '简直', '簡直', '文工',
+  '从小', '從小', '这家伙', '這傢伙', '家伙', '傢伙', '后面', '後面', '段路', '关起门', '關起門',
+  '关门', '關門', '开门', '開門', '先去县城', '先去縣城', '站在门', '站在門', '二门', '二門', '趟门', '趟門',
+  '老桂同', '老储同', '老褚同', '朱阿',
 ]);
 
 const NON_PERSON_SUFFIXES = new Set([
@@ -180,6 +185,22 @@ export function scanBookForEntities(
           if (TITLE_SUFFIXES.some((t) => candidate.endsWith(t))) continue;
           if (candidate.length === 2 && TITLE_CHARACTERS.has(lastChar)) continue;
           if (candidate.endsWith('們') || candidate.endsWith('们')) continue;
+
+          // Prevent chopped titles/kinship fragments (e.g. 老桂同 from 老桂同志, 朱阿 from 朱阿姨)
+          const remainingText = text.slice(i + nameLen);
+          let isChoppedTitle = false;
+          for (const title of TITLE_SUFFIXES) {
+            for (let cut = 1; cut < title.length; cut++) {
+              const prefix = title.slice(0, cut);
+              const suffix = title.slice(cut);
+              if (candidate.endsWith(prefix) && remainingText.startsWith(suffix)) {
+                isChoppedTitle = true;
+                break;
+              }
+            }
+            if (isChoppedTitle) break;
+          }
+          if (isChoppedTitle) continue;
           if (
             /^[\u4e00-\u9fa5]+$/.test(candidate) &&
             !CHINESE_COMMON_WORD_BLACKLIST.has(candidate) &&
@@ -340,15 +361,16 @@ const LOCATION_SUFFIX_LIST = [
 ];
 
 const LOCATION_COMMON_BLACKLIST = new Set([
-  '地方', '東西', '事情', '問題', '辦法', '房間', '門口', '窗戶', '桌子', '椅子',
-  '床邊', '廚房', '院子', '門外', '屋裏', '裏面', '外面', '上門', '下來', '上去',
-  '出山', '上山', '下山', '過河', '過江', '入海', '出門', '進門', '關門', '開門',
-  '大門', '出城', '進城', '同門', '師門', '本幫', '本省', '本市', '本縣', '本鎮',
-  '本村', '出院', '住院', '工廠', '軍營', '營長', '班長', '連長', '隊長', '大隊長',
-  '老家', '時候', '半天', '半晌', '身邊', '身後', '頭上', '臉上', '地上', '家門',
-  '半路', '順路', '全村', '回城', '回村', '村子', '公社', '學校', '醫院', '打開門',
-  '走了門', '到了門', '回到學校', '去學校', '證券市', '買了門', '進了門', '出了門',
-  '專門', '一路', '集市', '校門', '農村', '縣城', '城市', '這條路', '那條路',
+  '地方', '東西', '东西', '事情', '問題', '问题', '辦法', '办法', '房間', '房间', '門口', '门口', '窗戶', '窗户', '桌子', '椅子',
+  '床邊', '床边', '廚房', '厨房', '院子', '門外', '门外', '屋裏', '屋里', '裏面', '里面', '外面', '上門', '上门', '下來', '下来', '上去',
+  '出山', '上山', '下山', '過河', '过河', '過江', '过江', '入海', '出門', '出门', '進門', '进门', '關門', '关门', '開門', '开门',
+  '大門', '大门', '出城', '進城', '进城', '同門', '同门', '師門', '师门', '本幫', '本帮', '本省', '本市', '本縣', '本县', '本鎮', '本镇',
+  '本村', '出院', '住院', '工廠', '工厂', '軍營', '军营', '營長', '营长', '班長', '班长', '連長', '连长', '隊長', '队长', '大隊長', '大队长',
+  '老家', '時候', '时候', '半天', '半晌', '身邊', '身边', '身後', '身后', '頭上', '头上', '臉上', '脸上', '地上', '家門', '家门',
+  '半路', '順路', '顺路', '全村', '回城', '回村', '村子', '公社', '學校', '学校', '醫院', '医院', '打開門', '打开门',
+  '走了門', '到了門', '回到學校', '回到学校', '去學校', '去学校', '證券市', '买門', '買了門', '進了門', '进了门', '出了門', '出了门',
+  '專門', '专门', '一路', '集市', '校門', '校门', '農村', '农村', '縣城', '县城', '城市', '這條路', '这条路', '那條路', '那条路',
+  '马路', '馬路', '段路', '关起门', '關起門', '先去县城', '先去縣城', '站在门', '站在門', '二门', '二門', '趟门', '趟門',
 ]);
 
 const LOCATION_INVALID_PREFIXES = new Set([
@@ -575,11 +597,73 @@ Hãy suy nghĩ sâu (Thinking process) và trả về kết quả dưới địn
   ]
 }
 \`\`\`
-CHÚ Ý:
-1. Xác định đúng giới tính và vai vế dựa trên các từ ngữ thân tộc (\`母親\` -> Mẹ / Nữ; \`大嫂\` -> Chị dâu / Nữ; \`兩口子\` -> Vợ chồng; \`大哥\` -> Anh cả / Nam; \`營長/當兵\` -> Quân nhân).
-2. Thiết lập đúng các cặp quan hệ 2 chiều rõ ràng, không để quan hệ bị bỏ trống.
-3. Nhận diện chuẩn xác các địa danh/thế lực xuất hiện trong câu chuyện (làng thôn, đại đội, công xã, huyện, núi, sông, viện).
-4. Chỉ xuất khối JSON hợp lệ, không kèm văn bản giải thích dài dòng bên ngoài khối JSON.`;
+CHÚ Ý QUAN TRỌNG VỀ THỰC THỂ:
+1. CHỈ TRẢ VỀ NHÂN VẬT THẬT VÀ ĐỊA DANH / THẾ LỰC CỤ THỂ: Tool chỉ cần tên người thật và địa danh/cơ quan/thế lực thực sự có trong tác phẩm.
+2. TUYỆT ĐỐI CẤM TRẢ VỀ DANH TỪ CHUNG, ĐỒ VẬT, ĐẠI TỪ:
+   - CẤM trả về đồ vật, vật dụng cá nhân, quần áo (ví dụ: 东西, 毛衣, 衣服...).
+   - CẤM trả về đại từ, phó từ, liên từ hội thoại (ví dụ: 那你, 那个, 那么, 那张, 简直...).
+   - CẤM trả về danh từ chỉ vị trí, hành vi chung chung (ví dụ: 马路, 家门, 关门, 关起门, 站在门, 段路, 先去县城...).
+   - Nếu trong danh sách ứng viên trinh sát gợi ý có những từ này hoặc bất kỳ từ nào KHÔNG PHẢI tên riêng nhân vật / địa danh độc lập cụ thể, bạn BẮT BUỘC PHẢI BỎ QUA HOÀN TOÀN, TUYỆT ĐỐI KHÔNG ĐƯỢC đưa vào mảng "characters" hay "locations" của kết quả JSON.
+3. TÊN NGƯỜI PHẢI ĐẦY ĐỦ VÀ CHUẨN XÁC:
+   - Khi nhận diện nhân vật, hãy trả về đúng họ tên thật đầy đủ (ví dụ: "袁和颂" -> "Viên Hòa Tụng", "朱玲玲" -> "Chu Linh Linh").
+   - Bỏ qua các từ bị cắt cụt danh xưng (như "朱阿" do cắt từ "朱阿姨", "老桂同" do cắt từ "老桂同志"). Nếu xác định được tên gốc thì dùng tên gốc thật sự hoặc danh xưng chuẩn.
+   - Không tạo nhân vật riêng cho các biến thể nghề nghiệp/danh xưng của nhân vật đã có (ví dụ: KHÔNG tạo nhân vật "袁医生" nếu đó là Viên Hòa Tụng, KHÔNG tạo "安教授" nếu đó là An Kỳ).
+4. Xác định đúng giới tính và vai vế dựa trên các từ ngữ thân tộc (\`母親\` -> Mẹ / Nữ; \`大嫂\` -> Chị dâu / Nữ; \`兩口子\` -> Vợ chồng; \`大哥\` -> Anh cả / Nam; \`營長/當兵\` -> Quân nhân).
+5. Thiết lập đúng các cặp quan hệ 2 chiều rõ ràng, không để quan hệ bị bỏ trống.
+6. Chỉ xuất khối JSON hợp lệ, không kèm văn bản giải thích dài dòng bên ngoài khối JSON.`;
+}
+
+/**
+ * Checks if a candidate or parsed entity is a common word, pronoun, object,
+ * action phrase, or explicitly noted by LLM as not being a proper name/character/location.
+ */
+export function isNonEntityOrCommonWord(
+  chinese: string,
+  vietnamese?: string,
+  role?: string,
+  notes?: string,
+): boolean {
+  if (!chinese || chinese.trim().length <= 1) return true;
+
+  const zh = chinese.trim();
+
+  // 1. Direct match with common word blacklist or common noun blacklist
+  if (CHINESE_COMMON_WORD_BLACKLIST.has(zh) || COMMON_NOUN_BLACKLIST.has(zh)) {
+    return true;
+  }
+
+  // 2. Direct regex match on known non-entity words (simplified and traditional)
+  if (
+    /^(?:大院|军区|軍區|南方|北方|内地|內地|东北|東北|西北|东南|東南|西南|兵团|兵團|大队|大隊|连队|連隊|公社|车间|車間|厂房|廠房|工厂|工廠|医院|醫院|招待所|供销社|食堂|家属院|家屬院|筒子楼|筒子樓|东西|東西|毛衣|马路|馬路|家门|家門|那你|那么|那麼|那个|那個|那张|那張|简直|簡直|文工|从小|從小|这家伙|這傢伙|家伙|傢伙|后面|後面|段路|关起门|關起門|先去县城|先去縣城|县城|縣城|站在门|站在門|大门|大門|二门|二門|趟门|趟門|老桂同|老储同|老褚同|朱阿)$/u.test(
+      zh,
+    )
+  ) {
+    return true;
+  }
+
+  // 3. Block clan / family entities [Họ] + 家 (e.g. 康家, 袁家, 褚家) from being treated as individual character entities
+  if (zh.length === 2 && CHINESE_SURNAMES.has(zh[0]!) && (zh[1] === '家' || zh[1] === '氏')) {
+    return true;
+  }
+
+  // 3. Check notes or role for negative assertions from LLM
+  const textToCheck = `${role || ''} ${notes || ''}`;
+  if (
+    /không phải (?:tên riêng|địa danh|nhân vật|thế lực|người thật)|danh từ (?:chung|chỉ)|từ ngữ thông thường|phó từ|đại từ|liên từ|cụm từ|không được đưa vào phả hệ/i.test(
+      textToCheck,
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function normalizeLocationVietnamese(zh: string, vi: string): string {
+  if (zh === '京市' && /Kinh Thị/i.test(vi)) return 'Bắc Kinh';
+  if (zh === '广省' && /Quảng Tỉnh/i.test(vi)) return 'tỉnh Quảng Đông';
+  if ((zh === '港区' || zh === '港') && /(?:Khu cảng|tỉnh Cảng)/i.test(vi)) return 'Hồng Kông';
+  return vi;
 }
 
 /**
@@ -663,15 +747,24 @@ export function parseStoryDigestResponse(aiResponse: string): ParsedStoryDigest 
     if (Array.isArray(raw.characters)) {
       for (const c of raw.characters) {
         if (!c.chinese || !c.vietnamese) continue;
+        const zh = String(c.chinese).trim();
+        const vi = String(c.vietnamese).trim();
+        const role = c.role ? String(c.role).trim() : undefined;
+        const notes = c.notes ? String(c.notes).trim() : undefined;
+
+        if (isNonEntityOrCommonWord(zh, vi, role, notes)) {
+          continue;
+        }
+
         characters.push({
           id: `ent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
           category: 'character',
-          chinese: String(c.chinese).trim(),
-          vietnamese: String(c.vietnamese).trim(),
+          chinese: zh,
+          vietnamese: vi,
           gender: c.gender === 'male' || c.gender === 'female' ? c.gender : 'unknown',
-          role: c.role ? String(c.role).trim() : undefined,
+          role,
           narrationPronoun: c.narrationPronoun ? String(c.narrationPronoun).trim() : undefined,
-          notes: c.notes ? String(c.notes).trim() : undefined,
+          notes,
           status: 'verified',
         });
       }
@@ -697,12 +790,20 @@ export function parseStoryDigestResponse(aiResponse: string): ParsedStoryDigest 
     if (Array.isArray(raw.locations)) {
       for (const loc of raw.locations) {
         if (!loc.chinese || !loc.vietnamese) continue;
+        const zh = String(loc.chinese).trim();
+        const vi = String(loc.vietnamese).trim();
+        const notes = loc.notes ? String(loc.notes).trim() : undefined;
+
+        if (isNonEntityOrCommonWord(zh, vi, undefined, notes)) {
+          continue;
+        }
+
         locations.push({
           id: `ent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
           category: loc.category === 'faction' ? 'faction' : 'location',
-          chinese: String(loc.chinese).trim(),
-          vietnamese: String(loc.vietnamese).trim(),
-          notes: loc.notes ? String(loc.notes).trim() : undefined,
+          chinese: zh,
+          vietnamese: normalizeLocationVietnamese(zh, vi),
+          notes,
           status: 'verified',
         });
       }
@@ -728,15 +829,24 @@ export function parseStoryDigestResponse(aiResponse: string): ParsedStoryDigest 
       try {
         const c = JSON.parse(rawObj);
         if (c.chinese && c.vietnamese) {
+          const zh = String(c.chinese).trim();
+          const vi = String(c.vietnamese).trim();
+          const role = c.role ? String(c.role).trim() : undefined;
+          const notes = c.notes ? String(c.notes).trim() : undefined;
+
+          if (isNonEntityOrCommonWord(zh, vi, role, notes)) {
+            continue;
+          }
+
           characters.push({
             id: `ent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
             category: 'character',
-            chinese: String(c.chinese).trim(),
-            vietnamese: String(c.vietnamese).trim(),
+            chinese: zh,
+            vietnamese: vi,
             gender: c.gender === 'male' || c.gender === 'female' ? c.gender : 'unknown',
-            role: c.role ? String(c.role).trim() : undefined,
+            role,
             narrationPronoun: c.narrationPronoun ? String(c.narrationPronoun).trim() : undefined,
-            notes: c.notes ? String(c.notes).trim() : undefined,
+            notes,
             status: 'verified',
           });
           continue;
@@ -752,6 +862,12 @@ export function parseStoryDigestResponse(aiResponse: string): ParsedStoryDigest 
         const gender = rawObj.match(/"gender"\s*:\s*"([^"]+)"/)?.[1];
         const role = rawObj.match(/"role"\s*:\s*"([^"]+)"/)?.[1];
         const narrationPronoun = rawObj.match(/"narrationPronoun"\s*:\s*"([^"]+)"/)?.[1];
+        const notes = rawObj.match(/"notes"\s*:\s*"([^"]+)"/)?.[1];
+
+        if (isNonEntityOrCommonWord(zh, vi, role, notes)) {
+          continue;
+        }
+
         characters.push({
           id: `ent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
           category: 'character',
@@ -760,6 +876,7 @@ export function parseStoryDigestResponse(aiResponse: string): ParsedStoryDigest 
           gender: gender === 'male' || gender === 'female' ? gender : 'unknown',
           role: role?.trim(),
           narrationPronoun: narrationPronoun?.trim(),
+          notes: notes?.trim(),
           status: 'verified',
         });
       }
@@ -814,12 +931,20 @@ export function parseStoryDigestResponse(aiResponse: string): ParsedStoryDigest 
       try {
         const l = JSON.parse(rawObj);
         if (l.chinese && l.vietnamese) {
+          const zh = String(l.chinese).trim();
+          const vi = String(l.vietnamese).trim();
+          const notes = l.notes ? String(l.notes).trim() : undefined;
+
+          if (isNonEntityOrCommonWord(zh, vi, undefined, notes)) {
+            continue;
+          }
+
           locations.push({
             id: `ent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
             category: l.category === 'faction' ? 'faction' : 'location',
-            chinese: String(l.chinese).trim(),
-            vietnamese: String(l.vietnamese).trim(),
-            notes: l.notes ? String(l.notes).trim() : undefined,
+            chinese: zh,
+            vietnamese: normalizeLocationVietnamese(zh, vi),
+            notes,
             status: 'verified',
           });
           continue;
@@ -829,12 +954,18 @@ export function parseStoryDigestResponse(aiResponse: string): ParsedStoryDigest 
       const zh = rawObj.match(/"chinese"\s*:\s*"([^"]+)"/)?.[1];
       const vi = rawObj.match(/"vietnamese"\s*:\s*"([^"]+)"/)?.[1];
       const cat = rawObj.match(/"category"\s*:\s*"([^"]+)"/)?.[1];
+      const notes = rawObj.match(/"notes"\s*:\s*"([^"]+)"/)?.[1];
       if (zh && vi) {
+        if (isNonEntityOrCommonWord(zh, vi, undefined, notes)) {
+          continue;
+        }
+
         locations.push({
           id: `ent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
           category: cat === 'faction' ? 'faction' : 'location',
           chinese: zh.trim(),
-          vietnamese: vi.trim(),
+          vietnamese: normalizeLocationVietnamese(zh.trim(), vi.trim()),
+          notes: notes?.trim(),
           status: 'verified',
         });
       }
