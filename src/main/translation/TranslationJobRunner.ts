@@ -329,7 +329,7 @@ const MAX_CHATGPT_TO_KIMI_RESCUE_CYCLES = 3;
 // contextual new-chat replay. This budget applies only to a detected refusal.
 const SAFETY_REFUSAL_MAXIMUM_ATTEMPTS = 6;
 
-export const CONVERSATION_ROTATION_CHARACTER_THRESHOLD = 110_000;
+export const CONVERSATION_ROTATION_CHARACTER_THRESHOLD = 75_000;
 export const CONVERSATION_ROTATION_SEGMENT_CEILING = 10;
 export const BROWSER_RECYCLE_SEGMENT_INTERVAL = 0;
 
@@ -757,7 +757,8 @@ function isSafeForFreshChatRecovery(error: unknown): boolean {
       (typeof item === "object" &&
         item !== null &&
         "safeForFreshChatRecovery" in item &&
-        (item as { safeForFreshChatRecovery?: unknown }).safeForFreshChatRecovery === true),
+        (item as { safeForFreshChatRecovery?: unknown }).safeForFreshChatRecovery === true) ||
+      /(?:cửa sổ ngữ cảnh|ngữ cảnh đã đầy|context window)/iu.test(errorMessage(item)),
   );
 }
 
@@ -2158,6 +2159,14 @@ export class TranslationJobRunner {
         return this.failOrSwitchProvider(job, segment, signal);
       }
       if (freshChatRecoveryRequested) {
+        if (/(?:cửa sổ ngữ cảnh|ngữ cảnh đã đầy|context window)/iu.test(segment.error ?? "")) {
+          this.logActivity(
+            job,
+            "ChatGPT đạt giới hạn ngữ cảnh (Context Window). Tự động xoay sang chat mới sạch sẽ để tiếp tục dịch ngay lập tức.",
+            "warning",
+            segment,
+          );
+        }
         return this.queueFreshChatRecovery(job, segment, signal, {
           normalMaximumAttempts: maximumAttempts,
         });
@@ -2751,7 +2760,17 @@ export class TranslationJobRunner {
 
         // Only the adapter's explicit safe marker may move a repair to a new
         // chat. Validation/output errors continue here and use normal retries.
-        if (freshChatRecoveryRequested) return "fresh-chat";
+        if (freshChatRecoveryRequested) {
+          if (/(?:cửa sổ ngữ cảnh|ngữ cảnh đã đầy|context window)/iu.test(segment.error ?? "")) {
+            this.logActivity(
+              job,
+              "ChatGPT đạt giới hạn ngữ cảnh khi sửa chữ Hán. Tự động xoay sang chat mới và tiếp tục sửa.",
+              "warning",
+              segment,
+            );
+          }
+          return "fresh-chat";
+        }
         if (retryUnsafe) return "failed";
         await this.waitBeforeLocalizedHanRetry(signal);
       }

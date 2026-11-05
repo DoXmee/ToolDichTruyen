@@ -1822,6 +1822,30 @@ export class ChatGptWebAdapter {
     );
   }
 
+  private async checkChatGptContextLimit(page: Page): Promise<string | null> {
+    if (this.provider !== "chatgpt") return null;
+    return await page
+      .evaluate(() => {
+        const elements = document.querySelectorAll(
+          '[role="alert"], [data-testid*="error"], .text-red-500, div[class*="toast"], div[class*="banner"], [data-testid*="banner"]',
+        );
+        for (const el of elements) {
+          const text = el.textContent?.trim() || "";
+          if (/(?:cửa sổ ngữ cảnh đã đầy|ngữ cảnh đã đầy|context window is full|context window)/iu.test(text)) {
+            return text;
+          }
+        }
+        if (
+          document.body &&
+          /(?:cửa sổ ngữ cảnh đã đầy|context window is full)/iu.test(document.body.innerText)
+        ) {
+          return "Cửa sổ ngữ cảnh đã đầy";
+        }
+        return null;
+      })
+      .catch(() => null);
+  }
+
   public async sendAndWait(message: string, options: SendMessageOptions = {}): Promise<string> {
     if (this.operationInProgress) throw new Error("ChatGPT đang xử lý một yêu cầu khác.");
     if (typeof message !== "string" || message.trim().length === 0) {
@@ -1885,6 +1909,12 @@ export class ChatGptWebAdapter {
       throwIfAborted(options.signal);
       this.assertSafeSendDestination(page, activeConversation);
       await this.pruneHistoricalTurnDom(page).catch(() => undefined);
+      const contextLimitBefore = await this.checkChatGptContextLimit(page);
+      if (contextLimitBefore) {
+        throw new ChatGptFreshChatRecoveryError(
+          `ChatGPT hiển thị thông báo: "${contextLimitBefore.slice(0, 200)}"`,
+        );
+      }
       const composer = await firstVisible(page, this.selectors.composer);
       if (!composer) throw new Error("Không tìm thấy ô nhập ChatGPT. Giao diện web có thể đã thay đổi.");
       // A transient sidebar, tooltip or onboarding layer can intercept pointer
@@ -2929,7 +2959,7 @@ export class ChatGptWebAdapter {
               for (const el of alerts) {
                 const text = el.textContent?.trim() || "";
                 if (
-                  /(?:quá dài|too long|something went wrong|rate limit|quota|đã xảy ra lỗi|vui lòng thử lại)/iu.test(
+                  /(?:quá dài|too long|something went wrong|rate limit|quota|đã xảy ra lỗi|vui lòng thử lại|cửa sổ ngữ cảnh|ngữ cảnh đã đầy|context window)/iu.test(
                     text,
                   )
                 ) {
@@ -2941,6 +2971,11 @@ export class ChatGptWebAdapter {
             .catch(() => null);
 
           if (pageError) {
+            if (/(?:cửa sổ ngữ cảnh|ngữ cảnh đã đầy|context window)/iu.test(pageError)) {
+              throw new ChatGptFreshChatRecoveryError(
+                `ChatGPT hiển thị thông báo ngữ cảnh: "${pageError.slice(0, 200)}"`,
+              );
+            }
             throw new Error(`ChatGPT hiển thị thông báo lỗi trên trang: "${pageError.slice(0, 200)}"`);
           }
 
@@ -3333,6 +3368,15 @@ export class ChatGptWebAdapter {
 
         if (!isActivelyGenerating && (await firstVisible(responsePage, this.selectors.retryButton))) {
           throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
+        }
+
+        if (this.provider === "chatgpt") {
+          const contextLimit = await this.checkChatGptContextLimit(responsePage);
+          if (contextLimit) {
+            throw new ChatGptFreshChatRecoveryError(
+              `ChatGPT hiển thị thông báo: "${contextLimit.slice(0, 200)}"`,
+            );
+          }
         }
 
         if (responseLocator) {
