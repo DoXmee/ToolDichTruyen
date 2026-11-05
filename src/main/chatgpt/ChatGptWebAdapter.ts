@@ -1921,11 +1921,11 @@ export class ChatGptWebAdapter {
       this.assertSafeSendDestination(page, activeConversation);
       const sendButton = await firstVisible(page, this.selectors.sendButton);
       if (sendButton) {
-        // Wait briefly for React synthetic events to settle and enable the submit button
-        const enabledDeadline = Date.now() + 2_000;
+        // Wait up to 10s for React and ProseMirror to tokenize large prompts and enable the submit button
+        const enabledDeadline = Date.now() + 10_000;
         let isEnabled = await sendButton.isEnabled().catch(() => false);
         while (!isEnabled && Date.now() < enabledDeadline) {
-          await delay(80, options.signal);
+          await delay(100, options.signal);
           isEnabled = await sendButton.isEnabled().catch(() => false);
         }
         if (isEnabled) {

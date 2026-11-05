@@ -1932,8 +1932,8 @@ export class TranslationJobRunner {
             attempt: segment.attempts,
           }
         : undefined;
-      job.memory ??= createEmptyStoryMemory({ storyId: job.id, genre: job.promptMode });
-      const shouldUseStoryBible = true;
+      const hasEntities = (job.memory?.entities?.length ?? 0) > 0;
+      const shouldUseStoryBible = hasEntities;
       const isContinuationTurn = !includeBasePrompt && job.aiProvider === "chatgpt";
       let prompt: string;
 
@@ -1956,7 +1956,7 @@ export class TranslationJobRunner {
           genreProfile,
           sceneState: "normal",
           previousSegmentTailVi: continuityTailVi,
-          customPrompt: job.customPrompt,
+          customPrompt: job.customPrompt || job.resolvedPrompt,
           isContinuationTurn,
         });
 
