@@ -1969,6 +1969,18 @@ export class ChatGptWebAdapter {
         await composer.press("Enter");
         messageSubmitted = true;
       }
+      if (messageSubmitted && this.provider === "chatgpt") {
+        await delay(300, options.signal);
+        const composerText = (await composer.innerText().catch(() => "")).trim();
+        const stopBtn = await firstVisible(page, this.selectors.stopButton);
+        if (!stopBtn && composerText.length >= Math.min(100, submittedMessage.length * 0.8)) {
+          await composer.click({ timeout: 1000 }).catch(() => undefined);
+          await composer.press("Enter").catch(() => undefined);
+          if (sendButton && (await sendButton.isEnabled().catch(() => false))) {
+            await this.clickAtSafeSendDestination(sendButton, activeConversation).catch(() => undefined);
+          }
+        }
+      }
       if (messageSubmitted && this.provider === "kimi") {
         messageSubmitted = await this.waitForKimiSubmissionCapacity(
           page,
@@ -2712,7 +2724,14 @@ export class ChatGptWebAdapter {
       if (!(element instanceof HTMLElement) || !element.isConnected || element.getClientRects().length === 0) {
         throw new Error("SAFETY_SEND_ELEMENT_NOT_ACTIONABLE");
       }
-      element.click();
+      const btn = (element.closest("button") || element) as HTMLElement;
+      try {
+        btn.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
+        btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+        btn.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, cancelable: true, view: window }));
+        btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+      } catch {}
+      btn.click();
     }, { origin: expected.origin, pathname: expected.pathname });
   }
 

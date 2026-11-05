@@ -30,6 +30,7 @@ import {
   scanBookForLocations,
   transcribeHanViet,
   findCrossTranslationRepetition,
+  stripCrawlerNoise,
   validateTranslation,
 } from "../../core/index.js";
 import type {
@@ -1887,6 +1888,10 @@ export class TranslationJobRunner {
         return false;
       }
       segment.attempts += 1;
+      const cleanSource = stripCrawlerNoise(segment.sourceText);
+      if (cleanSource && cleanSource.length !== segment.sourceText.length) {
+        segment.sourceText = cleanSource;
+      }
       const isRetry = segment.attempts > 1;
       segment.status = isRetry ? "retrying" : "sending";
       segment.error = undefined;

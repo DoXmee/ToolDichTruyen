@@ -1,5 +1,6 @@
 import type { GenreProfile } from './genreProfile.js';
 import { lockNamesInSource, type LockableEntity } from './nameLocker.js';
+import { stripCrawlerNoise } from './crawlerSanitizer.js';
 import {
   resolveDirectionalAddress,
   type SceneState,
@@ -49,10 +50,13 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
     customPrompt,
   } = input;
 
+  // 0. Sanitize crawler noise & interactive ads from source text
+  const cleanSourceText = stripCrawlerNoise(sourceText);
+
   // 1. Scan entities present in source text (Longest match first)
   const activeEntities = bible.entities.filter((e) => e.status !== 'candidate');
   const presentEntities = activeEntities.filter(
-    (e) => sourceText.includes(e.zh) || e.aliases?.some((a) => sourceText.includes(a.zh)),
+    (e) => cleanSourceText.includes(e.zh) || e.aliases?.some((a) => cleanSourceText.includes(a.zh)),
   );
 
   // 2. Lock names mechanically in source text: 顾国强 -> ⟦Cố Quốc Cường⟧
@@ -63,13 +67,13 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
     ambiguous: e.aliases?.some((a) => a.ambiguousWith?.length),
   }));
 
-  const { lockedSourceText } = lockNamesInSource(sourceText, lockableEntities);
+  const { lockedSourceText } = lockNamesInSource(cleanSourceText, lockableEntities);
 
   // 3. Scan Genre Glossary terms present in source text
   const matchedGlossaryTerms: Array<{ chinese: string; vietnamese: string }> = [];
   if (genreProfile.glossary?.length) {
     for (const term of genreProfile.glossary) {
-      if (sourceText.includes(term.chinese)) {
+      if (cleanSourceText.includes(term.chinese)) {
         matchedGlossaryTerms.push({
           chinese: term.chinese,
           vietnamese: term.vietnamese,
@@ -171,8 +175,8 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
   const charEntities = presentEntities.filter((e) => e.category === 'character');
   // Sắp xếp nhân vật theo tần suất xuất hiện trong đoạn nguồn để ưu tiên nhân vật chính khi cần rút gọn
   charEntities.sort((a, b) => {
-    const countA = (sourceText.match(new RegExp(a.zh, 'g')) || []).length;
-    const countB = (sourceText.match(new RegExp(b.zh, 'g')) || []).length;
+    const countA = (cleanSourceText.match(new RegExp(a.zh, 'g')) || []).length;
+    const countB = (cleanSourceText.match(new RegExp(b.zh, 'g')) || []).length;
     return countB - countA;
   });
 
