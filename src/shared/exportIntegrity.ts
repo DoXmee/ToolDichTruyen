@@ -152,3 +152,28 @@ export function combinedChapterContentFingerprint(
     chapters.map(chapterFingerprintPayload),
   ]));
 }
+
+/**
+ * Normalizes straight quotation marks to curved typography quotation marks (“ and ”)
+ * using a balanced alternating heuristic.
+ */
+export function normalizeVietnamesePunctuation(text: string): string {
+  if (!text || typeof text !== 'string') return text ?? '';
+
+  let inQuote = false;
+  return text.replace(/"/gu, (_match, offset, str) => {
+    const prevChar = offset > 0 ? str[offset - 1] : ' ';
+    const nextChar = offset + 1 < str.length ? str[offset + 1] : ' ';
+
+    if (/[\s(\[{—–-]/.test(prevChar) && !/\s/.test(nextChar)) {
+      inQuote = true;
+      return '“';
+    }
+    if (!/\s/.test(prevChar) && /[\s.,;!?)}\]—–-]/.test(nextChar)) {
+      inQuote = false;
+      return '”';
+    }
+    inQuote = !inQuote;
+    return inQuote ? '“' : '”';
+  });
+}

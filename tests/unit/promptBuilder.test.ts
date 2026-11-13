@@ -123,4 +123,25 @@ describe('prompt builder', () => {
     expect(continuation).not.toContain(catalog.modern);
     expect(retry).not.toContain(catalog.modern);
   });
+
+  it('enforces family father term "bố" and bans "cha" and "Tần Phụ" in translation prompts', () => {
+    const initialPrompt = buildTranslationPrompt({
+      basePrompt: catalog.period,
+      sourceText: '秦父看着她。',
+      segmentIndex: 0,
+      totalSegments: 1,
+    });
+    expect(initialPrompt).toContain('XƯNG HÔ GIA ĐÌNH (BỐ/MẸ)');
+    expect(initialPrompt).toContain('BẮT BUỘC dùng từ "bố"');
+    expect(initialPrompt).toContain('TUYỆT ĐỐI KHÔNG dùng "cha"');
+
+    const contPrompt = buildContinuationTranslationPrompt({
+      basePrompt: catalog.period,
+      sourceText: '秦父接着说。',
+      segmentIndex: 1,
+      totalSegments: 2,
+    });
+    expect(contPrompt).toContain('XƯNG HÔ GIA ĐÌNH (BỐ/MẸ): Luôn dùng "bố"');
+    expect(contPrompt).toContain('TUYỆT ĐỐI KHÔNG dùng "cha"');
+  });
 });

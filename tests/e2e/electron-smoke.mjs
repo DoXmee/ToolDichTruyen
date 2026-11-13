@@ -502,7 +502,7 @@ try {
     throw new Error(`Màn hình thấp không chuyển sang cuộn trang an toàn: ${JSON.stringify(shortViewportLayout)}`)
   }
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
-  await page.getByText('Dữ liệu bản thảo được lưu trên thiết bị của bạn.').waitFor()
+  await page.locator('.translation-controls').waitFor()
 
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(780, 980))
   await page.screenshot({ path: path.join(artifacts, 'electron-narrow.png'), fullPage: true })

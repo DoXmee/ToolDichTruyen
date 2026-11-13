@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { splitSealedChapters, splitSealedOriginalChapters } from '../../src/core';
+import { normalizeVietnamesePunctuation } from '../../src/shared';
 import type { SplitConfig } from '../../src/shared';
 
 const config: SplitConfig = {
@@ -128,5 +129,11 @@ describe('splitSealedOriginalChapters', () => {
       title: 'Ch\u01b0\u01a1ng 1',
       content,
     });
+  });
+
+  it('normalizes straight quotation marks to curved typography quotes', () => {
+    const raw = 'Anh nói: "Hôm nay trời đẹp." Cô đáp: "Ừ, rất đẹp."';
+    const normalized = normalizeVietnamesePunctuation(raw);
+    expect(normalized).toBe('Anh nói: “Hôm nay trời đẹp.” Cô đáp: “Ừ, rất đẹp.”');
   });
 });

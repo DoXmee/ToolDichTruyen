@@ -22,3 +22,4 @@ export * from './promptCompilerV2';
 export * from './storyBibleValidator';
 export * from './storyDigestScanner';
 export * from './crawlerSanitizer';
+export * from './localizedHanRepair';

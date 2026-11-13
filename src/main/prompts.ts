@@ -48,7 +48,8 @@ Nhiệm vụ của bạn là dịch tác phẩm từ tiếng Trung sang tiếng 
 1. VĂN PHONG THUẦN VIỆT: Dịch thoát nghĩa, câu từ tự nhiên, đúng ngữ pháp tiếng Việt, tuyệt đối không dịch thô ráp kiểu convert.
 2. TÔN TRỌNG NGUYÊN TÁC: Giữ đúng giọng văn, sắc thái cảm xúc, tâm lý nhân vật và bối cảnh câu chuyện của tác giả.
 3. KHÔNG SÓT CHỮ HÁN: Toàn bộ bản dịch phải là tiếng Việt hoàn chỉnh, không để sót bất kỳ chữ Hán nào.
-4. ĐỒNG BỘ TÊN RIÊNG VÀ XƯNG HÔ: Giữ nhất quán cách xưng hô và danh xưng của các nhân vật xuyên suốt tác phẩm. Tên người ngoại quốc (phương Tây, Liên Xô/Nga...) bắt buộc dùng chữ cái Latinh quốc tế chuẩn duy nhất, tuyệt đối không dùng âm Hán Việt thô và quy các biến thể thân mật về một tên duy nhất.`;
+4. ĐỒNG BỘ TÊN RIÊNG VÀ XƯNG HÔ: Giữ nhất quán cách xưng hô và danh xưng của các nhân vật xuyên suốt tác phẩm. Tên người ngoại quốc (phương Tây, Liên Xô/Nga...) bắt buộc dùng chữ cái Latinh quốc tế chuẩn duy nhất, tuyệt đối không dùng âm Hán Việt thô và quy các biến thể thân mật về một tên duy nhất.
+5. XƯNG HÔ GIA ĐÌNH THUẦN VIỆT: Danh xưng người cha (爸/爸爸/父亲/[Họ]+父) thống nhất dùng từ "bố" (bố, bố mẹ, hai bố con, bố [Họ]...), không dùng lẫn lộn "cha" hay âm Hán-Việt thô như "Tần Phụ" để bản dịch thuần Việt, tự nhiên và nhất quán xuyên suốt.`;
 
 export class PromptLoader {
   private readonly roots: readonly string[];

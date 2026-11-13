@@ -101,6 +101,28 @@ interface RendererDraft {
 interface SegmentOutput {
   order: number;
   text: string;
+  words?: number;
+  hanCount?: number;
+}
+
+function countWordsAndHan(str: string): { words: number; hanCount: number } {
+  if (!str) return { words: 0, hanCount: 0 };
+  let hanCount = 0;
+  const hanRegex = /\p{Script=Han}/gu;
+  while (hanRegex.exec(str) !== null) hanCount++;
+
+  let wordCount = 0;
+  let inWord = false;
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code <= 32) {
+      inWord = false;
+    } else if (!inWord) {
+      inWord = true;
+      wordCount++;
+    }
+  }
+  return { words: wordCount, hanCount };
 }
 
 const DEFAULT_SPLIT_CONFIG: SplitConfig = {
@@ -447,6 +469,7 @@ export default function App() {
   const [autoExportRetryTick, setAutoExportRetryTick] = useState(0);
   const [promptMode, setPromptMode] = useState<PromptMode>('period');
   const [customPrompt, setCustomPrompt] = useState('');
+  const [batchChaptersCount, setBatchChaptersCount] = useState(2);
   const [prompts, setPrompts] = useState(DEFAULT_PROMPTS);
   const [splitConfig, setSplitConfig] = useState<SplitConfig>(DEFAULT_SPLIT_CONFIG);
   const [connection, setConnection] = useState<ConnectionState>('disconnected');
@@ -809,7 +832,13 @@ export default function App() {
         ?? firstNumber(segment, ['segmentIndex', 'index', 'order'])
         ?? segmentOutputsRef.current.size;
       if (text !== undefined) {
-        segmentOutputsRef.current.set(segmentId, { order, text });
+        const stats = countWordsAndHan(text);
+        segmentOutputsRef.current.set(segmentId, {
+          order,
+          text,
+          words: stats.words,
+          hanCount: stats.hanCount,
+        });
         if (fullOutput === undefined) {
           const joined = [...segmentOutputsRef.current.values()]
             .sort((left, right) => left.order - right.order)
@@ -1508,7 +1537,7 @@ export default function App() {
     }
   };
 
-  const beginTranslation = async (sourceText: string, automaticExportDirectory = '') => {
+  const beginTranslation = async (sourceText: string, automaticExportDirectory = '', sourceChapters: import('../shared/types').TranslationSourceChapter[] = []) => {
     if (!sourceText.trim()) return;
     // Nothing can be translated without a saved login for the selected bot. Ask
     // the main process rather than trusting the list rendered here: an account
@@ -1595,6 +1624,8 @@ export default function App() {
         } satisfies RendererDraft);
       }
       const result = await getStoryTool().startTranslation({
+        batchChaptersCount,
+        sourceChapters,
         source: sourceText,
         promptMode,
         ...(aiProvider === 'chatgpt' ? {} : { aiProvider }),
@@ -1853,7 +1884,8 @@ export default function App() {
       pendingManualStoryActionRef.current = null;
       setManualVerificationState('none');
       setManualVerificationIssue('');
-      await beginTranslation(fetched.combinedSource, exportDirectory);
+      const headers = [...fetched.combinedSource.matchAll(/(?:^|\n)Chương\s+(\d+)/gu)];
+      await beginTranslation(fetched.combinedSource, exportDirectory, fetched.chapters.map((c,i)=>({id:'CH'+Number(headers[i]?.[1]??i+1),number:Number(headers[i]?.[1]??i+1),title:c.title,text:'',urls:c.sourceUrls})));
     } catch (error) {
       setStoryImportState('error');
       const message = error instanceof Error ? error.message : 'Không thể tải nội dung các chương đã chọn.';
@@ -1892,6 +1924,7 @@ export default function App() {
 
   const resumeTranslation = async () => {
     if (!activeJobRef.current) return;
+    setAppNotice('');
     try {
       // Startup intentionally restores only lightweight progress metadata.
       // Hydrate the exact checkpoint once, at the user's explicit resume, so
@@ -2007,6 +2040,7 @@ export default function App() {
 
   const retrySegment = async (segmentId: string) => {
     if (!activeJobRef.current) return;
+    setAppNotice('');
     setSegmentErrors((current) => current.filter((error) => error.segmentId !== segmentId));
     setTranslationState('running');
     try {
@@ -2553,25 +2587,27 @@ export default function App() {
     ?? providerAccounts[0];
   const outputStats = useMemo(() => {
     if (!output) return { words: 0, hanCount: 0 };
-    let hanCount = 0;
-    const hanRegex = /\p{Script=Han}/gu;
-    while (hanRegex.exec(output) !== null) hanCount++;
-
-    let wordCount = 0;
-    let inWord = false;
-    for (let i = 0; i < output.length; i++) {
-      const code = output.charCodeAt(i);
-      if (code <= 32) {
-        inWord = false;
-      } else if (!inWord) {
-        inWord = true;
-        wordCount++;
+    if (segmentOutputsRef.current.size > 0) {
+      let totalWords = 0;
+      let totalHan = 0;
+      for (const item of segmentOutputsRef.current.values()) {
+        totalWords += item.words ?? 0;
+        totalHan += item.hanCount ?? 0;
       }
+      return { words: totalWords, hanCount: totalHan };
     }
-    return { words: wordCount, hanCount };
+    return countWordsAndHan(output);
   }, [output]);
   const outputHanCount = outputStats.hanCount;
   const outputWords = outputStats.words;
+  const displayOutput = useMemo(() => {
+    if (!output) return '';
+    if (output.length > 2_000) {
+      const sample = output.slice(0, 500).trim();
+      return `${sample}\n\n[...Đang dịch và lưu tự động toàn bộ truyện vào máy. Khung hiển thị mẫu cố định để tối ưu mượt mà và tránh lag...]`;
+    }
+    return output;
+  }, [output ? output.slice(0, 500) : '']);
   const canStart = Boolean(source.trim());
 
   return (
@@ -2855,7 +2891,6 @@ export default function App() {
                 <span className="eyebrow">Bước 1</span>
                 <h2 id="source-heading">Nội dung tiếng Trung</h2>
               </div>
-              <span className="field-badge">原文</span>
             </div>
             <div className="source-mode-switch" role="tablist" aria-label="Cách nhập nguồn truyện">
               <button
@@ -2908,6 +2943,10 @@ export default function App() {
                 onChooseDirectory={chooseChapterDirectory}
                 onExportOriginalChaptersChange={setExportOriginalChapters}
                 onExportCombinedChaptersChange={setExportCombinedChapters}
+                omitOutputChapterTitles={omitOutputChapterTitles}
+                exportCombinedSourceChapters={exportCombinedSourceChapters}
+                onOmitOutputChapterTitlesChange={setOmitOutputChapterTitles}
+                onExportCombinedSourceChaptersChange={setExportCombinedSourceChapters}
                 onClearSelection={() => setSelectedChapterIds(new Set())}
                 onFetchAndTranslate={fetchAndTranslateStory}
                 onSelectAll={() => setSelectedChapterIds(new Set(
@@ -2973,7 +3012,6 @@ export default function App() {
               <div>
                 <span className="eyebrow">Bước 3</span>
                 <h2 id="output-heading">Nội dung đã dịch</h2>
-                <p>Chỉnh sửa trực tiếp, tự động lưu cục bộ.</p>
               </div>
               <div className={`save-indicator save-indicator--${saveState}`} aria-live="polite">
                 {saveState === 'saving' && <><span className="spinner spinner--small" /> Đang lưu…</>}
@@ -2985,19 +3023,13 @@ export default function App() {
             <textarea
               aria-label="Nội dung truyện đã dịch"
               className={`story-editor story-editor--output${outputHanCount ? ' has-han-warning' : ''}`}
-              value={output}
+              value={displayOutput}
               onChange={(event) => setOutput(event.target.value)}
+              readOnly={output.length > 2_000}
               placeholder="Bản dịch sẽ được ghép vào đây theo đúng thứ tự. Bạn cũng có thể nhập hoặc dán bản dịch để dùng riêng công cụ chia chương."
               spellCheck={false}
             />
             <div className="output-toolbar">
-              <div className="output-stats">
-                <span><strong>{outputWords.toLocaleString('vi-VN')}</strong> chữ</span>
-                <span><strong>{output.length.toLocaleString('vi-VN')}</strong> ký tự</span>
-                <span className={outputHanCount ? 'text-danger' : 'text-success'}>
-                  <strong>{outputHanCount}</strong> chữ Hán còn sót
-                </span>
-              </div>
               <div className="action-row action-row--compact">
                 <button className="button button--secondary" disabled={!output} onClick={copyOutput} type="button"><Icon name="copy" /> Sao chép</button>
                 <button className="button button--primary" disabled={!output || !appAvailable} onClick={exportOutput} type="button"><Icon name="download" /> Xuất TXT</button>
@@ -3121,11 +3153,6 @@ export default function App() {
           )}
         </details>
       </main>
-
-      <footer className="app-footer">
-        <span>Dữ liệu bản thảo được lưu trên thiết bị của bạn.</span>
-        <span>{providerLabel} chỉ nhận nội dung khi bạn bắt đầu dịch.</span>
-      </footer>
 
       <StoryMemoryModal
         isOpen={isMemoryOpen}

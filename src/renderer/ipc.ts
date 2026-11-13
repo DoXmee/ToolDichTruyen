@@ -20,6 +20,8 @@ export interface TranslationEvent {
 }
 
 export interface TranslationRequest {
+  batchChaptersCount?: number;
+  sourceChapters?: import('../shared/types').TranslationSourceChapter[];
   source: string;
   promptMode: string;
   customPrompt?: string;

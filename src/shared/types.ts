@@ -154,6 +154,7 @@ export type TranslationValidationIssueCode =
   | 'han_remaining'
   | 'too_short'
   | 'likely_truncated'
+  | 'truncated_tail'
   | 'source_echo'
   | 'assistant_preamble'
   | 'repetition'
@@ -200,6 +201,14 @@ export interface TranslationSegment extends TextRange {
   attempts: number;
   validation?: TranslationValidationResult;
   error?: string;
+}
+
+export interface TranslationSourceChapter {
+  id: string;
+  number: number;
+  title: string;
+  text: string;
+  urls?: string[];
 }
 
 /**
@@ -346,6 +355,29 @@ export interface GeminiSettings {
   excerptCharacters: number;
 }
 
+export interface GeminiKeyTestResult {
+  ok: boolean;
+  status: "ready" | "active" | "error" | "rate_limited" | "blocked" | "quota_exceeded";
+  message: string;
+  plan?: string;
+  model?: string;
+  testedModel?: string;
+  serviceTier?: string;
+  quota?: {
+    rpm: number;
+    rpd: number;
+    usedToday: number;
+  };
+}
+
+export interface GeminiKeyQuotaInfo {
+  keyMasked: string;
+  model: string;
+  usedToday: number;
+  dailyLimit: number;
+  rpmLimit: number;
+}
+
 export interface AppSettings {
   version: number;
   promptMode: PromptMode;
@@ -414,6 +446,8 @@ export interface StoryChapterContent {
   sourceUrls: string[];
   mergedPartCount: number;
   characterCount: number;
+  /** Identifies the prepared source delivered to every downstream consumer. */
+  sourcePreparation?: { version: string; sha256: string; finalPassRemovedCharacters: number };
   warnings: string[];
 }
 

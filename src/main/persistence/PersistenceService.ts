@@ -11,6 +11,9 @@ interface PersistedSettings {
   aiProvider?: AiProvider;
   geminiModel?: string;
   geminiApiKeyEncrypted?: string;
+  geminiApiKeysPlain?: string[];
+  batchChaptersCount?: number;
+  executionMode?: 'web' | 'api';
 }
 
 const EMPTY_SETTINGS: PersistedSettings = { version: 1 };
@@ -283,6 +286,56 @@ export class PersistenceService {
     }
     await this.settingsStore.write(settings);
     return this.getGeminiConfiguration();
+  }
+
+  public async getGeminiApiConfiguration(): Promise<{
+    apiKeys: string[];
+    model: string;
+    batchChaptersCount: number;
+    executionMode: 'web' | 'api';
+  }> {
+    const settings = await this.settingsStore.read(EMPTY_SETTINGS);
+    let keys = (settings.geminiApiKeysPlain || []).map((k) => k.trim()).filter((k) => k.length > 5);
+    if (keys.length === 0 && settings.geminiApiKeyEncrypted && this.safeStorage.isEncryptionAvailable()) {
+      try {
+        const decrypted = this.safeStorage.decryptString(Buffer.from(settings.geminiApiKeyEncrypted, 'base64')).trim();
+        if (decrypted.length > 5) keys = [decrypted];
+      } catch {}
+    }
+    return {
+      apiKeys: keys,
+      model: settings.geminiModel || 'gemini-3.5-flash-lite',
+      batchChaptersCount: settings.batchChaptersCount ?? 2,
+      executionMode: settings.executionMode || 'web',
+    };
+  }
+
+  public async updateGeminiApiConfiguration(input: {
+    apiKeys?: string[];
+    model?: string;
+    batchChaptersCount?: number;
+    executionMode?: 'web' | 'api';
+  }): Promise<{
+    apiKeys: string[];
+    model: string;
+    batchChaptersCount: number;
+    executionMode: 'web' | 'api';
+  }> {
+    const settings = { ...(await this.settingsStore.read(EMPTY_SETTINGS)) };
+    if (Array.isArray(input.apiKeys)) {
+      settings.geminiApiKeysPlain = input.apiKeys.map((k) => k.trim()).filter((k) => k.length > 5);
+    }
+    if (typeof input.model === 'string' && input.model.trim()) {
+      settings.geminiModel = input.model.trim();
+    }
+    if (typeof input.batchChaptersCount === 'number') {
+      settings.batchChaptersCount = Math.max(1, Math.min(5, Math.trunc(input.batchChaptersCount) || 2));
+    }
+    if (input.executionMode === 'api' || input.executionMode === 'web') {
+      settings.executionMode = input.executionMode;
+    }
+    await this.settingsStore.write(settings);
+    return this.getGeminiApiConfiguration();
   }
 
   public async flush(): Promise<void> {

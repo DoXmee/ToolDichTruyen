@@ -182,16 +182,19 @@ const KIMI_CONTINUE_RESPONSE_SELECTORS = [
   'button:has-text("继续生成")',
 ] as const;
 
+const MAX_CHATGPT_RESPONSE_CONTINUATIONS = 6;
+const MAX_KIMI_RESPONSE_CONTINUATIONS = 6;
+
+// Keep continue-response selectors strictly specific to the generation continuation action
+// Never use loose substring "Tiếp tục" because it falsely matches chat title buttons like "Tiếp tục dịch truyện ˅".
 const CHATGPT_CONTINUE_RESPONSE_SELECTORS = [
   'button:has-text("Continue generating")',
   'button:has-text("Tiếp tục tạo")',
-  'button:has-text("Tiếp tục")',
+  'button:has-text("继续生成")',
   'button[aria-label*="Continue generating" i]',
   'button[aria-label*="Tiếp tục tạo" i]',
   'button[data-testid*="continue" i]',
 ] as const;
-
-const MAX_KIMI_RESPONSE_CONTINUATIONS = 6;
 const KIMI_INSTANT_HIGH_SELECTORS = [
   'text=Instant High',
   ':text-is("Instant High")',
@@ -1827,19 +1830,15 @@ export class ChatGptWebAdapter {
     return await page
       .evaluate(() => {
         const elements = document.querySelectorAll(
-          '[role="alert"], [data-testid*="error"], .text-red-500, div[class*="toast"], div[class*="banner"], [data-testid*="banner"]',
+          '[role="alert"], [role="alertdialog"], [data-testid*="error"], .text-red-500, div[class*="toast"], div[class*="banner"], [data-testid*="banner"]',
         );
+        const limitPattern = /(?:cửa sổ ngữ cảnh (?:này )?đã đầy|ngữ cảnh đã đầy|context window is full|cuộc trò chuyện (?:này )?quá dài|conversation is too long|this conversation is too long|đã đạt giới hạn cuộc trò chuyện|reached the (?:message|conversation) limit|please start a new chat|bắt đầu một cuộc trò chuyện mới để tiếp tục)/iu;
         for (const el of elements) {
+          if (el.closest('nav, [data-testid*="sidebar"], [aria-label*="sidebar" i], header')) continue;
           const text = el.textContent?.trim() || "";
-          if (/(?:cửa sổ ngữ cảnh đã đầy|ngữ cảnh đã đầy|context window is full|context window)/iu.test(text)) {
+          if (limitPattern.test(text)) {
             return text;
           }
-        }
-        if (
-          document.body &&
-          /(?:cửa sổ ngữ cảnh đã đầy|context window is full)/iu.test(document.body.innerText)
-        ) {
-          return "Cửa sổ ngữ cảnh đã đầy";
         }
         return null;
       })
@@ -2976,9 +2975,10 @@ export class ChatGptWebAdapter {
                 '[role="alert"], [data-testid*="error"], .text-red-500, div[class*="toast"], div[class*="banner"]',
               );
               for (const el of alerts) {
+                if (el.closest('nav, [data-testid*="sidebar"], [aria-label*="sidebar" i], header')) continue;
                 const text = el.textContent?.trim() || "";
                 if (
-                  /(?:quá dài|too long|something went wrong|rate limit|quota|đã xảy ra lỗi|vui lòng thử lại|cửa sổ ngữ cảnh|ngữ cảnh đã đầy|context window)/iu.test(
+                  /(?:cửa sổ ngữ cảnh|ngữ cảnh đã đầy|context window is full|conversation is too long|this conversation is too long|reached the (?:message|conversation) limit|cuộc trò chuyện quá dài|something went wrong|rate limit|quota|đã xảy ra lỗi|vui lòng thử lại)/iu.test(
                     text,
                   )
                 ) {
@@ -2990,7 +2990,7 @@ export class ChatGptWebAdapter {
             .catch(() => null);
 
           if (pageError) {
-            if (/(?:cửa sổ ngữ cảnh|ngữ cảnh đã đầy|context window)/iu.test(pageError)) {
+            if (/(?:cửa sổ ngữ cảnh (?:này )?đã đầy|ngữ cảnh đã đầy|context window is full|cuộc trò chuyện (?:này )?quá dài|conversation is too long|this conversation is too long|đã đạt giới hạn cuộc trò chuyện|reached the (?:message|conversation) limit|please start a new chat|bắt đầu một cuộc trò chuyện mới để tiếp tục)/iu.test(pageError)) {
               throw new ChatGptFreshChatRecoveryError(
                 `ChatGPT hiển thị thông báo ngữ cảnh: "${pageError.slice(0, 200)}"`,
               );
@@ -3255,6 +3255,7 @@ export class ChatGptWebAdapter {
     let observerVerified = false;
     let nextObserverRefreshAt = Date.now() + 30_000;
     let kimiResponseContinuations = 0;
+    let chatGptResponseContinuations = 0;
     // Kimi can show the quota banner immediately after accepting the last
     // available request while that response is still streaming. Give the
     // accepted request time to expose its Stop control/assistant turn instead
@@ -3286,10 +3287,17 @@ export class ChatGptWebAdapter {
         if (this.provider === "chatgpt") {
           const continueResponse = await firstVisible(page, CHATGPT_CONTINUE_RESPONSE_SELECTORS);
           if (continueResponse) {
-            await continueResponse.click({ timeout: 5_000 }).catch(() => undefined);
-            stableChecks = 0;
-            deadline = Math.max(deadline, Date.now() + timeoutMs);
-            await delay(750, signal);
+            if (chatGptResponseContinuations >= MAX_CHATGPT_RESPONSE_CONTINUATIONS) {
+              console.warn(
+                `[ChatGPT] Đã đạt giới hạn tiếp tục phản hồi tối đa (${MAX_CHATGPT_RESPONSE_CONTINUATIONS} lần). Không bấm thêm.`,
+              );
+            } else {
+              await continueResponse.click({ timeout: 5_000 }).catch(() => undefined);
+              chatGptResponseContinuations += 1;
+              stableChecks = 0;
+              deadline = Math.max(deadline, Date.now() + timeoutMs);
+              await delay(750, signal);
+            }
           }
         }
         const kimiUsageLimitDetected = this.provider === "kimi"
@@ -3385,10 +3393,6 @@ export class ChatGptWebAdapter {
         const stillStreaming = await this.responseStillStreaming(responsePage);
         const isActivelyGenerating = stopButtonVisible || stillStreaming;
 
-        if (!isActivelyGenerating && (await firstVisible(responsePage, this.selectors.retryButton))) {
-          throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
-        }
-
         if (this.provider === "chatgpt") {
           const contextLimit = await this.checkChatGptContextLimit(responsePage);
           if (contextLimit) {
@@ -3396,6 +3400,26 @@ export class ChatGptWebAdapter {
               `ChatGPT hiển thị thông báo: "${contextLimit.slice(0, 200)}"`,
             );
           }
+        }
+
+        const hasExplicitGenerationError = !isActivelyGenerating && await responsePage
+          .evaluate(() => {
+            const errorBanners = document.querySelectorAll(
+              '[data-testid*="error"], .text-red-500, [role="alert"]',
+            );
+            for (const el of errorBanners) {
+              if (el.closest('nav, [data-testid*="sidebar"], [aria-label*="sidebar" i], header')) continue;
+              const text = el.textContent?.trim() || "";
+              if (/(?:error generating a response|something went wrong|an error occurred|đã xảy ra lỗi|vui lòng thử lại|thao tác thất bại)/iu.test(text)) {
+                return true;
+              }
+            }
+            return false;
+          })
+          .catch(() => false);
+
+        if (hasExplicitGenerationError && (!responseLocator || (await responseLocator.innerText().catch(() => "")).trim().length === 0)) {
+          throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
         }
 
         if (responseLocator) {

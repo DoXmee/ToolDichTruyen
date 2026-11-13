@@ -20,7 +20,7 @@ describe("Huli normal-browser helper", () => {
   it("has a domain-flexible MV3 manifest with a stable extension id key", async () => {
     const manifest = JSON.parse(await readFile(resolve(root, "manifest.json"), "utf8"));
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("1.0.11");
+    expect(manifest.version).toBe("1.0.13");
     expect(manifest.name).toBe("Tool Dịch Truyện - Browser Helper");
     expect(manifest.description).toContain("Novel543");
     expect(manifest.description).toContain("TimoTXT");

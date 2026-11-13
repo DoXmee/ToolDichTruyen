@@ -167,6 +167,32 @@ function maximumGroupsFrom(
   return maximum;
 }
 
+function isSafeSplitPoint(
+  content: string,
+  regionStartOffset: number,
+  boundaryOffset: number,
+): boolean {
+  const textBefore = content.slice(regionStartOffset, boundaryOffset).trimEnd();
+  if (!textBefore) return false;
+
+  // 1. Check dialogue quote balance:
+  const openCurly = (textBefore.match(/“/g) || []).length;
+  const closeCurly = (textBefore.match(/”/g) || []).length;
+  if (openCurly !== closeCurly) return false;
+
+  const straightQuotes = (textBefore.match(/"/g) || []).length;
+  if (straightQuotes % 2 !== 0) return false;
+
+  // 2. Check sentence ending punctuation:
+  // Must not end with comma, colon, semicolon, or dash
+  const lastChar = textBefore.slice(-1);
+  if ([',', '，', ':', '：', ';', '；', '-', '–', '—'].includes(lastChar)) {
+    return false;
+  }
+
+  return true;
+}
+
 function balancedSlices(
   content: string,
   paragraphs: readonly ParagraphBlock[],
@@ -214,6 +240,8 @@ function balancedSlices(
       const remainingGroups = chapterCount - group;
       let bestIndex = -1;
       let bestDistance = Number.POSITIVE_INFINITY;
+      let bestFallbackIndex = -1;
+      let bestFallbackDistance = Number.POSITIVE_INFINITY;
 
       for (let index = previousIndex + 1; index < candidates.length - 1; index += 1) {
         const candidate = candidates[index];
@@ -224,18 +252,31 @@ function balancedSlices(
         if ((maximum[index] ?? 0) < remainingGroups) continue;
 
         const distance = Math.abs(currentWords - idealCurrentWords);
-        if (
-          distance < bestDistance
-          || (distance === bestDistance && index < bestIndex)
-        ) {
-          bestIndex = index;
-          bestDistance = distance;
+        const safe = isSafeSplitPoint(content, previous.offset, candidate.offset);
+
+        if (safe) {
+          if (
+            distance < bestDistance
+            || (distance === bestDistance && index < bestIndex)
+          ) {
+            bestIndex = index;
+            bestDistance = distance;
+          }
+        } else {
+          if (
+            distance < bestFallbackDistance
+            || (distance === bestFallbackDistance && index < bestFallbackIndex)
+          ) {
+            bestFallbackIndex = index;
+            bestFallbackDistance = distance;
+          }
         }
       }
 
-      if (bestIndex < 0) break;
-      selected.push(bestIndex);
-      previousIndex = bestIndex;
+      const chosenIndex = bestIndex >= 0 ? bestIndex : bestFallbackIndex;
+      if (chosenIndex < 0) break;
+      selected.push(chosenIndex);
+      previousIndex = chosenIndex;
     }
 
     selected.push(candidates.length - 1);

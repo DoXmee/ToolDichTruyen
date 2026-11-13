@@ -37,7 +37,7 @@ function isSupportedCurrentPage() {
   try { normalizeUrl(location.href); return true; } catch { return false; }
 }
 
-const STORY_NOISE_SELECTOR = 'script,style,iframe,ins,figure,.adBlock,.gadBlock,.cf-unit,#comment,.bh-rec-embed,.recommend-wrap,[class^="ad-"],[class*=" ad-"]';
+const STORY_NOISE_SELECTOR = 'script,style,noscript,iframe,ins,.adBlock,.gadBlock,.cf-unit,#comment,.bh-rec-embed,.recommend-wrap,[class^="ad-"],[class*=" ad-"]';
 const STORY_BLOCK_SELECTOR = "p,div,li,blockquote,pre,section,article";
 // Huli's real reader can split this footer over multiple paragraphs/lines,
 // including its page-count/help text and a decorative emoticon. It remains a
@@ -75,6 +75,7 @@ function textOf(element) {
   if (!element) return "";
   if (element.matches("#nr")) return storyTextOf(element);
   const clone = element.cloneNode(true);
+  clone.querySelectorAll("script,style,noscript").forEach((node) => node.remove());
   clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
   return (clone.textContent ?? "").normalize("NFC").trim();
 }
@@ -244,9 +245,12 @@ function hasCatalogPagerControls() {
 }
 
 function challengeState() {
+  const hasChallengeDocument = Boolean(document.querySelector('script[src*="/cdn-cgi/challenge-platform/"],#challenge-running,#challenge-stage,#challenge-form')) || Array.from(document.scripts).some((script) => /window\._cf_chl_opt\s*=/u.test(script.textContent || ""));
+  if (!hasChallengeDocument && Array.from(document.querySelectorAll("#nr,#chapterList,.chaplist .all")).some((node) => textOf(node).length >= 40)) return "none";
   const bodyText = textOf(document.body);
   const interactive = hasVisibleChallengeControl();
-  const passive = /Just a moment|Checking your browser|cf-chl-|Cloudflare Ray ID/iu.test(`${document.title}\n${bodyText}`);
+  const text = `${document.title}\n${bodyText}`;
+  const passive = hasChallengeDocument || /^(?:Just a moment|Checking your browser|Chờ một chút|请稍候|請稍候)[.!…。\s]*$/iu.test(document.title.trim()) || /checking your browser|xác minh bảo mật|xác minh bạn không phải/iu.test(text) && /cloudflare|cf[-_]chl[-_]/iu.test(text);
   return interactive ? "interactive" : passive ? "passive" : "none";
 }
 
@@ -374,7 +378,7 @@ function collect(requestedUrl) {
   const challenge = challengeState();
   const pager = catalogPagination();
   const chapterPager = chapterPagination();
-  const snapshot = { requestedUrl: normalizeUrl(requestedUrl), url: normalizeUrl(location.href), status: 200, title: String(document.title ?? "").normalize("NFC").slice(0, 1_000), ...(canonicalUrl ? { canonicalUrl } : {}), charset: String(document.characterSet || "UTF-8").slice(0, 32), htmlLanguage: String(document.documentElement.lang || "").slice(0, 64), bodyText, elements, links, fontFamilies: [], fontUrls: [], fontHashes: [], ...(pager ? { catalogPagination: pager } : {}), ...(chapterPager ? { chapterPagination: chapterPager } : {}), challenge };
+  const snapshot = { requestedUrl: normalizeUrl(requestedUrl), url: normalizeUrl(location.href), title: String(document.title ?? "").normalize("NFC").slice(0, 1_000), ...(canonicalUrl ? { canonicalUrl } : {}), charset: String(document.characterSet || "UTF-8").slice(0, 32), htmlLanguage: String(document.documentElement.lang || "").slice(0, 64), bodyText, elements, links, fontFamilies: [], fontUrls: [], fontHashes: [], ...(pager ? { catalogPagination: pager } : {}), ...(chapterPager ? { chapterPagination: chapterPager } : {}), challenge };
   if (new TextEncoder().encode(JSON.stringify(snapshot)).byteLength > 1_900_000) throw new RangeError("Page snapshot exceeds the safe 1.9 MB envelope.");
   return snapshot;
 }

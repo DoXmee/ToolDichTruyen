@@ -694,10 +694,18 @@ textarea:focus-visible {
   border-radius: 999px;
   background: transparent;
   color: inherit;
-  padding: 6px 11px;
+  padding: 5px 11px;
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 700;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  box-sizing: border-box;
+  line-height: 1;
+  white-space: nowrap;
 }
 .supported-sites-button:hover,
 .supported-sites-button[aria-expanded='true'] { background: color-mix(in srgb, currentColor 10%, transparent); }
@@ -802,15 +810,24 @@ textarea:focus-visible {
 }
 
 
-.connection-box > div {
-  display: grid;
-  justify-items: end;
-  gap: 5px;
+.connection-box__identity {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-end;
 }
 
 .connection-box small {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 11px;
+  line-height: 1.2;
+  margin-top: 3px;
+  pointer-events: none;
 }
 
 .connection-box__status-row {
@@ -818,6 +835,7 @@ textarea:focus-visible {
   align-items: center;
   justify-content: flex-end;
   gap: 7px;
+  height: 28px;
 }
 
 .ai-provider-switch {
@@ -1170,43 +1188,62 @@ main {
 
 .story-manual-verification {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 8px 9px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
   color: #77551d;
   background: #fff8e8;
   border: 1px solid #e5c982;
   border-radius: 8px;
   font-size: 11px;
-  line-height: 1.4;
+  line-height: 1.45;
+  box-sizing: border-box;
 }
 
-.story-manual-verification > svg,
-.story-manual-verification > .spinner {
+.story-manual-verification__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
+.story-manual-verification__header > svg,
+.story-manual-verification__header > .spinner {
   flex: 0 0 auto;
+  margin-top: 2px;
 }
 
-.story-manual-verification > div {
-  display: grid;
-  min-width: 0;
-  flex-basis: 260px;
+.story-manual-verification__content {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   flex: 1;
-  gap: 1px;
+  min-width: 0;
 }
 
 .story-manual-verification strong {
   color: #68470f;
+  line-height: 1.4;
 }
 
 .story-manual-verification span {
   color: #765d32;
+  line-height: 1.4;
 }
 
-.story-manual-verification .button {
-  min-height: 30px;
+.story-manual-verification__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.story-manual-verification__actions .button {
+  min-height: 28px;
   flex: 0 0 auto;
-  padding: 5px 8px;
+  padding: 5px 10px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -1561,7 +1598,7 @@ main {
 .provider-pool {
   position: absolute;
   top: 10px;
-  right: 38px;
+  right: 14px;
   z-index: 1;
   display: flex;
   align-items: center;
@@ -1862,13 +1899,19 @@ main {
 .status-pill {
   width: fit-content;
   gap: 6px;
-  padding: 5px 9px;
+  padding: 5px 11px;
   color: #62675e;
   background: #efeee9;
   border-radius: 99px;
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  box-sizing: border-box;
+  white-space: nowrap;
 }
 
 .status-pill--success {
@@ -2226,29 +2269,36 @@ main {
 }
 
 .output-toolbar {
-  justify-content: space-between;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 10px;
   margin-top: 8px;
-}
-
-.output-stats {
-  gap: 7px 12px;
-  flex-wrap: wrap;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.output-stats strong {
-  color: var(--ink);
-}
-
-.action-row--compact {
   flex-wrap: nowrap;
 }
 
+.output-panel .action-row--compact {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: nowrap;
+  width: auto;
+}
+
 .output-panel .action-row--compact .button {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  width: auto;
   min-height: 32px;
-  padding: 6px 9px;
+  padding: 6px 14px;
+}
 }
 
 .text-danger {
@@ -2858,49 +2908,21 @@ main {
     margin-top: 4px;
   }
 
-  /* Keep the Huliwang browser-help state compact without hiding any of its
-   * instructions or turning the source card into a scrolling pane. The text
-   * gets the full first row; the actions share a short second row. */
   .story-manual-verification {
-    display: grid;
-    grid-template-columns: max-content repeat(3, minmax(0, max-content));
-    gap: 5px 6px;
-    align-items: start;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
   }
 
-  .story-manual-verification > svg,
-  .story-manual-verification > .spinner {
-    grid-column: 1;
-    grid-row: 1;
-    margin-top: 2px;
+  .story-manual-verification__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
   }
 
-  .story-manual-verification > div {
-    grid-column: 2 / -1;
-    grid-row: 1;
-    min-width: 0;
-    flex: none;
-  }
-
-  .story-manual-verification > .button {
-    grid-row: 2;
-    min-height: 27px;
-    padding: 4px 6px;
-    font-size: 10px;
-    text-align: center;
-    white-space: normal;
-  }
-
-  .story-manual-verification > .button:nth-of-type(1) {
-    grid-column: 1 / span 2;
-  }
-
-  .story-manual-verification > .button:nth-of-type(2) {
-    grid-column: 3;
-  }
-
-  .story-manual-verification > .button:nth-of-type(3) {
-    grid-column: 4;
+  .story-manual-verification__actions .button {
+    font-size: 11px;
+    padding: 4px 8px;
   }
 
   .translation-controls {
@@ -3033,7 +3055,6 @@ main {
     grid-template-columns: 205px minmax(0, 1fr);
   }
 
-  .output-toolbar,
   .panel__heading--splitter {
     align-items: flex-start;
     flex-direction: column;
@@ -3138,16 +3159,12 @@ main {
     grid-template-columns: 1fr;
   }
 
-  .story-manual-verification {
-    align-items: flex-start;
-    flex-wrap: wrap;
+  .story-manual-verification__actions {
+    flex-direction: column;
+    width: 100%;
   }
 
-  .story-manual-verification > div {
-    min-width: calc(100% - 28px);
-  }
-
-  .story-manual-verification .button {
+  .story-manual-verification__actions .button {
     width: 100%;
   }
 
@@ -3170,14 +3187,15 @@ main {
     margin-left: 0;
   }
 
-  .output-stats {
-    flex-wrap: wrap;
-    gap: 7px 14px;
+  .output-panel .action-row--compact {
+    width: auto;
+    flex-direction: row;
+    flex-wrap: nowrap;
   }
 
-  .action-row--compact,
-  .action-row--compact .button {
-    width: 100%;
+  .output-panel .action-row--compact .button {
+    width: auto;
+    white-space: nowrap;
   }
 
   .splitter-config {

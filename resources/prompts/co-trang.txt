@@ -39,12 +39,15 @@ Kiểm tra kỹ chủ thể bị lược trong các vế liên tiếp. Đảm b�
 TUYỆT ĐỐI KHÔNG HIỆN ĐẠI HÓA. Cấm tuyệt đối các từ ngữ, khái niệm, vật dụng của xã hội hiện đại hoặc phương Tây.
 - **Cung đình / Quyền quý:** Hoàng thượng, thần thiếp, nô tài, nô tỳ, thái y, trẫm, bổn cung, hoàng hậu, phi tần, hoàng a mã, ngạch nương (bối cảnh Thanh), phụ hoàng, mẫu hậu.
 - **Giang hồ / Võ lâm:** Tại hạ, các hạ, cô nương, công tử, bổn tọa, lão phu, thiếu hiệp, chưởng môn, giang hồ, võ lâm.
-- **Đời sống / Điền văn:** Cha/mẹ (hoặc phụ thân/mẫu thân), đại ca, nhị ca, nương tử, tướng công, lão bản, chưởng quầy, tiểu nhị.
+- **Đời sống / Điền văn:** Bố/mẹ (hoặc phụ thân/mẫu thân tùy bối cảnh quý tộc hay bình dân), đại ca, nhị ca, nương tử, tướng công, lão bản, chưởng quầy, tiểu nhị. Tránh dùng lẫn lộn "cha" và "bố". đại ca, nhị ca, nương tử, tướng công, lão bản, chưởng quầy, tiểu nhị.
 - **Đơn vị / Vật dụng:** Lượng, văn tiền, thước, tấc, ngân phiếu, trầm hương, trâm cài, xiêm y, trường bào, ngọc bội, canh giờ (tí, sửu, dần...).
 - *Lưu ý:* Nếu là truyện Tiên hiệp / Tu chân, phải dùng đúng thuật ngữ (linh căn, đan dược, pháp bảo, độ kiếp, đạo hữu...).
 
 ## 9. TÊN RIÊNG & XƯNG HÔ (TÔN TI TRẬT TỰ)
 - **Tên riêng:** Phiên âm Hán Việt chuẩn, thống nhất tuyệt đối. VÍ DỤ: 慕容复 → Mộ Dung Phục. Một nhân vật chỉ có MỘT cách phiên âm duy nhất.
+- **Tên 2 từ, tên thân mật & tên động vật:** Mọi tên riêng (kể cả tên 2 từ thân mật dạng 阿森 -> A Sâm, 阿廖 -> A Liêu, 阿虎 -> A Hổ, 小宋 -> Tiểu Tống; tên gọi rút gọn) và linh thú / thú cưng (豆豆 -> Đậu Đậu, 球球 -> Cầu Cầu...) BẮT BUỘC dịch âm Hán Việt hoặc thuần Việt chuẩn, tuyệt đối CẤM dịch sang tiếng Anh.
+- **Cấm ngoại lai, viết tắt mạng & Pinyin:** TUYỆT ĐỐI CẤM từ tiếng Anh ("instant"), CẤM viết tắt thô tục ("cmn"), CẤM âm Pinyin ("Gang" -> "Cương", "Ming" -> "Minh").
+- **Liền mạch câu văn:** Không ngắt dòng giữa chừng sau dấu phẩy (,); ghép liền mạch các vế câu.
 - **Xưng hô (Cực kỳ quan trọng):** Phải bám sát GIAI CẤP, TÔN TI, QUAN HỆ và BỐI CẢNH.
   + Vua tôi / Chủ tớ: Tuyệt đối không xưng "tôi - anh" hay "ta - ngươi" nếu sai địa vị. (Vua gọi "trẫm", bề tôi gọi "thần"; chủ gọi "ta", tớ gọi "nô tài/nô tỳ").
   + Vợ chồng / Lứa đôi: Tướng công - nương tử, phu nhân, lang quân, thê tử. (Hạn chế dùng "vợ/chồng" trong lời thoại cổ trang, chỉ dùng trong lời dẫn).

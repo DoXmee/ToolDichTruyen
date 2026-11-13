@@ -18,6 +18,7 @@ import type { PersistenceService } from "./persistence/PersistenceService.js";
 import { normalizePromptMode, type PromptLoader } from "./prompts.js";
 import type { StorySourceServiceApi } from "./storySources/index.js";
 import type { TranslationJobRunner } from "./translation/TranslationJobRunner.js";
+import { readPipelineOptions } from './translation/TranslationPipelineV3.js';
 
 export interface IpcDependencies {
   ipcMain: IpcMain;
@@ -345,6 +346,7 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
       };
     }
     return dependencies.translator.start({
+      ...readPipelineOptions(payload),
       source,
       promptMode: mode,
       ...(customPrompt ? { customPrompt } : {}),

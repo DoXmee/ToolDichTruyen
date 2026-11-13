@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  deduplicateAdjacentChapterHeaders,
   extractDiscoveredDataFromResponse,
   extractDiscoveredEntitiesFromResponse,
   sanitizeTranslationResponse,
@@ -422,5 +423,27 @@ Nội dung chương dịch.
     expect(data.entities).toHaveLength(1);
     expect(data.entities[0]!.zh).toBe('袁和颂');
     expect(data.entities[0]!.vi).toBe('Viên Hòa Tụng');
+  });
+
+  it('deduplicates adjacent identical or same-number chapter headers', () => {
+    const raw = `Chương 374: Phù chú đòi mạng\n\nChương 374: Phù chú đòi mạng\nChiến sĩ kia giơ tay chào quân lễ.`;
+    expect(deduplicateAdjacentChapterHeaders(raw)).toBe(
+      `Chương 374: Phù chú đòi mạng\n\nChiến sĩ kia giơ tay chào quân lễ.`,
+    );
+
+    const emptyAndFull = `Chương 374:\n\nChương 374: Phù chú đòi mạng\nChiến sĩ kia giơ tay chào quân lễ.`;
+    expect(deduplicateAdjacentChapterHeaders(emptyAndFull)).toBe(
+      `Chương 374: Phù chú đòi mạng\n\nChiến sĩ kia giơ tay chào quân lễ.`,
+    );
+  });
+
+  it('sanitizes double chapter headers automatically inside sanitizeTranslationResponse', () => {
+    const source = `Chương 373: 斷雙手\n\n第373章 斷雙手\n\nChương 374: 催命符\n\n第374章 催命符\n\n戰士敬禮。`;
+    const response = `Chương 373: Bẻ gãy đôi tay\n\nChương 374: Phù chú đòi mạng\n\nChương 374: Phù chú đòi mạng\nChiến sĩ chào quân lễ.`;
+    const sanitized = sanitizeTranslationResponse(source, response);
+
+    expect(sanitized).toBe(
+      `Chương 373: Bẻ gãy đôi tay\n\nChương 374: Phù chú đòi mạng\n\nChiến sĩ chào quân lễ.`,
+    );
   });
 });

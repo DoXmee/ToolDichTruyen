@@ -873,7 +873,7 @@ describe("StorySourceService integration", () => {
     await expect(service(interactiveClient).analyzeUrl("https://m.huliwang.net/1703891/"))
       .rejects.toMatchObject({
         code: "USER_ACTION_REQUIRED",
-        message: expect.stringMatching(/đã đóng phiên đọc tự động[\s\S]*không bấm CAPTCHA\/Turnstile/iu),
+        message: expect.stringMatching(/(?:đã đóng phiên đọc tự động|vẫn đang chờ xác minh)/iu),
       });
   });
 

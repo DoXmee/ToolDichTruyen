@@ -83,6 +83,9 @@ function replaceSubdomain(hostname: string, subdomain: "m" | "www"): string {
 
 function canonicalOrigin(site: StorySite, input?: URL): string {
   const inputHost = input?.hostname.toLowerCase();
+  // The current UAA host is distinct from the legacy uaa002 service. Keep
+  // explicitly supported modern hosts instead of sending them to a dead alias.
+  if (site === "uaa002" && inputHost && ["uaa.com", "www.uaa.com", "m.uaa.com"].includes(inputHost)) return `https://${inputHost}`;
   const knownLegacyHost = inputHost ? HOSTS[site].has(inputHost) : false;
   if (input && !knownLegacyHost) {
     if (site === "huliwang") return `https://${replaceSubdomain(input.hostname, "m")}`;

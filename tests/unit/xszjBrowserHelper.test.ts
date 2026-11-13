@@ -28,7 +28,7 @@ function installChrome(dom: JSDOM) {
 
 describe("XSZJ normal-browser helper", () => {
   it("normalizes only the fixed XSZJ and 爱下电子书 URL families", () => {
-    expect(protocol.EXTENSION_VERSION).toBe("1.0.11");
+    expect(protocol.EXTENSION_VERSION).toBe("1.0.13");
     expect(protocol.normalizeXszjUrl("https://www.xszj.org/b/485734/c/856451?page=2&utm=no#x"))
       .toBe("https://xszj.org/b/485734/c/856451?page=2");
     expect(protocol.normalizeXszjUrl("https://xszj.org/b/485734/cs/2"))
@@ -139,7 +139,7 @@ describe("XSZJ normal-browser helper", () => {
     const source = await readFile(resolve(root, "xszj-content.js"), "utf8");
     expect(() => new Function(source)).not.toThrow();
     expect(source).not.toMatch(/(?:chrome\.(?:cookies|history|debugger|webRequest)|remote-debugging|playwright|executeScript|document\.cookie|localStorage|sessionStorage)/iu);
-    expect(source).toMatch(/document\.querySelector\("li\.catalog-all"\)/u);
+    expect(source).toMatch(/document\.querySelector\("h2\.catalog-toggle.*li\.catalog-all"\)/u);
     expect(source).not.toMatch(/(?:eval\(|Function\(|executeScript|querySelector\(message)/u);
     expect(source).toContain('message?.type !== "collect-snapshot"');
   });

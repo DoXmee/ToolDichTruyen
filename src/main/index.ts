@@ -15,6 +15,7 @@ import { PersistenceService } from "./persistence/PersistenceService.js";
 import { PromptLoader } from "./prompts.js";
 import { StorySourceService } from "./storySources/index.js";
 import { TranslationJobRunner } from "./translation/TranslationJobRunner.js";
+import { installTranslationPipelineV3 } from "./translation/TranslationPipelineV3.js";
 import { createMainWindow, hardenDefaultSession } from "./window.js";
 
 const testUserDataDirectory = process.env.TOOL_DICH_TRUYEN_USER_DATA?.trim();
@@ -118,6 +119,7 @@ async function bootstrap(): Promise<void> {
     headless: false,
     executablePath: process.env.STORY_SOURCE_BROWSER_EXECUTABLE?.trim() || undefined,
   });
+  installTranslationPipelineV3(translator, { refetchRaw: (chapter, signal) => storySources!.refetchRawChapter(chapter, signal) });
   const gemini = new GeminiTitleService({
     apiKeyProvider: () => persistence!.getGeminiApiKey(),
     modelProvider: async () => (await persistence!.getGeminiConfiguration()).model,

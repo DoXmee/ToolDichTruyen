@@ -46,7 +46,7 @@ function connectHeartbeat() {
 }
 
 const STORY_NOISE_SELECTOR = [
-  "script", "style", "noscript", "iframe", "ins", "figure", ".adBlock", ".gadBlock", ".clickforceads",
+  "script", "style", "noscript", "iframe", "ins", ".adBlock", ".gadBlock", ".clickforceads",
   "#teadunit", "[id^=cfadif]", ".div-onead", ".pf", ".onead", ".foot-nav", ".reader-tools",
 ].join(",");
 const BLOCK_SELECTOR = "p,div,li,blockquote,pre,section,article";
@@ -59,6 +59,7 @@ function normalizeText(raw) {
 function textOf(element) {
   if (!element) return "";
   const clone = element.cloneNode(true);
+  clone.querySelectorAll("script,style,noscript").forEach((node) => node.remove());
   clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
   return normalizeText(clone.textContent ?? "");
 }
@@ -82,9 +83,12 @@ function isVisibleChallengeControl(element) {
   return rect.width >= 8 && rect.height >= 8;
 }
 function challengeState() {
+  const hasChallengeDocument = Boolean(document.querySelector('script[src*="/cdn-cgi/challenge-platform/"],#challenge-running,#challenge-stage,#challenge-form')) || Array.from(document.scripts).some((script) => /window\._cf_chl_opt\s*=/u.test(script.textContent || ""));
+  if (!hasChallengeDocument && Array.from(document.querySelectorAll(".chapter-content .content,.all")).some((node) => storyTextOf(node).length >= 40)) return "none";
   const interactive = Array.from(document.querySelectorAll('iframe[src*="challenges.cloudflare.com"],.cf-turnstile,.cf-turnstile button,.cf-turnstile input[type="checkbox"]')).some(isVisibleChallengeControl);
   if (interactive) return "interactive";
-  return /Just a moment|Checking your browser|Performing security verification|Verify you are human|cf-chl-|Cloudflare Ray ID/iu.test(`${document.title}\n${textOf(document.body)}`) ? "passive" : "none";
+  const text = `${document.title}\n${textOf(document.body)}`;
+  return hasChallengeDocument || /^(?:Just a moment|Checking your browser|Chờ một chút|请稍候|請稍候)[.!…。\s]*$/iu.test(document.title.trim()) || /checking your browser|performing security verification|xác minh bảo mật|xác minh bạn không phải/iu.test(text) && /cloudflare|cf[-_]chl[-_]/iu.test(text) ? "passive" : "none";
 }
 function scopes(element) {
   const found = new Set(); let current = element;
@@ -272,12 +276,12 @@ async function collect(requestedUrl) {
   let canonicalUrl;
   try { canonicalUrl = normalizeUrl(document.querySelector('link[rel="canonical"]')?.href); } catch { /* omit */ }
   const snapshot = {
-    requestedUrl: requested, url: current, status: 200,
+    requestedUrl: requested, url: current,
     title: String(document.title ?? "").normalize("NFC").slice(0, 1_000),
     ...(canonicalUrl ? { canonicalUrl } : {}),
     charset: String(document.characterSet || "UTF-8").slice(0, 32),
     htmlLanguage: String(document.documentElement.lang || "").slice(0, 64),
-    bodyText: textOf(document.body), elements, links: safeLinks(),
+    bodyText: textOf(document.body), rawBodyText: document.body?.innerText ?? document.body?.textContent ?? '', elements, links: safeLinks(),
     ...fontSnapshot, ...(metadata ? { readerMetadata: metadata } : {}),
     challenge: challengeState(),
   };

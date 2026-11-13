@@ -15,7 +15,7 @@ import {
 } from "./HuliwangBrowserBridge.js";
 import { defaultManualVerificationLauncher } from "./manualVerification.js";
 import { createPlaywrightStoryPageClient } from "./PlaywrightStoryPageClient.js";
-import { TimotxtF24092Decoder } from "./timotxtDecoder.js";
+import { TimotxtF24092Decoder, containsTimotxtEncodedCodepoints } from "./timotxtDecoder.js";
 import { parseStoryUrl } from "./urlRules.js";
 import { assignOutputChapterNumbers } from "./outputNumbering.js";
 import { parseChapterLabel } from "./text.js";
@@ -395,6 +395,38 @@ export class StorySourceService implements StorySourceServiceApi {
     }
   }
 
+  /** Revisit only stored source pages; retain all visible text before ad cleanup. */
+  public async refetchRawChapter(chapter: { id: string; number: number; urls?: string[] }, signal: AbortSignal): Promise<string> {
+    if (!chapter.urls?.length) throw new StorySourceError('INVALID_CONTENT', 'Chương không có URL nguồn để lấy lại.');
+    const parsed = parseStoryUrl(chapter.urls[0]!);
+    const operation = this.begin(randomUUID());
+    const combined = AbortSignal.any([signal, operation.signal]);
+    try {
+      const runtime = await this.runtime(combined, this.active!.analysisId, parsed.site);
+      const pieces: string[] = [];
+      for(let i=0;i<chapter.urls.length;i++) {
+        const url=chapter.urls[i]!,part=parseStoryUrl(url);
+        if(part.site!==parsed.site||part.bookId!==parsed.bookId)throw new StorySourceError('UNSAFE_REDIRECT','Trang lấy lại không thuộc cùng truyện.');
+        const snapshot=i>0&&url===chapter.urls[i-1]&&runtime.client.advanceChapterPage
+          ? await runtime.client.advanceChapterPage(url,combined) : await runtime.visit(url);
+        const actual=parseStoryUrl(snapshot.url);
+        if(snapshot.challenge!=='none')throw new StorySourceError('SOURCE_BLOCKED','Chưa có trang nguồn đầy đủ sau xác minh.');
+        if(actual.site!==parsed.site||actual.bookId!==parsed.bookId||(part.chapterKey&&actual.chapterKey!==part.chapterKey))throw new StorySourceError('UNSAFE_REDIRECT','Trang lấy lại không đúng chương nguồn.');
+        let raw=snapshot.rawBodyText;
+        if(raw===undefined)throw new StorySourceError('USER_ACTION_REQUIRED','Browser Helper cần tải lại bản 1.0.13 để trả nguyên nguồn chưa lọc.');
+        if(containsTimotxtEncodedCodepoints(raw)) {
+          const decoder=this.decoders.find(d=>snapshot.fontHashes.some(h=>d.supportedFontHashes.includes(h)));
+          const fontHash=snapshot.fontHashes.find(h=>decoder?.supportedFontHashes.includes(h));
+          if(!decoder||!fontHash)throw new StorySourceError('TIMOTXT_FONT_UNVERIFIED','Không thể giải mã nguyên nguồn với font chưa xác minh.');
+          raw=await decoder.decode({site:parsed.site,url:snapshot.url,text:raw,fontHash});
+        }
+        if(!raw.trim())throw new StorySourceError('INVALID_CONTENT','Nguyên nguồn lấy lại bị rỗng.');
+        pieces.push(raw);
+      }
+      return `Chương ${chapter.number}\n`+pieces.join('\n\n');
+    } finally { this.end(operation);await this.releasePageClient(); }
+  }
+
   public async cancel(analysisId?: string): Promise<void> {
     if (!this.active || (analysisId && this.active.analysisId !== analysisId)) return;
     this.active.controller.abort(new StorySourceError("CANCELLED", "Đã hủy thao tác nguồn truyện."));
@@ -571,7 +603,7 @@ export class StorySourceService implements StorySourceServiceApi {
       }
     }
     const companionReady = isBrowserCompanionSite(parsed.site) && this.hasBrowserCompanionFor(parsed.site);
-    if ((parsed.site === "huliwang" || parsed.site === "timotxt" || parsed.site === "xszj" || parsed.site === "czbooks" || parsed.site === "novel543") && snapshot.challenge === "passive") {
+    if (snapshot.challenge === "passive") {
       this.emit({ analysisId, phase: "verification", completed: 0, total: 0, message: "Đang chờ Cloudflare xác minh thụ động…" });
       // Cloudflare's automatic check does not have a stable duration. Sample
       // the current page rather than navigating to the URL again: a reload
@@ -630,7 +662,7 @@ export class StorySourceService implements StorySourceServiceApi {
         // Close only a Playwright-controlled context. A paired default-browser
         // companion stays alive so the user can finish a visible check without
         // losing the ordinary tab/profile.
-        if (!companionReady && parsed.site !== "novel543" && parsed.site !== "timotxt") await this.releasePageClient();
+        // Keep the current page alive so verification can finish on retry.
         throw new StorySourceError(
           "SOURCE_BLOCKED",
           parsed.site === "huliwang" && companionReady
@@ -649,12 +681,12 @@ export class StorySourceService implements StorySourceServiceApi {
                 ? "CZBooks chưa hoàn tất xác minh thụ động. Tool đã giữ nguyên trang trong thời gian chờ và không nhận trang Cloudflare làm nội dung truyện."
               : parsed.site === "novel543"
                 ? "Novel543 chưa hoàn tất xác minh thụ động. Tool vẫn giữ nguyên cửa sổ và đúng trang đang tải; hãy chờ trang hiện nội dung rồi bấm lại thao tác."
-              : "Cloudflare chưa hoàn tất xác minh thụ động. Tool đã đóng phiên đọc tự động; hãy bấm Kết nối trình duyệt mặc định để đọc Huliwang bằng đúng trình duyệt và hồ sơ bạn thường dùng.",
+              : "Cloudflare chưa hoàn tất xác minh thụ động. Tool giữ nguyên trang nguồn; hãy chờ xác minh hoàn tất rồi thử lại thao tác.",
         );
       }
     }
-    if ((parsed.site === "timotxt" || parsed.site === "czbooks" || parsed.site === "novel543") && snapshot.challenge === "interactive") {
-      const sourceName = parsed.site === "timotxt" ? "TimoTXT" : parsed.site === "novel543" ? "Novel543" : "CZBooks";
+    if (snapshot.challenge === "interactive") {
+      const sourceName = isBrowserCompanionSite(parsed.site) ? browserCompanionSiteLabel(parsed.site) : parsed.site;
       this.emit({
         analysisId,
         phase: "verification",
@@ -689,22 +721,6 @@ export class StorySourceService implements StorySourceServiceApi {
         total: 0,
         message: `${sourceName} đã xác minh xong; đang tiếp tục lấy đúng chương đang tải…`,
       });
-    }
-    if (snapshot.challenge === "interactive") {
-      const message = parsed.site === "huliwang" && companionReady
-        ? "Cloudflare yêu cầu thao tác trong tab Huliwang của trình duyệt mặc định. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất bằng tay rồi bấm Phân tích lại."
-        : parsed.site === "xszj" && companionReady
-          ? "Cloudflare yêu cầu thao tác trong tab XSZJ/爱下电子书 của trình duyệt mặc định. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất bằng tay rồi bấm Phân tích lại."
-          : parsed.site === "novel543" && companionReady
-            ? "Cloudflare yêu cầu thao tác trong tab Novel543 của trình duyệt mặc định. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất bằng tay rồi bấm Phân tích lại."
-          : parsed.site === "xszj"
-          ? "XSZJ/爱下电子书 yêu cầu xác minh thủ công. Tool không tự bấm CAPTCHA/Turnstile; hãy hoàn tất trong trình duyệt rồi bấm Phân tích lại."
-          : parsed.site === "timotxt"
-            ? "TimoTXT yêu cầu xác minh thủ công. Tool giữ nguyên cửa sổ đọc nguồn; hãy hoàn tất xác minh rồi bấm lại thao tác."
-          : "Cloudflare không chấp nhận và tool đã đóng phiên đọc tự động; tool không bấm CAPTCHA/Turnstile. Hãy bấm Kết nối trình duyệt mặc định để Huliwang được mở bằng đúng trình duyệt và hồ sơ bạn thường dùng.";
-      if (!companionReady) await this.releasePageClient();
-      this.emit({ analysisId, phase: "verification", completed: 0, total: 0, message });
-      throw new StorySourceError("USER_ACTION_REQUIRED", message);
     }
     if (parsed.site === "uaa002" && parsed.kind === "chapter" && isUaaLoginLocked(snapshot)) {
       this.emit({

@@ -11,7 +11,7 @@ Tiện ích này cho phép Tool Dịch Truyện đọc đúng trang Huliwang, XS
 
 ## Sau khi cập nhật tool
 
-Nếu Browser Helper đã được tải trước đó, mở trang tiện ích của trình duyệt và bấm **Tải lại / Reload** ở thẻ `Tool Dịch Truyện - Browser Helper` trước khi dùng lại. Bản 1.0.11 hỗ trợ đọc và xác minh font TimoTXT, đồng thời cô lập từng content script theo đúng website, tránh một site trả nhầm lỗi của site khác; trình duyệt có thể yêu cầu xác nhận quyền đọc mới.
+Nếu Browser Helper đã được tải trước đó, mở trang tiện ích của trình duyệt và bấm **Tải lại / Reload** ở thẻ `Tool Dịch Truyện - Browser Helper` trước khi dùng lại. Bản 1.0.12 bổ sung khung truyện XSZJ, lọc metadata/quảng cáo IXDZS và nhận diện trang Cloudflare tiếng Việt. Tool giữ nguyên tab để bạn hoàn tất xác minh rồi tiếp tục; không tự giải CAPTCHA. Cơ chế đọc và xác minh font TimoTXT được giữ nguyên.
 
 ## Edge
 

@@ -37,14 +37,40 @@ Kiểm tra kỹ chủ thể bị lược trong các vế liên tiếp. Nếu nhi
 ## 8. BỐI CẢNH NIÊN ĐẠI (QUY TẮC BẮT BUỘC)
 TUYỆT ĐỐI KHÔNG HIỆN ĐẠI HÓA. Giữ đúng hệ thống từ vựng, vật dụng, chức danh thời kỳ nguyên tác.
 - Ví dụ: 知青 → thanh niên trí thức; 供销社 → cửa hàng quốc doanh / hợp tác xã; 粮票/布票 → lương phiếu / vải phiếu; 大院 → khu tập thể / đại viện; 的确良 → vải đích lương; 同志 → đồng chí; 公社 → công xã.
+- TUYỆT ĐỐI CẤM TỪ LẠC THỜI/INTERNET: CẤM "online" (dịch là "trực tiếp" hoặc "trên đài phát thanh"), CẤM "offline" (dịch là "báo in" hoặc "ngoài đời"), CẤM "spotlight" (dịch là "sự chú ý" hoặc "tiêu điểm"), CẤM "scandal" (dịch là "bê bối" hoặc "tai tiếng"), CẤM "fan", "idol", "livestream", "view", "show".
+- CẤM SÓT BÍNH ÂM PINYIN: Chữ "kang" (炕) BẮT BUỘC dịch là "giường sưởi" hoặc "bệ sưởi", TUYỆT ĐỐI CẤM để "chiếc kang / giường kang".
+- CẤM DỊCH NHẦM TÍNH TỪ THÀNH TÊN NGƯỜI: "甜甜一笑" BẮT BUỘC dịch là "cười ngọt ngào" hoặc "cười tủm tỉm" (CẤM dịch thành "cười Điềm Điềm"); "甜甜嘴" BẮT BUỘC dịch là "cho ngọt miệng" hoặc "tráng miệng" (CẤM dịch thành "Điềm Điềm miệng").
+- THUẦN HÓA TỪ HÁN CỨNG: "hậu sơn" (后山) -> "núi sau" hoặc "núi phía sau"; "cao lãnh" (高冷) -> "lạnh lùng, kiêu kỳ"; "Quang Đầu trợ lý" (光头助理) -> "trợ lý đầu trọc" khi dẫn chuyện và "trợ lý Tiêu" khi đối thoại; "嫂子" ([Họ]+嫂 / [Họ]+嫂子) BẮT BUỘC dịch thuần Việt là "chị dâu" hoặc "thím" (như "thím Trương", TUYỆT ĐỐI CẤM để âm Hán thô "Trương Tẩu Tử").
+- THUẬT NGỮ THỜI KỲ & TIẾNG LÓNG LỊCH SỬ:
+  + "臭老九" BẮT BUỘC dịch là "đám trí thức thối tha" hoặc "lũ trí thức" (tiếng lóng miệt thị trí thức thời CMVH), TUYỆT ĐỐI CẤM dịch thành "chín loại người".
+  + "布拉吉" BẮT BUỘC dịch là "váy liền kiểu Liên Xô (Bragi)" hoặc "váy hoa liền thân kiểu Nga".
+- ĐỒNG NHẤT THUẬT NGỮ CỐ ĐỊNH: Chốt "thôn Tiểu Cương" (CẤM "Tiểu Cương Thậm"); "nhà máy điện khí Văn Đạt" (CẤM lúc điện máy lúc điện khí); "thôn Bắp Ngô" (CẤM "Bắp Ngô Tấn"); "nước Gấu Trắng" (CẤM "Gấu Trộn").
 
-## 9. TÊN RIÊNG & XƯNG HÔ
+## 9. QUY TẮC CHÍNH TẢ TUYỆT ĐỐI NGHIÊM NGẶT (BẮT BUỘC 100%)
+- 100% ĐÚNG CHÍNH TẢ TIẾNG VIỆT CHUẨN TỪ ĐIỂN. HÀNG NGHIÊM NGẶT CAO NHẤT, KHÔNG CHẤP NHẬN BẤT KỲ LỖI NÀO.
+- NGHIÊM CẤM DÍNH CHỮ & RỤNG KÝ TỰ: Tuyệt đối không để dính chữ ("sự mặt củaanh Chu" -> "sự có mặt của anh Chu", "vừaểnh tai" -> "vừa nghểnh tai"), cấm viết sai chính tả ("giãy giy" -> "giãy giụa", "nhaim" -> "nhai").
+- NGHIÊM CẤM LẶP TỪ & LẶP ÂM TIẾT: Cấm lặp từ ở đầu câu ("trong lúcTrong lúc"), cấm lặp âm tiết họ tên nhân vật ("Lam Lam Hạc Thanh" -> "Lam Hạc Thanh", "tiểu Văn Văn Điềm Điềm" -> "tiểu Văn Điềm Điềm").
+- BẢO TOÀN ĐẦY ĐỦ CẶP NGOẶC KÉP: Mọi câu đối thoại BẮT BUỘC phải mở đầu bằng ngoặc kép “ và kết thúc bằng ”. TUYỆT ĐỐI KHÔNG để rớt ngoặc mở đầu dòng hoặc thoại trần không ngoặc.
+- CHÍNH TẢ TÊN RIÊNG: Bảo toàn 100% thanh điệu và chữ viết hoa ("Thâm Quyến" CẤM "Thâm Puyến"/"Thâm Cuyến"; "Thương Tuyết" CẤM "Thường Tuyết"; "Từ Ngọc Trân" CẤM "Tú Ngọc Trân"; họ "Chu" CẤM đổi thành "Châu").
+
+## 10. TÊN RIÊNG & XƯNG HÔ
+- TUYỆT ĐỐI CẤM TỪ XƯNG HÔ CỔ TRANG / KIẾM HIỆP:
+  + CẤM dùng "nàng" (ngôi 3 nữ hoặc gọi người phụ nữ): BẮT BUỘC dịch là "cô" / "cô ấy" (chỉ cho phép dùng trong cụm cố định "nàng thơ", "cô nàng").
+  + CẤM dùng "chàng" (ngôi 3 nam hoặc cách gọi): BẮT BUỘC dịch là "anh" / "anh ấy" / "cậu" (chỉ cho phép dùng trong cụm từ cố định "chàng trai").
+  + CẤM dùng "huynh" đơn lẻ hoặc ghép kiểu cổ trang ("nhị huynh", "huynh muội"): BẮT BUỘC dịch là "anh" / "anh hai" / "anh em". Chỉ giữ "sư huynh" khi là mối quan hệ đồng môn nghệ thuật / sân khấu kịch.
+  + CẤM dùng "muội" đơn lẻ hoặc "tiểu muội": BẮT BUỘC dịch là "em" / "em gái". Chỉ giữ "sư muội" khi là đồng môn nghệ thuật.
+  + CẤM dùng "đệ" đơn lẻ hoặc "tiểu đệ": BẮT BUỘC dịch là "em" / "em trai".
+  + Toàn bộ quy về đại từ thuần Việt đúng chuẩn niên đại: anh, chị, em, cô, chú, bác.
+- Xưng hô gia đình (bố/mẹ): Danh xưng người cha (爸/爸爸/父亲/[Họ]+父) BẮT BUỘC dùng từ "bố" (bố, bố mẹ, hai bố con, bố chồng, bố vợ, bố đẻ, bố [Họ] như bố Tần...). TUYỆT ĐỐI KHÔNG dùng "cha" hay âm Hán-Việt thô như "Tần Phụ" để văn phong thuần Việt, gần gũi và thống nhất xuyên suốt.
 - Tên người Trung Quốc: Phiên âm Hán Việt chuẩn, thống nhất tuyệt đối. (VD: 慕檸 → Mộ Nịnh). Một nhân vật chỉ có MỘT cách phiên âm.
 - TÊN NGƯỜI NGOẠI QUỐC (Phương Tây, Liên Xô / Nga...): BẮT BUỘC dùng chữ cái Latinh quốc tế chuẩn (VD: Jelina, Aina, Karijia, Edlian, John). TUYỆT ĐỐI CẤM dùng âm Hán Việt thô (CẤM: Gia Liên Na, Ái Na, Ca Lệ Giai, Na Mâu Nhĩ, E-đơ-lin).
 - TÊN THÂN MẬT / BIẾN THỂ NGOẠI QUỐC (như tiếng Nga dùng hậu tố -ka 耶莲卡 / 耶莲娜): BẮT BUỘC quy về MỘT tên Latinh chính thức duy nhất (Jelina), tuyệt đối không để 1 nhân vật bị gọi bằng 2-3 tên khác nhau qua các chương.
+- TÊN 2 TỪ, TÊN THÂN MẬT & TÊN ĐỘNG VẬT: Mọi tên người (kể cả tên 2 từ thân mật dạng 阿森 -> A Sâm, 阿廖 -> A Liêu, 阿虎 -> A Hổ, 小宋 -> Tiểu Tống; tên gọi rút gọn bỏ họ) và tên động vật / thú cưng (豆豆 -> Đậu Đậu, 球球 -> Cầu Cầu, 泡芙 -> Bánh Su Nhỏ...) BẮT BUỘC dịch nghĩa thuần Việt hoặc âm Hán Việt chuẩn, tuyệt đối CẤM dịch sang tiếng Anh.
+- CẤM TỪ NGOẠI LAI & TIẾNG LÓNG VIẾT TẮT: TUYỆT ĐỐI CẤM từ tiếng Anh ("instant" -> dịch là "ngay lập tức" hoặc "tức thì"). CẤM viết tắt thô tục ("cmn", "đm" -> dịch thành "mẹ kiếp", "chết tiệt"). CẤM âm Pinyin ("Gang" -> "Cương", "Ming" -> "Minh").
+- LIỀN MẠCH CÂU VĂN: Không ngắt dòng giữa chừng sau dấu phẩy (,); ghép liền mạch các vế câu.
 - Xưng hô nhất quán theo: TUỔI + VAI VẾ + QUAN HỆ + ĐỊA VỊ + HOÀN CẢNH.
 
-## 10. ĐẦU RA & CHECK MODE (QUY TẮC SINH TỬ)
+## 11. ĐẦU RA & CHECK MODE (QUY TẮC SINH TỬ)
 - **ĐẦU RA: CHỈ TRẢ VỀ BẢN DỊCH TIẾNG VIỆT HOÀN CHỈNH. KHÔNG THÊM BẤT KỲ CHỮ TIẾNG TRUNG NÀO. KHÔNG THÊM LỜI MỞ ĐẦU/KẾT, KHÔNG GIẢI THÍCH.**
 - CHECK MODE (Tự kiểm tra trước khi xuất ra):
   1. Đã quét và dịch 100% ký tự tiếng Trung/Pinyin còn sót trong bản nháp sang tiếng Việt chưa?

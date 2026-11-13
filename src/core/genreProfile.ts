@@ -46,7 +46,8 @@ export const PERIOD_GENRE_PROFILE: GenreProfile = {
     forbiddenModernTerms: [
       'smartphone', 'điện thoại thông minh', 'wifi', 'internet', 'thẻ tín dụng',
       'xe hơi đời mới', 'thang máy', 'siêu thị mini', 'mạng xã hội', 'chuyển khoản',
-      'quét mã QR', 'laptop', 'máy tính xách tay'
+      'quét mã QR', 'laptop', 'máy tính xách tay', 'online', 'offline', 'spotlight', 'scandal',
+      'kang', 'chiếc kang', 'giường kang', 'hậu sơn', 'cao lãnh'
     ],
     unitSystem: {
       currency: ['đồng', 'hào', 'xu'],
@@ -54,10 +55,20 @@ export const PERIOD_GENRE_PROFILE: GenreProfile = {
     },
   },
   basePromptRules: `BỐI CẢNH NIÊN ĐẠI (1960-1980):
-- Tuyệt đối không hiện đại hóa ngôn ngữ.
-- Giữ đúng hệ thống từ vựng, vật dụng, cách gọi tổ chức của thời kỳ này.
+- Tuyệt đối không hiện đại hóa ngôn ngữ. CẤM từ lạc thời: online, offline, spotlight, scandal.
+- CẤM bính âm: "kang" (炕) dịch là "giường sưởi"/"bệ sưởi". "后山" dịch "núi phía sau", "高冷" dịch "lạnh lùng".
+- "甜甜一笑" dịch "cười ngọt ngào" (CẤM biến thành tên người "Điềm Điềm").
+- TUYỆT ĐỐI CẤM TỪ XƯNG HÔ CỔ TRANG / KIẾM HIỆP: "nàng" -> "cô" / "cô ấy", "chàng" -> "anh" / "anh ấy", "huynh" -> "anh", "muội" -> "em", "đệ" -> "em". Chỉ giữ "sư huynh/sư muội" khi là đồng môn nghệ thuật.
+- TIÊU CHUẨN THUẬT NGỮ LỊCH SỬ:
+  + "臭老九" -> "đám trí thức thối tha" / "lũ trí thức" (CẤM dịch là "chín loại người").
+  + "布拉吉" -> "váy liền kiểu Liên Xô (Bragi)".
+  + "嫂子" -> dịch thuần Việt "chị dâu" hoặc "thím" (như "thím Trương", CẤM "Trương Tẩu Tử").
+- Giữ đúng hệ thống từ vựng, vật dụng, cách gọi tổ chức:
+  + "厂长" BẮT BUỘC dịch là "xưởng trưởng" hoặc "giám đốc xưởng" (NGHIÊM CẤM "Hán Trưởng").
+  + "副厂长" BẮT BUỘC dịch là "phó xưởng trưởng".
+  + "书记" -> "bí thư", "大队长" -> "đại đội trưởng", "营长" -> "doanh trưởng" / "tiểu đoàn trưởng".
 - Tiền tệ dùng: đồng, hào, xu. Đo lường dùng: cân, thước, tấc, mẫu.
-- Chủ thể - Động từ - Đối tượng rõ ràng, câu thoại tự nhiên, thuần Việt, đúng phong thái thời đại.`,
+- CHÍNH TẢ NGHIÊM NGẶT: 100% đúng chính tả tiếng Việt. CẤM dính chữ, rụng dấu, lặp từ. Mọi thoại phải đủ ngoặc kép “...”.`,
   entityCategories: [
     'thanh_nien_tri_thuc',
     'dai_doi',
@@ -80,7 +91,7 @@ export const PERIOD_GENRE_PROFILE: GenreProfile = {
   addressDefaults: [
     {
       relationType: 'parent_child',
-      self: 'cha / mẹ',
+      self: 'bố / mẹ',
       call: 'con',
       tenseSelf: 'tao',
       tenseCall: 'mày',
@@ -120,11 +131,22 @@ export const PERIOD_GENRE_PROFILE: GenreProfile = {
     { chinese: '肉票', vietnamese: 'phiếu thịt', category: 'term' },
     { chinese: '工分', vietnamese: 'điểm công', category: 'term', notes: 'Đơn vị tính công lao động' },
     { chinese: '大院', vietnamese: 'khu tập thể', category: 'location' },
+    { chinese: '炕', vietnamese: 'giường sưởi', category: 'term', notes: 'Bệ sưởi Đông Bắc' },
+    { chinese: '后山', vietnamese: 'núi phía sau', category: 'location' },
+    { chinese: '高冷', vietnamese: 'lạnh lùng', category: 'term' },
     { chinese: '介绍信', vietnamese: 'thư giới thiệu', category: 'term' },
     { chinese: '赤脚医生', vietnamese: 'bác sĩ chân đất', category: 'role' },
     { chinese: '同志', vietnamese: 'đồng chí', category: 'term' },
     { chinese: '自留地', vietnamese: 'đất tự lưu', category: 'term', notes: 'Đất canh tác riêng của hộ gia đình' },
     { chinese: '自留', vietnamese: 'tự lưu', category: 'term' },
+    { chinese: '厂长', vietnamese: 'xưởng trưởng', category: 'role', notes: 'Giám đốc / xưởng trưởng nhà máy, cấm dịch là Hán Trưởng' },
+    { chinese: '副厂长', vietnamese: 'phó xưởng trưởng', category: 'role' },
+    { chinese: '书记', vietnamese: 'bí thư', category: 'role' },
+    { chinese: '营长', vietnamese: 'doanh trưởng', category: 'role', notes: 'Chỉ huy cấp tiểu đoàn / doanh' },
+    { chinese: '副营长', vietnamese: 'phó doanh trưởng', category: 'role' },
+    { chinese: '团长', vietnamese: 'đoàn trưởng', category: 'role', notes: 'Chỉ huy cấp trung đoàn' },
+    { chinese: '臭老九', vietnamese: 'đám trí thức thối tha', category: 'role', notes: 'Tiếng lóng miệt thị trí thức thời CMVH, cấm dịch là chín loại người' },
+    { chinese: '布拉吉', vietnamese: 'váy liền kiểu Liên Xô (Bragi)', category: 'term', notes: 'Váy hoa liền thân kiểu Nga thời thập niên 50-70' },
   ],
 };
 

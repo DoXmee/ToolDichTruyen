@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { BrowserWindow, Dialog } from "electron";
+import { normalizeVietnamesePunctuation } from "../shared/exportIntegrity.js";
 
 export interface ExportTextRequest {
   content: string;
@@ -20,7 +21,8 @@ async function atomicWriteText(filePath: string, content: string): Promise<void>
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     handle = await open(temporaryPath, "wx", 0o600);
-    await handle.writeFile(content.normalize("NFC"), "utf8");
+    const cleaned = normalizeVietnamesePunctuation(content).normalize("NFC");
+    await handle.writeFile(cleaned, "utf8");
     await handle.sync();
     await handle.close();
     handle = undefined;

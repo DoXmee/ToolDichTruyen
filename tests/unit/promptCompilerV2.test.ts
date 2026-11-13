@@ -247,4 +247,31 @@ describe('promptCompilerV2 module', () => {
     expect(compiled.fullPrompt).toContain('"剛子" -> "Cương Tử"');
     expect(compiled.fullPrompt).toContain('"安然" -> "An Nhiên"');
   });
+
+  it('enforces family father term "bố" and bans "cha" in Block A and Continuation Block A', () => {
+    const bible = createEmptyStoryBible('period');
+    const initial = compileStoryBiblePrompt({
+      segmentId: 'seg-1',
+      segmentIndex: 0,
+      totalSegments: 2,
+      sourceText: '秦父走过来。',
+      bible,
+      genreProfile: PERIOD_GENRE_PROFILE,
+    });
+    expect(initial.fullPrompt).toContain('Cha/Bố: 爸 / 爸爸 / 父亲 / [Họ]+父: BẮT BUỘC dùng từ "bố"');
+    expect(initial.fullPrompt).toContain('TUYỆT ĐỐI CẤM dùng "cha"');
+
+    const continuation = compileStoryBiblePrompt({
+      segmentId: 'seg-2',
+      segmentIndex: 1,
+      totalSegments: 2,
+      sourceText: '秦父接着说。',
+      bible,
+      genreProfile: PERIOD_GENRE_PROFILE,
+      isContinuationTurn: true,
+    });
+    expect(continuation.fullPrompt).toContain('XƯNG HÔ GIA ĐÌNH (BỐ/MẸ): Danh xưng người cha');
+    expect(continuation.fullPrompt).toContain('LUÔN dùng từ "bố"');
+    expect(continuation.fullPrompt).toContain('TUYỆT ĐỐI KHÔNG dùng "cha"');
+  });
 });

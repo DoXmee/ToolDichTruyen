@@ -1,4 +1,5 @@
 import { sify } from 'chinese-conv';
+import { normalizeChineseNameForMatching } from './nameLocker.js';
 import type {
   CharacterRelation,
   EntityCategory,
@@ -50,7 +51,7 @@ export function scanMatchingEntities(
 ): StoryEntity[] {
   if (!memory?.entities?.length || !sourceText) return [];
 
-  const normalizedSource = sourceText.normalize('NFC');
+  const normalizedSource = normalizeChineseNameForMatching(sourceText);
   const sortedEntities = [...memory.entities].sort(
     (a, b) => (b.chinese?.length ?? 0) - (a.chinese?.length ?? 0),
   );
@@ -62,8 +63,10 @@ export function scanMatchingEntities(
     if (!entity.chinese || seenIds.has(entity.id)) continue;
 
     // Khớp theo tên chính hoặc bất kỳ alias nào
-    const directMatch = normalizedSource.includes(entity.chinese);
-    const aliasMatch = entity.aliases?.some((alias) => normalizedSource.includes(alias)) ?? false;
+    const directMatch = Boolean(entity.chinese.trim())
+      && normalizedSource.includes(normalizeChineseNameForMatching(entity.chinese));
+    const aliasMatch = entity.aliases?.some((alias) => Boolean(alias.trim())
+      && normalizedSource.includes(normalizeChineseNameForMatching(alias))) ?? false;
 
     if (directMatch || aliasMatch) {
       matched.push(entity);
@@ -501,6 +504,17 @@ export function mergeStoryMemory(
       const key = makeKey(r.sourceCharacter, r.targetCharacter);
       const prev = relationMap.get(key);
 
+      // The pair key is unordered, but address fields are relative to source/target.
+      // Retaining the previous endpoints requires aligning an incoming reversed pair.
+      const reversed = Boolean(prev
+        && prev.sourceCharacter.trim().toLowerCase() !== r.sourceCharacter.trim().toLowerCase()
+        && prev.sourceCharacter.trim().toLowerCase() === r.targetCharacter.trim().toLowerCase()
+        && prev.targetCharacter.trim().toLowerCase() === r.sourceCharacter.trim().toLowerCase());
+      const incomingAddress = r.directionalAddress;
+      const alignedAddress = incomingAddress && reversed
+        ? { ...incomingAddress, aToB: incomingAddress.bToA, bToA: incomingAddress.aToB }
+        : incomingAddress;
+
       const combinedSamples = Array.from(
         new Set([
           ...(prev?.samples || []),
@@ -517,7 +531,7 @@ export function mergeStoryMemory(
         relationType: r.relationType || prev?.relationType || 'Quan hệ',
         pronounSample: r.pronounSample || prev?.pronounSample || 'Quan hệ',
         samples: combinedSamples.length ? combinedSamples : undefined,
-        directionalAddress: r.directionalAddress || prev?.directionalAddress,
+        directionalAddress: alignedAddress || prev?.directionalAddress,
         toneInstruction: r.toneInstruction || prev?.toneInstruction,
         milestoneChapter: r.milestoneChapter ?? prev?.milestoneChapter,
       });

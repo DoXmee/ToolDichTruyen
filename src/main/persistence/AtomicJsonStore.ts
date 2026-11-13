@@ -84,7 +84,7 @@ export class AtomicJsonStore<T> {
     public readonly filePath: string,
     options: AtomicJsonStoreOptions = {},
   ) {
-    this.maxBytes = options.maxBytes ?? 64 * 1024 * 1024;
+    this.maxBytes = options.maxBytes ?? 512 * 1024 * 1024;
   }
 
   public async read(fallback: T): Promise<T> {

@@ -81,6 +81,52 @@ export function normalizeCommonCapitalization(text: string): string {
   return result;
 }
 
+export function deduplicateAdjacentChapterHeaders(text: string): string {
+  if (!text) return text;
+  const chapterMatches = text.match(/(?:Chương|Hồi|Tiết)\s+\d+/gi);
+  if (!chapterMatches || chapterMatches.length < 2) return text;
+
+  const isCRLF = text.includes('\r\n');
+  const eol = isCRLF ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const result: string[] = [];
+  let modified = false;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    const m1 = line.trim().match(/^(Chương\s+(\d+)(?:\s*[:：\-—.]\s*(.*))?)$/i);
+    if (m1) {
+      let nextHeaderIdx = -1;
+      for (let j = i + 1; j < lines.length; j++) {
+        if (!lines[j]!.trim()) continue;
+        const m2 = lines[j]!.trim().match(/^(?:Chương|Hồi|Tiết)\s+(\d+)(?:\s*[:：\-—.]\s*(.*))?$/i);
+        if (m2) {
+          nextHeaderIdx = j;
+        }
+        break;
+      }
+      if (nextHeaderIdx !== -1) {
+        const line2 = lines[nextHeaderIdx]!;
+        const m2 = line2.trim().match(/^((?:Chương|Hồi|Tiết)\s+(\d+)(?:\s*[:：\-—.]\s*(.*))?)$/i);
+        if (m2 && m1[2] === m2[2]) {
+          const t1 = (m1[3] || '').trim();
+          const t2 = (m2[3] || '').trim();
+          const chosen = (t1.length >= t2.length ? m1[1] : m2[1]) ?? line;
+          result.push(chosen);
+          result.push('');
+          i = nextHeaderIdx + 1;
+          modified = true;
+          continue;
+        }
+      }
+    }
+    result.push(line);
+    i++;
+  }
+  if (!modified) return text;
+  return result.join(eol).replace(new RegExp(`(?:${eol}){3,}`, 'g'), `${eol}${eol}`).trim();
+}
+
 /**
  * ChatGPT can expose the localized writing-block label ("Bài viết") through
  * innerText even though it is browser chrome rather than model prose. Remove
@@ -128,6 +174,7 @@ export function sanitizeTranslationResponse(sourceText: string, responseText: st
   }
 
   response = normalizeCommonCapitalization(response);
+  response = deduplicateAdjacentChapterHeaders(response);
 
   const sourceHeader = source
     .split(/\r\n|\r|\n/u)
@@ -151,7 +198,7 @@ export function sanitizeTranslationResponse(sourceText: string, responseText: st
     return response;
   }
 
-  return response.slice(lines[cursor]?.start ?? 0).trim();
+  return deduplicateAdjacentChapterHeaders(response.slice(lines[cursor]?.start ?? 0).trim());
 }
 
 export interface DiscoveredStoryEntity {

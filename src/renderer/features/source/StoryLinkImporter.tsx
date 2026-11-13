@@ -18,6 +18,8 @@ interface StoryLinkImporterProps {
   exportDirectory: string;
   exportOriginalChapters: boolean;
   exportCombinedChapters: boolean;
+  omitOutputChapterTitles?: boolean;
+  exportCombinedSourceChapters?: boolean;
   exportedRecords: ChapterExportRecord[];
   originalExportedRecords: ChapterExportRecord[];
   combinedExport?: CombinedChapterExportResult;
@@ -36,6 +38,8 @@ interface StoryLinkImporterProps {
   onChooseDirectory(): void;
   onExportOriginalChaptersChange(value: boolean): void;
   onExportCombinedChaptersChange(value: boolean): void;
+  onOmitOutputChapterTitlesChange?(value: boolean): void;
+  onExportCombinedSourceChaptersChange?(value: boolean): void;
   onFetchAndTranslate(): void;
   onCancel(): void;
 }
@@ -85,6 +89,8 @@ export function StoryLinkImporter({
   exportDirectory,
   exportOriginalChapters,
   exportCombinedChapters,
+  omitOutputChapterTitles = false,
+  exportCombinedSourceChapters = false,
   exportedRecords,
   originalExportedRecords,
   combinedExport,
@@ -103,6 +109,8 @@ export function StoryLinkImporter({
   onChooseDirectory,
   onExportOriginalChaptersChange,
   onExportCombinedChaptersChange,
+  onOmitOutputChapterTitlesChange,
+  onExportCombinedSourceChaptersChange,
   onFetchAndTranslate,
   onCancel,
 }: StoryLinkImporterProps) {
@@ -110,9 +118,6 @@ export function StoryLinkImporter({
   const manualVerificationPending = manualVerificationState === 'opening';
   const selectableChapters = analysis?.chapters.filter((chapter) => !chapter.isIntroduction) ?? [];
   const selectedCount = selectedChapterIds.size;
-  const savedSplitCount = exportedRecords.filter((record) => record.status === 'saved').length;
-  const savedOriginalCount = originalExportedRecords.filter((record) => record.status === 'saved').length;
-  const hasExportHistory = exportedRecords.length > 0 || originalExportedRecords.length > 0 || Boolean(combinedExport);
   const verificationLabel = manualVerificationLabel(url);
   const showPreAnalysisManualVerification = !analysis && manualVerificationState === 'available' && onOpenManualVerification;
   const showCatalogManualVerification = Boolean(analysis && manualVerificationState === 'available' && onOpenManualVerification);
@@ -146,75 +151,77 @@ export function StoryLinkImporter({
         </button>
       </div>
 
-      {!analysis && (
-        <p className="story-link-support" role="note">
-          <strong>Hỗ trợ nhập link truyện:</strong> Huliwang, Novel543, XSZJ/爱下电子书, TimoTXT, Qingrenyouxi, Xbanxia, Liehuo中文网, UAA002, C6K6 và CZBooks. Dán link rồi bấm <strong>Phân tích</strong> để đọc danh sách chương.
-        </p>
-      )}
-
       {showPreAnalysisManualVerification && (
         <div className="story-manual-verification" role="alert">
-          <Icon name="alert" />
-          <div>
-            <strong>{verificationLabel} cần Microsoft Edge hoặc Google Chrome và profile bạn dùng hằng ngày.</strong>
-            <span>Kết nối tiện ích cục bộ, sau đó tool sẽ tự phân tích lại link bằng đúng phiên trình duyệt này.</span>
-            <span>Lần đầu: bấm Mở thư mục tiện ích (Huli Browser Helper nằm ngay cạnh ToolDichTruyen.exe), vào edge://extensions hoặc chrome://extensions, bật Chế độ nhà phát triển và chọn Tải tiện ích đã giải nén. Tool không dùng Cốc Cốc cho bước này.</span>
+          <div className="story-manual-verification__header">
+            <Icon name="alert" />
+            <div className="story-manual-verification__content">
+              <strong>{verificationLabel} cần Microsoft Edge hoặc Google Chrome và profile bạn dùng hằng ngày.</strong>
+              <span>Kết nối tiện ích cục bộ, sau đó tool sẽ tự phân tích lại link bằng đúng phiên trình duyệt này.</span>
+              <span>Lần đầu: bấm Mở thư mục tiện ích (Huli Browser Helper nằm ngay cạnh ToolDichTruyen.exe), vào edge://extensions hoặc chrome://extensions, bật Chế độ nhà phát triển và chọn Tải tiện ích đã giải nén. Tool không dùng Cốc Cốc cho bước này.</span>
+            </div>
           </div>
-          <button
-            className="button button--primary"
-            disabled={disabled}
-            onClick={onOpenManualVerification}
-            type="button"
-          >
-            Kết nối trình duyệt mặc định
-          </button>
-          {onRevealBrowserHelper && (
+          <div className="story-manual-verification__actions">
             <button
-              className="button button--secondary"
+              className="button button--primary"
               disabled={disabled}
-              onClick={onRevealBrowserHelper}
+              onClick={onOpenManualVerification}
               type="button"
             >
-              Mở thư mục tiện ích
+              Kết nối trình duyệt mặc định
             </button>
-          )}
-          {onSwitchToText && (
-            <button className="button button--secondary" disabled={disabled} onClick={onSwitchToText} type="button">
-              Chuyển sang Dán nội dung
-            </button>
-          )}
+            {onRevealBrowserHelper && (
+              <button
+                className="button button--secondary"
+                disabled={disabled}
+                onClick={onRevealBrowserHelper}
+                type="button"
+              >
+                Mở thư mục tiện ích
+              </button>
+            )}
+            {onSwitchToText && (
+              <button className="button button--secondary" disabled={disabled} onClick={onSwitchToText} type="button">
+                Chuyển sang Dán nội dung
+              </button>
+            )}
+          </div>
         </div>
       )}
 
       {(manualVerificationState === 'opening' || manualVerificationState === 'open') && (
         <div className="story-manual-verification story-manual-verification--waiting" role="status">
-          {manualVerificationState === 'opening' ? <span className="spinner spinner--small" /> : <Icon name="alert" />}
-          <div>
-            <strong>{manualVerificationState === 'opening' ? 'Đang chờ trình duyệt mặc định kết nối…' : 'Trình duyệt đã kết nối.'}</strong>
-            <span>{manualVerificationState === 'opening'
-              ? 'Hãy mở trang ghép nối bằng đúng profile bạn dùng hằng ngày và bảo đảm tiện ích đã được cài. Kết nối xong, tool tự phân tích lại link.'
-              : `Tool đang chuyển sang phân tích lại link ${verificationLabel}.`}</span>
+          <div className="story-manual-verification__header">
+            {manualVerificationState === 'opening' ? <span className="spinner spinner--small" /> : <Icon name="alert" />}
+            <div className="story-manual-verification__content">
+              <strong>{manualVerificationState === 'opening' ? 'Đang chờ trình duyệt mặc định kết nối…' : 'Trình duyệt đã kết nối.'}</strong>
+              <span>{manualVerificationState === 'opening'
+                ? 'Hãy mở trang ghép nối bằng đúng profile bạn dùng hằng ngày và bảo đảm tiện ích đã được cài. Kết nối xong, tool tự phân tích lại link.'
+                : `Tool đang chuyển sang phân tích lại link ${verificationLabel}.`}</span>
+            </div>
           </div>
-          {onRevealBrowserHelper && (
-            <button
-              className="button button--secondary"
-              disabled={disabled}
-              onClick={onRevealBrowserHelper}
-              type="button"
-            >
-              Mở thư mục tiện ích
-            </button>
-          )}
-          {onSwitchToText && (
-            <button
-              className="button button--secondary"
-              disabled={disabled || manualVerificationState === 'opening'}
-              onClick={onSwitchToText}
-              type="button"
-            >
-              Chuyển sang Dán nội dung
-            </button>
-          )}
+          <div className="story-manual-verification__actions">
+            {onRevealBrowserHelper && (
+              <button
+                className="button button--secondary"
+                disabled={disabled}
+                onClick={onRevealBrowserHelper}
+                type="button"
+              >
+                Mở thư mục tiện ích
+              </button>
+            )}
+            {onSwitchToText && (
+              <button
+                className="button button--secondary"
+                disabled={disabled || manualVerificationState === 'opening'}
+                onClick={onSwitchToText}
+                type="button"
+              >
+                Chuyển sang Dán nội dung
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -321,7 +328,6 @@ export function StoryLinkImporter({
               />
               <span>
                 <strong>Lưu chương dịch gốc chưa chia</strong>
-                <small>Tạo thư mục con chứa từng chương nguồn đã dịch trước khi chia nhỏ.</small>
               </span>
             </label>
             <label>
@@ -333,47 +339,31 @@ export function StoryLinkImporter({
               />
               <span>
                 <strong>Xuất file tổng hợp chương đã chia</strong>
-                <small>Tạo một TXT tổng hợp các phần đã qua công cụ chia chương khi dải đã hoàn tất.</small>
+              </span>
+            </label>
+            <label>
+              <input
+                checked={omitOutputChapterTitles}
+                disabled={busy || disabled}
+                type="checkbox"
+                onChange={(event) => onOmitOutputChapterTitlesChange?.(event.target.checked)}
+              />
+              <span>
+                <strong>Không lấy tên chương</strong>
+              </span>
+            </label>
+            <label>
+              <input
+                checked={exportCombinedSourceChapters}
+                disabled={busy || disabled}
+                type="checkbox"
+                onChange={(event) => onExportCombinedSourceChaptersChange?.(event.target.checked)}
+              />
+              <span>
+                <strong>Lưu file tổng các chương gốc</strong>
               </span>
             </label>
           </div>
-
-          {hasExportHistory && (
-            <details className="story-export-history">
-              <summary>
-                <span>
-                  <strong>Lịch sử xuất</strong>
-                  <small>
-                    {savedSplitCount > 0 && `${savedSplitCount} chương đã chia`}
-                    {savedSplitCount > 0 && (savedOriginalCount > 0 || combinedExport) && ' · '}
-                    {savedOriginalCount > 0 && `${savedOriginalCount} chương gốc`}
-                    {savedOriginalCount > 0 && combinedExport && ' · '}
-                    {combinedExport && 'Đã có file tổng hợp'}
-                  </small>
-                </span>
-              </summary>
-              <div className="story-export-history__items">
-                {exportedRecords.length > 0 && (
-                  <div className="story-saved-list" role="status">
-                    <strong>Đã lưu {savedSplitCount} chương đã chia</strong>
-                    <span>{exportedRecords.at(-1)?.filePath}</span>
-                  </div>
-                )}
-                {originalExportedRecords.length > 0 && (
-                  <div className="story-saved-list" role="status">
-                    <strong>Đã lưu {savedOriginalCount} chương dịch gốc</strong>
-                    <span>{originalExportedRecords.at(-1)?.filePath}</span>
-                  </div>
-                )}
-                {combinedExport && (
-                  <div className="story-saved-list" role="status">
-                    <strong>Đã tạo file tổng hợp chương {combinedExport.startChapter}–{combinedExport.endChapter}</strong>
-                    <span>{combinedExport.filePath}</span>
-                  </div>
-                )}
-              </div>
-            </details>
-          )}
         </div>
       )}
     </div>

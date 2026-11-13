@@ -25,7 +25,7 @@ export const HULIWANG_COMPANION_EXTENSION_ORIGIN =
  */
 // Version 1.0.11 adds verified TimoTXT font asset reporting while keeping all broad-match content scripts isolated by strict
 // per-site allow-lists, including TimoTXT/Huli pages loaded in the same browser.
-export const HULIWANG_COMPANION_MINIMUM_VERSION = "1.0.11";
+export const HULIWANG_COMPANION_MINIMUM_VERSION = "1.0.12";
 
 export type BrowserCompanionSite = "huliwang" | "xszj" | "novel543" | "timotxt";
 
@@ -280,7 +280,7 @@ function validateSnapshot(
   if (!plainRecord(value)) throw new TypeError("snapshot must be an object.");
   assertOnlyKeys(value, new Set([
     "requestedUrl", "url", "status", "title", "canonicalUrl", "charset", "htmlLanguage",
-    "bodyText", "elements", "links", "fontFamilies", "fontUrls", "fontHashes", "fontAssets",
+    "bodyText", "rawBodyText", "elements", "links", "fontFamilies", "fontUrls", "fontHashes", "fontAssets",
     "readerMetadata", "catalogPagination", "chapterPagination", "challenge",
   ]));
 
@@ -421,6 +421,7 @@ function validateSnapshot(
       ? { htmlLanguage: optionalString(value.htmlLanguage, "snapshot.htmlLanguage", 128) }
       : {}),
     bodyText: boundedString(value.bodyText, "snapshot.bodyText", MAX_TEXT_LENGTH),
+    ...(value.rawBodyText === undefined ? {} : { rawBodyText: boundedString(value.rawBodyText, "snapshot.rawBodyText", MAX_TEXT_LENGTH) }),
     elements,
     links,
     fontFamilies,

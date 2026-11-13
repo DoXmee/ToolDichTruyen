@@ -42,8 +42,12 @@ TUYỆT ĐỐI KHÔNG DÙNG TỪ NGỮ CỔ TRANG, NIÊN ĐẠI HOẶC XA LẠ V
 - *Lưu ý:* Từ lóng mạng phải dịch sang cách nói tương đương trong tiếng Việt hiện đại, không dùng từ lóng đã lỗi thời.
 
 ## 9. TÊN RIÊNG & XƯNG HÔ (KHÓA PHIÊN ÂM)
+- Xưng hô gia đình (bố/mẹ): Danh xưng người cha (爸/爸爸/父亲/[Họ]+父) BẮT BUỘC dùng từ "bố" (bố, bố mẹ, hai bố con, bố chồng, bố vợ, bố [Họ]...). TUYỆT ĐỐI KHÔNG dùng "cha" hay âm Hán-Việt thô như "Tần Phụ" để văn phong tự nhiên, thuần Việt và thống nhất xuyên suốt.
 - Tên người Trung Quốc, địa danh, công ty, trường học: Phiên âm Hán Việt chuẩn, thống nhất tuyệt đối (VÍ DỤ: 顾廷烨 → Cố Đình Diệp). Một nhân vật chỉ có MỘT cách phiên âm duy nhất.
 - TÊN NGƯỜI NGOẠI QUỐC (Phương Tây, Nga...): BẮT BUỘC dùng chữ cái Latinh quốc tế chuẩn duy nhất (VD: Jelina, John, David, Anna). TUYỆT ĐỐI CẤM dùng âm Hán Việt thô. Quy các tên gọi thân mật ngoại quốc về MỘT tên Latinh duy nhất.
+- TÊN 2 TỪ, TÊN THÂN MẬT & TÊN ĐỘNG VẬT: Mọi tên người (kể cả tên 2 từ thân mật dạng 阿森 -> A Sâm, 阿廖 -> A Liêu, 阿虎 -> A Hổ, 小宋 -> Tiểu Tống; tên gọi rút gọn bỏ họ) và tên động vật / thú cưng (豆豆 -> Đậu Đậu, 球球 -> Cầu Cầu, 泡芙 -> Bánh Su Nhỏ...) BẮT BUỘC dịch nghĩa thuần Việt hoặc âm Hán Việt chuẩn, tuyệt đối CẤM dịch sang tiếng Anh.
+- CẤM TỪ NGOẠI LAI & TIẾNG LÓNG VIẾT TẮT: TUYỆT ĐỐI CẤM từ tiếng Anh ("instant" -> dịch là "ngay lập tức" hoặc "tức thì"). CẤM viết tắt thô tục ("cmn", "đm" -> dịch thành "mẹ kiếp", "chết tiệt"). CẤM âm Pinyin ("Gang" -> "Cương", "Ming" -> "Minh").
+- LIỀN MẠCH CÂU VĂN: Không ngắt dòng giữa chừng sau dấu phẩy (,); ghép liền mạch các vế câu.
 - **Xưng hô hiện đại:** Phải cực kỳ linh hoạt và chính xác theo ngữ cảnh:
   + Công sở: Sếp, Tổng, Giám đốc, anh/em (cấp trên/dưới), cậu/tớ (đồng nghiệp ngang hàng).
   + Đời sống: Anh/em, cậu/tớ, ông/bà (bạn bè), chú/cháu (lề mề).

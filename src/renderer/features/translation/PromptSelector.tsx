@@ -16,16 +16,16 @@ interface PromptSelectorProps {
   outputChapterStart?: number;
   /** First source chapter selected in the catalog, shown as the safe default. */
   suggestedChapterStart?: number;
-  omitOutputChapterTitles: boolean;
-  exportCombinedSourceChapters: boolean;
+  omitOutputChapterTitles?: boolean;
+  exportCombinedSourceChapters?: boolean;
   loading?: boolean;
   allowedAiProviders: AiProvider[];
   providerSelectionLocked?: boolean;
   onModeChange: (mode: PromptMode) => void;
   onCustomPromptChange: (value: string) => void;
   onOutputChapterStartChange: (value: number | undefined) => void;
-  onOmitOutputChapterTitlesChange: (value: boolean) => void;
-  onExportCombinedSourceChaptersChange: (value: boolean) => void;
+  onOmitOutputChapterTitlesChange?: (value: boolean) => void;
+  onExportCombinedSourceChaptersChange?: (value: boolean) => void;
   onToggleAiProvider: (provider: AiProvider) => void;
 }
 
@@ -73,11 +73,6 @@ export function PromptSelector({
   onToggleAiProvider,
 }: PromptSelectorProps) {
   const canRenumberLinkChapters = typeof suggestedChapterStart === 'number';
-  const numberingHint = outputChapterStart === undefined
-    ? (canRenumberLinkChapters
-      ? `Mặc định giữ số chương gốc (bắt đầu từ chương ${suggestedChapterStart}).`
-      : 'Chọn chương từ link truyện ở Bước 1 để đặt lại số chương xuất.')
-    : `Các file chương đã chia sẽ được đánh số từ Chương ${outputChapterStart}.`;
 
   return (
     <section className="panel prompt-panel" aria-labelledby="prompt-heading">
@@ -102,7 +97,6 @@ export function PromptSelector({
             ))}
           </div>
         </div>
-        <Icon name="wand" />
       </div>
 
       <div className="prompt-list prompt-list--genres">
@@ -152,7 +146,6 @@ export function PromptSelector({
           <span className="sr-only">Số chương xuất bắt đầu</span>
           <span>Chương</span>
           <input
-            aria-describedby="output-chapter-number-hint"
             aria-label="Số chương xuất bắt đầu"
             disabled={!canRenumberLinkChapters}
             id="output-chapter-start"
@@ -172,30 +165,6 @@ export function PromptSelector({
             }}
           />
         </label>
-        <div className="chapter-numbering-control__toggles">
-          <label className="chapter-numbering-control__toggle" htmlFor="omit-output-chapter-titles">
-            <input
-              checked={omitOutputChapterTitles}
-              disabled={!canRenumberLinkChapters}
-              id="omit-output-chapter-titles"
-              type="checkbox"
-              onChange={(event) => onOmitOutputChapterTitlesChange(event.target.checked)}
-            />
-            <span>Không lấy tên chương</span>
-          </label>
-          <label className="chapter-numbering-control__toggle" htmlFor="export-combined-source-chapters">
-            <input
-              checked={exportCombinedSourceChapters}
-              disabled={!canRenumberLinkChapters}
-              id="export-combined-source-chapters"
-              type="checkbox"
-              onChange={(event) => onExportCombinedSourceChaptersChange(event.target.checked)}
-            />
-            <span>Lưu file tổng các chương gốc</span>
-          </label>
-        </div>
-        <p id="output-chapter-number-hint">{numberingHint}</p>
-        <p className="chapter-numbering-control__scope">Chỉ dùng khi nhập link chương truyện hoặc bộ truyện.</p>
       </section>
 
       <div className={`custom-prompt${mode === 'custom' ? ' custom-prompt--active' : ''}`}>
@@ -208,7 +177,6 @@ export function PromptSelector({
           placeholder="Nhập yêu cầu dịch riêng (hoặc để trống để Tool tự động áp dụng phong cách Đa thể loại mượt mà cho mọi loại truyện)..."
           rows={5}
         />
-        <p>Nếu để trống, Tool sẽ tự động dùng prompt Đa thể loại toàn năng để dịch chuẩn cho mọi loại truyện.</p>
       </div>
     </section>
   );

@@ -50,6 +50,8 @@ export interface StoryPageSnapshot {
   charset?: string;
   htmlLanguage?: string;
   bodyText: string;
+  /** Visible page text before story/ad cleanup, used only for verified raw refetch. */
+  rawBodyText?: string;
   elements: Record<string, string[]>;
   links: StoryPageLink[];
   fontFamilies: string[];

@@ -3,6 +3,11 @@ import type {
   TranslationValidationOptions,
   TranslationValidationResult,
 } from '../shared';
+export type {
+  TranslationValidationIssue,
+  TranslationValidationOptions,
+  TranslationValidationResult,
+};
 import { locateHanCharacters } from './language';
 import { parseChapterHeaderLine } from './titleParser';
 
@@ -161,10 +166,16 @@ export function findCrossTranslationRepetition(
 }
 
 function chapterHeaderNumbers(value: string): number[] {
-  return value.split(/\r\n|\r|\n/u).flatMap((line) => {
+  const numbers: number[] = [];
+  for (const line of value.split(/\r\n|\r|\n/u)) {
     const header = parseChapterHeaderLine(line);
-    return header ? [header.chapterNumber] : [];
-  });
+    if (header) {
+      if (numbers.length === 0 || numbers[numbers.length - 1] !== header.chapterNumber) {
+        numbers.push(header.chapterNumber);
+      }
+    }
+  }
+  return numbers;
 }
 
 function proseParagraphCount(value: string): number {
@@ -209,16 +220,28 @@ export function validateTranslation(
       });
     }
 
-    if (
-      /^(?:something went wrong|network error|an error occurred|unable to (?:process|respond)|too many requests|you(?:'ve| have) reached (?:the )?(?:your )?(?:(?:usage|rate|plan|message)s+)?limit|please take a break|try again later|xin lỗi[,! ]+(?:tôi|mình) (?:không thể|không)|bạn (?:đã đạt|cần ngưng|cần nghỉ)|đã đạt giới hạn(?: sử dụng)?|hệ thống đang bận|hãy thử lại sau)/iu.test(
-        translation.trim(),
-      )
-    ) {
+    const trimmedTranslation = translation.trim();
+    const bodyWithoutHeader = trimmedTranslation
+      .replace(/^\s*Chương\s+\d+[^\r\n]*(?:\r\n|\r|\n)+/iu, '')
+      .trim();
+
+    const isErrorOrRefusal =
+      /^(?:something went wrong|network error|an error occurred|unable to (?:process|respond)|too many requests|you(?:'ve| have) reached (?:the )?(?:your )?(?:(?:usage|rate|plan|message)s+)?limit|please take a break|try again later|xin lỗi[,! ]+(?:tôi|mình) (?:không thể|không)|bạn (?:đã đạt|cần ngưng|cần nghỉ)|đã đạt giới hạn(?: sử dụng)?|hệ thống đang bận|hãy thử lại sau|tôi không thể (?:dịch|tiếp tục|xử lý|hoàn thành))/iu.test(
+        trimmedTranslation,
+      ) ||
+      /^(?:something went wrong|network error|an error occurred|unable to (?:process|respond)|too many requests|you(?:'ve| have) reached (?:the )?(?:your )?(?:(?:usage|rate|plan|message)s+)?limit|please take a break|try again later|xin lỗi[,! ]+(?:tôi|mình) (?:không thể|không)|bạn (?:đã đạt|cần ngưng|cần nghỉ)|đã đạt giới hạn(?: sử dụng)?|hệ thống đang bận|hãy thử lại sau|tôi không thể (?:dịch|tiếp tục|xử lý|hoàn thành))/iu.test(
+        bodyWithoutHeader,
+      ) ||
+      /(?:(?:nguồn văn bản|văn bản (?:gốc|nguồn)|đoạn văn bản)(?: này)?[^.\r\n]{0,60}(?:bị lỗi|không đọc được|bị hỏng|lỗi mã hóa|biến thành các ký tự rác)|(?:lỗi mã hóa|mã hóa nghiêm trọng|ký tự lạ không thể đọc|ký tự rác)|vui lòng (?:gửi lại|cung cấp lại) (?:nguyên văn|nội dung|văn bản|đoạn văn|chương)|chỉ nhận diện được tiêu đề|để tôi có thể dịch(?: lại)?|vui lòng kiểm tra lại (?:nguồn|văn bản nguồn)|source text (?:is|appears to be|seems to be) (?:corrupted|invalid|garbled|unreadable)|please provide (?:the )?(?:original|source) text again|encoding error)/iu.test(
+        trimmedTranslation,
+      );
+
+    if (isErrorOrRefusal) {
       issues.push({
         code: 'error_response',
         severity: 'error',
-        message: 'Phản hồi có vẻ là thông báo lỗi hoặc lời từ chối, không phải bản dịch.',
-        sample: translation.trim().slice(0, 160),
+        message: 'Phản hồi có vẻ là thông báo lỗi, báo hỏng mã hóa nguồn hoặc lời từ chối của AI, không phải bản dịch.',
+        sample: trimmedTranslation.slice(0, 160),
       });
     }
 
@@ -306,6 +329,25 @@ export function validateTranslation(
           severity: 'error',
           message: 'Bản dịch có dấu hiệu bị mất một phần lớn nội dung đầu hoặc giữa so với cấu trúc nguồn.',
           sample: `Độ dài ${Math.round(lengthRatio * 100)}%; đoạn ${Math.round(paragraphCoverage * 100)}%; câu ${Math.round(sentenceCoverage * 100)}%.`,
+        });
+      }
+    }
+
+    if (rules.checkTruncation) {
+      const terminalPunctuationPattern = /[.!?。！？…»”"’'」』)\]}⟧】〗〕》〉）］｝›>＞:：—–~～]\s*$/u;
+      const sourceTrimmed = source.trim();
+      const isSourceEndingMatched =
+        sourceTrimmed.length > 0 &&
+        ((/^[,，、]$/u.test(sourceTrimmed.slice(-1)) && /^[,，、]$/u.test(trimmedTranslation.slice(-1))) ||
+         (/^[“"「『（(]$/u.test(sourceTrimmed.slice(-1)) && /^[“"「『（(]$/u.test(trimmedTranslation.slice(-1))) ||
+         (/^[】〗〕》〉）］｝\])}⟧]$/u.test(sourceTrimmed.slice(-1)) && /^[】〗〕》〉）］｝\])}⟧]$/u.test(trimmedTranslation.slice(-1))));
+
+      if (!terminalPunctuationPattern.test(trimmedTranslation) && !isSourceEndingMatched) {
+        issues.push({
+          code: 'truncated_tail',
+          severity: 'error',
+          message: 'Bản dịch bị cắt cụt giữa chừng ở câu cuối (không có dấu câu kết thúc hợp lệ).',
+          sample: trimmedTranslation.slice(-80),
         });
       }
     }

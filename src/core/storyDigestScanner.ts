@@ -72,6 +72,17 @@ const CHINESE_COMMON_WORD_BLACKLIST = new Set([
   '从小', '從小', '这家伙', '這傢伙', '家伙', '傢伙', '后面', '後面', '段路', '关起门', '關起門',
   '关门', '關門', '开门', '開門', '先去县城', '先去縣城', '站在门', '站在門', '二门', '二門', '趟门', '趟門',
   '老桂同', '老储同', '老褚同', '朱阿',
+  // Common Chinese words starting with surname characters that must never be treated as names:
+  '双手', '双臂', '双眼', '双脚', '雙手', '雙臂', '雙眼', '雙腳',
+  '尤其', '张嘴', '张开', '张口', '張嘴', '張開', '張口',
+  '怀疑', '懷疑', '平静', '平靜', '平静地', '平靜地', '包括', '严重', '嚴重',
+  '白菜', '白眼', '白布', '白酒', '白纸', '白紙',
+  '那儿', '那兒', '那天', '那位', '那小', '那群', '那几', '那些个', '那头', '那頭', '那夜', '那晚',
+  '都快', '都要', '都在', '都会', '都能', '都想', '都知', '都挺', '都不敢',
+  '全程', '全家', '全场', '全場', '全体', '全體',
+  '牛仔', '广告', '項目', '项目', '麻将', '麻將', '路过', '路過', '明星', '强行', '強行',
+  '小事', '小子', '相机', '相機', '干啥', '幹啥', '干脆', '幹脆', '冷淡', '冷静', '冷靜', '莫名',
+  '巴掌', '巴掌拍', '余光', '餘光', '成人高', '齐刷刷', '齊刷刷', '通电', '通電',
 ]);
 
 const NON_PERSON_SUFFIXES = new Set([
@@ -561,17 +572,23 @@ Dựa vào các ngữ cảnh xuất hiện đầu tiên, câu bằng chứng th�
 ${profileBlocks.join('\n\n')}${locationSection}
 
 --- YÊU CẦU ĐẦU RA ---
-Hãy suy nghĩ sâu (Thinking process) và trả về kết quả dưới định dạng JSON duy nhất đặt trong \`\`\`json ... \`\`\` với schema sau:
+Hãy phân tích kỹ lưỡng và trả về kết quả dưới định dạng JSON duy nhất đặt trong \`\`\`json ... \`\`\` với schema sau:
 \`\`\`json
 {
   "characters": [
     {
       "chinese": "Tên tiếng Trung",
-      "vietnamese": "Tên Hán Việt chuẩn xác",
+      "vietnamese": "Tên tiếng Việt chuẩn xác (100% chữ quốc ngữ, tuyệt đối KHÔNG để sót ký tự Hán)",
       "gender": "male" | "female" | "unknown",
       "role": "Vai vế xã hội hoặc vị trí gia đình (Mẹ, Cha, Chồng, Vợ, Chị dâu, Anh cả, Đồng đội, Phó doanh trưởng, v.v.)",
       "narrationPronoun": "Đại từ ngôi thứ 3 dùng khi dẫn truyện (anh, cô, ông, bà, chị, cậu, hắn, nàng)",
-      "notes": "Ghi chú ngắn về tính cách hoặc thân thế"
+      "notes": "Ghi chú ngắn về tính cách hoặc thân thế",
+      "aliases": [
+        {
+          "chinese": "Biến thể gọi tắt hoặc danh xưng kèm họ/chức vụ/vai vế thường gặp (ví dụ: 周营长, 周哥, 老周, 小周, 周家)",
+          "vietnamese": "Bản dịch tiếng Việt chuẩn xác theo họ và chức vụ (ví dụ: Chu Doanh Trưởng, anh Chu, Lão Chu, Tiểu Chu, nhà họ Chu)"
+        }
+      ]
     }
   ],
   "relationships": [
@@ -604,13 +621,16 @@ CHÚ Ý QUAN TRỌNG VỀ THỰC THỂ:
    - CẤM trả về đại từ, phó từ, liên từ hội thoại (ví dụ: 那你, 那个, 那么, 那张, 简直...).
    - CẤM trả về danh từ chỉ vị trí, hành vi chung chung (ví dụ: 马路, 家门, 关门, 关起门, 站在门, 段路, 先去县城...).
    - Nếu trong danh sách ứng viên trinh sát gợi ý có những từ này hoặc bất kỳ từ nào KHÔNG PHẢI tên riêng nhân vật / địa danh độc lập cụ thể, bạn BẮT BUỘC PHẢI BỎ QUA HOÀN TOÀN, TUYỆT ĐỐI KHÔNG ĐƯỢC đưa vào mảng "characters" hay "locations" của kết quả JSON.
-3. TÊN NGƯỜI PHẢI ĐẦY ĐỦ VÀ CHUẨN XÁC:
-   - Khi nhận diện nhân vật, hãy trả về đúng họ tên thật đầy đủ (ví dụ: "袁和颂" -> "Viên Hòa Tụng", "朱玲玲" -> "Chu Linh Linh").
-   - Bỏ qua các từ bị cắt cụt danh xưng (như "朱阿" do cắt từ "朱阿姨", "老桂同" do cắt từ "老桂同志"). Nếu xác định được tên gốc thì dùng tên gốc thật sự hoặc danh xưng chuẩn.
-   - Không tạo nhân vật riêng cho các biến thể nghề nghiệp/danh xưng của nhân vật đã có (ví dụ: KHÔNG tạo nhân vật "袁医生" nếu đó là Viên Hòa Tụng, KHÔNG tạo "安教授" nếu đó là An Kỳ).
-4. Xác định đúng giới tính và vai vế dựa trên các từ ngữ thân tộc (\`母親\` -> Mẹ / Nữ; \`大嫂\` -> Chị dâu / Nữ; \`兩口子\` -> Vợ chồng; \`大哥\` -> Anh cả / Nam; \`營長/當兵\` -> Quân nhân).
-5. Thiết lập đúng các cặp quan hệ 2 chiều rõ ràng, không để quan hệ bị bỏ trống.
-6. Chỉ xuất khối JSON hợp lệ, không kèm văn bản giải thích dài dòng bên ngoài khối JSON.`;
+3. TÊN NGƯỜI VÀ BIẾN THỂ DANH XƯNG (BẮT BUỘC TRÍCH XUẤT ĐẦY ĐỦ VÀO 'aliases'):
+   - Khi nhận diện nhân vật, hãy trả về đúng họ tên thật đầy đủ (ví dụ: "周旭" -> "Chu Húc", "沈沧雪" -> "Thẩm Thương Tuyết").
+   - ĐẶC BIỆT BẮT BUỘC: Mọi biến thể xưng hô, gọi tắt gắn liền với họ hoặc chức vụ/vai vế thường gặp trong tác phẩm BẮT BUỘC PHẢI LIỆT KÊ VÀO MẢNG 'aliases' kèm bản dịch tiếng Việt chuẩn (Ví dụ: với "周旭", aliases phải gồm: {"chinese": "周营长", "vietnamese": "Chu Doanh Trưởng"}, {"chinese": "周队长", "vietnamese": "Chu Đội Trưởng"}, {"chinese": "周哥", "vietnamese": "anh Chu"}, {"chinese": "老周", "vietnamese": "Lão Chu"}, {"chinese": "小周", "vietnamese": "Tiểu Chu"}).
+   - HỌ "周" CỦA NHÂN VẬT BẮT BUỘC DỊCH LÀ "Chu" (Chu Doanh Trưởng, anh Chu...), TUYỆT ĐỐI CẤM DỊCH THÀNH "Châu" (trừ địa danh "Quảng Châu").
+   - Không tạo nhân vật riêng cho các biến thể nghề nghiệp/danh xưng của nhân vật đã có (ví dụ: KHÔNG tạo nhân vật "袁医生" nếu đó là Viên Hòa Tụng, mà đưa vào aliases của Viên Hòa Tụng).
+4. ĐỊA DANH, CƠ QUAN, THÔN XÓM & CHỨC DANH NIÊN ĐẠI:
+   - Trích xuất toàn diện thôn xóm, xưởng máy, thành phố: "深圳"/"深市" BẮT BUỘC dịch là "Thâm Quyến" (CẤM "Thâm Puyến", "Thâm Cuyến"); "苞米屯" dịch là "thôn Bắp Ngô" (CẤM "Bắp Ngô Tấn"); "纺织厂" dịch là "xưởng dệt"; "厂长" dịch là "xưởng trưởng" (CẤM "Hán Trưởng").
+5. Xác định đúng giới tính và vai vế dựa trên các từ ngữ thân tộc (\`母親\` -> Mẹ / Nữ; \`大嫂\` -> Chị dâu / Nữ; \`兩口子\` -> Vợ chồng; \`大哥\` -> Anh cả / Nam; \`營長/當兵\` -> Quân nhân).
+6. Thiết lập đúng các cặp quan hệ 2 chiều rõ ràng, không để quan hệ bị bỏ trống.
+7. Chỉ xuất khối JSON hợp lệ, không kèm văn bản giải thích dài dòng bên ngoài khối JSON.`;
 }
 
 /**
@@ -756,11 +776,24 @@ export function parseStoryDigestResponse(aiResponse: string): ParsedStoryDigest 
           continue;
         }
 
+        const parsedAliases: string[] = [];
+        if (Array.isArray(c.aliases)) {
+          for (const a of c.aliases) {
+            if (typeof a === 'string' && a.trim().length >= 2) {
+              parsedAliases.push(a.trim());
+            } else if (a && typeof a === 'object') {
+              const azh = String(a.chinese || a.zh || '').trim();
+              if (azh.length >= 2) parsedAliases.push(azh);
+            }
+          }
+        }
+
         characters.push({
           id: `ent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
           category: 'character',
           chinese: zh,
           vietnamese: vi,
+          aliases: parsedAliases.length > 0 ? parsedAliases : undefined,
           gender: c.gender === 'male' || c.gender === 'female' ? c.gender : 'unknown',
           role,
           narrationPronoun: c.narrationPronoun ? String(c.narrationPronoun).trim() : undefined,
@@ -838,11 +871,24 @@ export function parseStoryDigestResponse(aiResponse: string): ParsedStoryDigest 
             continue;
           }
 
+          const parsedAliases: string[] = [];
+          if (Array.isArray(c.aliases)) {
+            for (const a of c.aliases) {
+              if (typeof a === 'string' && a.trim().length >= 2) {
+                parsedAliases.push(a.trim());
+              } else if (a && typeof a === 'object') {
+                const azh = String(a.chinese || a.zh || '').trim();
+                if (azh.length >= 2) parsedAliases.push(azh);
+              }
+            }
+          }
+
           characters.push({
             id: `ent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
             category: 'character',
             chinese: zh,
             vietnamese: vi,
+            aliases: parsedAliases.length > 0 ? parsedAliases : undefined,
             gender: c.gender === 'male' || c.gender === 'female' ? c.gender : 'unknown',
             role,
             narrationPronoun: c.narrationPronoun ? String(c.narrationPronoun).trim() : undefined,

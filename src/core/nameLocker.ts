@@ -1,10 +1,15 @@
 import { sify, tify } from 'chinese-conv';
 
+/** Matching key only; never use this value to rewrite the original story or merge identities. */
+export function normalizeChineseNameForMatching(text: string): string {
+  return sify(text.trim().normalize('NFC'));
+}
+
 export interface LockableEntity {
   id?: string;
   chinese: string;
   vietnamese: string;
-  aliases?: readonly string[];
+  aliases?: readonly (string | { zh: string; viDisplay?: string })[];
   ambiguous?: boolean;
 }
 
@@ -83,6 +88,7 @@ export function lockNamesInSource(
   }
 
   const replacementMap = new Map<string, ReplacementEntry>();
+  const displaysByKey = new Map<string, Set<string>>();
 
   for (const ent of validEntities) {
     const addKey = (rawKey: string, customVi?: string) => {
@@ -91,6 +97,12 @@ export function lockNamesInSource(
       if (NON_LOCKABLE_WORDS.has(k)) return;
       if (k.length <= 3 && k.endsWith('家')) return;
       const vi = customVi?.trim() || ent.vietnamese;
+      const canonicalKey = normalizeChineseNameForMatching(k);
+      const displays = displaysByKey.get(canonicalKey) ?? new Set<string>();
+      // Compare display equivalence without changing the chosen spelling or identity.
+      // Keep accents: Hy and Hỷ are different names; case/spacing/NFC are not conflicts.
+      displays.add(vi.normalize('NFC').replace(/\s+/gu, ' ').toLowerCase());
+      displaysByKey.set(canonicalKey, displays);
       if (!replacementMap.has(k)) {
         replacementMap.set(k, {
           chinese: k,
@@ -132,26 +144,68 @@ export function lockNamesInSource(
       if (baseZh) addKey(baseZh, baseVi);
       if (innerZh && innerVi) addKey(innerZh, innerVi);
     }
+
+    // For 3-character person names (e.g. "陆时淮" -> "Lục Thời Hoài"), also register given-name alias ("时淮" -> "Thời Hoài")
+    const viParts = ent.vietnamese.trim().split(/\s+/);
+    if (ent.chinese.length === 3 && viParts.length === 3 && !parenMatch) {
+      const givenZh = ent.chinese.slice(1);
+      const givenVi = viParts.slice(1).join(' ');
+      addKey(givenZh, givenVi);
+    }
     if (ent.aliases?.length) {
       for (const alias of ent.aliases) {
         if (!alias) continue;
-        const aTrim = alias.trim();
-        if (!aTrim) continue;
+        let aZh = '';
+        let aVi: string | undefined = undefined;
+        if (typeof alias === 'object' && alias !== null) {
+          aZh = (alias as { zh: string; viDisplay?: string }).zh?.trim() || '';
+          aVi = (alias as { zh: string; viDisplay?: string }).viDisplay?.trim();
+        } else if (typeof alias === 'string') {
+          aZh = alias.trim();
+        }
+        if (!aZh) continue;
 
         // Safe Alias Guard:
         // 1. Prevent familial relationship sub-entities from hijacking the base entity (e.g. "村長妻子" must NOT have alias "村長")
         const hasRelationshipWord = /(?:妻子|媳婦|媳妇|老婆|太太|之妻|之女|之子|之母|之父|之兄|之弟|之姊|之妹|之夫)/u.test(ent.chinese);
-        if (hasRelationshipWord && !/(?:妻子|媳婦|媳妇|老婆|太太|之妻|之女|之子|之母|之父|之兄|之弟|之姊|之妹|之夫)/u.test(aTrim)) {
+        if (hasRelationshipWord && !/(?:妻子|媳婦|媳妇|老婆|太太|之妻|之女|之子|之母|之父|之兄|之弟|之姊|之妹|之夫)/u.test(aZh)) {
           continue; // Skip dangerous alias that drops the relationship qualifier
         }
 
         // 2. Prevent team/organization sub-entities from hijacking parent location (e.g. "豐揚村小小孩分隊" must NOT have alias "豐揚村")
         const hasOrgWord = /(?:分隊|分队|小隊|小队|委員會|委员会|小組|小组)/u.test(ent.chinese);
-        if (hasOrgWord && !/(?:分隊|分队|小隊|小队|委員會|委员会|小組|小组)/u.test(aTrim)) {
+        if (hasOrgWord && !/(?:分隊|分队|小隊|小队|委員會|委员会|小組|小组)/u.test(aZh)) {
           continue; // Skip dangerous alias that strips the org unit
         }
 
-        addKey(aTrim);
+        addKey(aZh, aVi);
+      }
+    }
+  }
+
+  // Lossy conversions (e.g. 后/後) and aliases shared by different entities must
+  // not silently assign the first entity's name to everyone in the group.
+  // Equal display text is safe to substitute without merging either identity:
+  // old memories can contain separate simplified/traditional records of it.
+  for (const [key] of replacementMap) {
+    if ((displaysByKey.get(normalizeChineseNameForMatching(key))?.size ?? 0) > 1) {
+      replacementMap.delete(key);
+    }
+  }
+
+  // Match observed mixed-script spellings as well. chinese-conv maps UTF-16
+  // characters one for one; retain an explicit length guard before using offsets.
+  const normalizedSource = sify(sourceText);
+  if (normalizedSource.length === sourceText.length) {
+    for (const entry of [...replacementMap.values()]) {
+      const key = sify(entry.chinese);
+      let offset = normalizedSource.indexOf(key);
+      while (offset !== -1) {
+        const spelling = sourceText.slice(offset, offset + key.length);
+        if (!replacementMap.has(spelling)) {
+          replacementMap.set(spelling, { ...entry, chinese: spelling });
+        }
+        offset = normalizedSource.indexOf(key, offset + key.length);
       }
     }
   }
@@ -161,22 +215,22 @@ export function lockNamesInSource(
     (a, b) => b.chinese.length - a.chinese.length,
   );
 
-  let resultText = sourceText;
   let totalLocked = 0;
-  const lockedEntitiesUsed: ReplacementEntry[] = [];
-
-  for (const entry of sortedEntries) {
-    if (resultText.includes(entry.chinese)) {
-      // Global literal replacement
-      const parts = resultText.split(entry.chinese);
-      const count = parts.length - 1;
-      if (count > 0) {
-        totalLocked += count;
-        resultText = parts.join(entry.token);
-        lockedEntitiesUsed.push(entry);
-      }
-    }
-  }
+  const usedKeys = new Set<string>();
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const pattern = sortedEntries.length
+    ? new RegExp(`⟦[^⟦⟧\\n]*⟧|${sortedEntries.map((entry) => escape(entry.chinese)).join('|')}`, 'gu')
+    : undefined;
+  const resultText = pattern ? sourceText.replace(pattern, (match) => {
+    // Preserve existing locks and never match inside a name inserted earlier.
+    if (match.startsWith('⟦')) return match;
+    const entry = replacementMap.get(match);
+    if (!entry) return match;
+    totalLocked += 1;
+    usedKeys.add(match);
+    return entry.token;
+  }) : sourceText;
+  const lockedEntitiesUsed = sortedEntries.filter((entry) => usedKeys.has(entry.chinese));
 
   return {
     lockedSourceText: resultText,

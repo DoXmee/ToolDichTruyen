@@ -111,10 +111,10 @@ export async function createMainWindow(options: CreateMainWindowOptions = {}): P
       Math.min(bounds.height, workArea.height),
       Math.min(bounds.width, workArea.width),
     );
-    if (Math.abs(window.webContents.getZoomFactor() - targetFactor) < 0.001) return;
+    if (Math.abs(window.webContents.getZoomFactor() - targetFactor) < 0.01) return;
     window.webContents.setZoomFactor(targetFactor);
   };
-  const scheduleCompactWorkspaceZoom = (delay = 80): void => {
+  const scheduleCompactWorkspaceZoom = (delay = 250): void => {
     clearPendingWorkspaceZoom();
     pendingZoomTimer = setTimeout(applyCompactWorkspaceZoom, delay);
   };
@@ -135,16 +135,16 @@ export async function createMainWindow(options: CreateMainWindowOptions = {}): P
     if (!navigationAllowed(targetUrl, options.devServerUrl)) event.preventDefault();
   });
   window.webContents.on("will-attach-webview", (event) => event.preventDefault());
-  // On Windows, BrowserWindow's `resize` event may run before the new client
-  // height is observable. Defer once so zoom is based on the final bounds,
-  // including programmatic setContentSize calls used by a compact workspace.
-  window.on("resize", () => scheduleCompactWorkspaceZoom());
+  // On Windows, avoid re-computing Chromium zoom continuously on every mouse drag pixel.
+  // Apply zoom once when resizing finishes ('resized'), and debounce 'resize' with 300ms.
+  window.on("resized", () => scheduleCompactWorkspaceZoom(100));
+  window.on("resize", () => scheduleCompactWorkspaceZoom(300));
   window.on("minimize", clearPendingWorkspaceZoom);
-  window.on("restore", () => scheduleCompactWorkspaceZoom());
-  window.on("maximize", () => scheduleCompactWorkspaceZoom());
-  window.on("unmaximize", () => scheduleCompactWorkspaceZoom());
-  window.on("enter-full-screen", () => scheduleCompactWorkspaceZoom());
-  window.on("leave-full-screen", () => scheduleCompactWorkspaceZoom());
+  window.on("restore", () => scheduleCompactWorkspaceZoom(100));
+  window.on("maximize", () => scheduleCompactWorkspaceZoom(100));
+  window.on("unmaximize", () => scheduleCompactWorkspaceZoom(100));
+  window.on("enter-full-screen", () => scheduleCompactWorkspaceZoom(100));
+  window.on("leave-full-screen", () => scheduleCompactWorkspaceZoom(100));
   // Windows changes a maximized window's usable bounds when the taskbar is
   // hidden/shown or when it moves between displays. Refit after those display
   // metric events instead of leaving the bottom controls clipped.

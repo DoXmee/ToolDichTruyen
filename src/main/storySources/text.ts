@@ -5,14 +5,14 @@ const SITE_NOISE = [
 ];
 
 const INLINE_NOISE = [
-  /\s*点击下一页继续[\s\S]*$/iu,
-  /\s*此页为本章\s*第\s*\d+\s*页\s*\/\s*共\s*\d+\s*页[\s\S]*$/iu,
-  /\s*溫馨提示\s*:\s*網站即將改版[\s\S]*$/iu,
-  /\s*(?:本站所收录|本站所收錄|所有内容均来自互联网)[\s\S]*$/iu,
+  /(?:^|\n)\s*点击下一页继续[^\n]*$/iu,
+  /(?:^|\n)\s*此页为本章\s*第\s*\d+\s*页\s*\/\s*共\s*\d+\s*页[^\n]*$/iu,
+  /(?:^|\n)\s*溫馨提示\s*:\s*網站即將改版[^\n]*$/iu,
+  /(?:^|\n)\s*(?:本站所收录|本站所收錄|所有内容均来自互联网)[^\n]*$/iu,
 ];
 
 const INVISIBLE_CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu;
-const XBANXIA_TERMINAL_AUTHOR_NOTE = /(?:^|\n)\s*(?:作者有[話话](?:要)?[說说]|p\.?\s*s\.?)\s*(?:[：:︰]\s*)?[^\n]*/iu;
+const XBANXIA_TERMINAL_AUTHOR_NOTE = /(?:^|\n)[ \t]*(?:作者有[話话](?:要)?[說说](?:[ \t]*[：:︰][^\n]*|[ \t]*(?=\n|$))|p\.?[ \t]*s\.?[ \t]*[：:︰][^\n]*)/iu;
 
 // These labels belong to Xbanxia's reader chrome and watermark ads.
 const XBANXIA_EDGE_NOISE = /^(?:半夏小說.*|每日推[薦荐](?:\s*[:：︰].*)?|錯誤提交|错误提交|問題類型|问题类型|章節錯誤|章节错误|閱讀全文|阅读全文|上一[章頁页](?:\s*[:：︰].*)?|下一[章頁页](?:\s*[:：︰].*)?|返回[目章]?[錄录]|回[目章]?[錄录]|加入書[籤签]|加入书[籤签]|如有[惡恶]意[廣广]告.*|[請请][將将]截[屏圖图].*|\[email\s*protected\]|[\w.+-]+@[\w-]+\.[\w.]+)\s*$/iu;
@@ -151,25 +151,33 @@ export function repairLegacyXbanxiaCheckpointSegment(raw: string): string {
   return `${formattedHeading}\n\n${cleanedBody}`;
 }
 
-const IXDZS_JUNK_LINE = /^[?？]{1,5}\s*(?:.*?(?:求|发|六点|三十六|洗漱|吃饭|月票|包|推荐|推|年代文|新书|新書|好久不见|作者|我能不能|暂时|大家|谢谢|感謝|打赏|打賞|留言|收藏|更新|加更|请假|請假|群|粉丝|晚安|明天|今天|ps|p\.s|投|票|评论|評論|章节|章節|订阅|訂閱|营养液|營養液|\d{2,})|[\s\d]*$)/iu;
+const IXDZS_JUNK_LINE = /^[?？]{1,5}\s*(?:.*?(?:月票|推荐票|求收藏|求好评|新书献上|新書獻上|作者|发.{0,12}(?:月包|红包)|\d+推\s*$|吃饭饭|洗漱去)|[\s\d]+$)|^(?:🔥\s*)?读完本章的人还在玩.*|^🔥\s*.*/iu;
+const IXDZS_METADATA_LINE = /^\s*《[^》]+》\s*[·・•]\s*[^·・•\n]+(?:[·・•]\s*[^·・•\n]+)?(?:[·・•]\s*主角\s*[:：].*)?$/u;
 
 /** Removes terminal Ixdzs author notes, new-book notes, and scraped junk lines. */
 export function cleanIxdzsStoryText(raw: string): string {
   let text = normalizeText(raw);
   let lines = text.split("\n");
-  const markerLine = lines.findIndex((line) => /(?:好久不见[，,]\s*作者新书献上|作者有[话話]要[说說])/iu.test(line));
-  if (markerLine >= 0) {
+  const metaIndex = lines.slice(0, 3).findIndex((line) => IXDZS_METADATA_LINE.test(line.trim()));
+  if (metaIndex !== -1) {
+    lines.splice(metaIndex, 1);
+  }
+  const markerLine = lines.findIndex((line) => /^(?:[?？]{1,5}\s*)?(?:好久不见[，,]\s*作者新书献上[。.!！]?|作者有[话話]要[说說]\s*[:：]?)$/iu.test(line.trim()));
+  if (markerLine > 0 && lines.slice(markerLine + 1).every((line) =>
+    /^(?:[?？]|感[谢謝]|謝謝|谢谢|求[月推收票]|新[书書]|[预預]收|[营營][养養]液|[读讀]者)/u.test(line.trim()))) {
     const before = lines.slice(0, markerLine);
     if (before.length) lines = before;
   }
   while (lines.length > 0 && lines.at(-1) && (
     !lines.at(-1)!.trim() ||
-    /^[?？]{1,5}/u.test(lines.at(-1)!.trim()) ||
+    IXDZS_JUNK_LINE.test(lines.at(-1)!.trim()) ||
     /^(?:作者有[话話]要[说說]|ps[：:]|p\.s\.?[：:]|求[月推荐收藏]|求票|新书献上).*/iu.test(lines.at(-1)!.trim())
   )) {
     lines.pop();
   }
-  lines = lines.filter((line) => !IXDZS_JUNK_LINE.test(line.trim()));
+  // The damaged '?' author block is only removable at the terminal edge.
+  // A question or a quoted author-note phrase inside prose is not junk.
+  while (lines.length > 0 && IXDZS_JUNK_LINE.test(lines.at(-1)!.trim())) lines.pop();
   return lines.join("\n").trim();
 }
 
@@ -189,10 +197,6 @@ export function mergeTextParts(parts: string[]): { text: string; overlapsRemoved
     if (!part) continue;
     if (!text) {
       text = part;
-      continue;
-    }
-    if (text.includes(part)) {
-      overlapsRemoved += part.length;
       continue;
     }
     const overlap = longestOverlap(text, part);

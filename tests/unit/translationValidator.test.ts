@@ -71,6 +71,18 @@ describe('translation validator', () => {
       .toContain('error_response');
     expect(issueCodes('你好', 'Please take a break and try again later.'))
       .toContain('error_response');
+    expect(
+      issueCodes(
+        'Chương 2057: 累了\n\n??e???4??????A????;??',
+        'Chương 2057: Mệt rồi\n\nNguồn văn bản chương này bị lỗi mã hóa nghiêm trọng, phần nội dung tiếng Trung đã biến thành các ký tự rác và không thể đọc được. Hiện chỉ nhận diện được tiêu đề chương là “Mệt rồi”.\n\nBạn vui lòng gửi lại nguyên văn chương 1082 để tôi có thể dịch đầy đủ, chính xác.',
+      ),
+    ).toContain('error_response');
+    expect(
+      issueCodes('你好', 'Văn bản gốc bị lỗi mã hóa, vui lòng gửi lại đoạn văn.'),
+    ).toContain('error_response');
+    expect(
+      issueCodes('你好', 'Source text appears to be corrupted. Please provide the original text again.'),
+    ).toContain('error_response');
 
     const source = '这是一个足够长的原文段落，用于检查模型是否直接重复原文。';
     expect(issueCodes(source, source)).toContain('source_echo');
@@ -118,6 +130,84 @@ describe('translation validator', () => {
     ].join('\n\n');
 
     expect(issueCodes('原文 đủ dài để kiểm tra', translation)).not.toContain('repetition');
+  });
+
+  it('detects translations that are cut off mid-sentence and missing valid terminal punctuation', () => {
+    expect(
+      issueCodes(
+        '李向东心中的石头终于落地。',
+        'Tảng đá trong lòng Lý Hướng Đông cuối cùng',
+      ),
+    ).toContain('truncated_tail');
+
+    expect(
+      issueCodes(
+        '刘志峰完全相信了这个解释。',
+        'Lưu Chí Phong hoàn toàn tin lời giải thích',
+      ),
+    ).toContain('truncated_tail');
+
+    expect(
+      issueCodes(
+        '侯三在脑子里高兴地算账，完全没注意到李向东走过来。',
+        'Hầu Tam đang vui vẻ tính toán trong đầu, hoàn toàn không chú ý L',
+      ),
+    ).toContain('truncated_tail');
+
+    expect(
+      issueCodes('李向东笑了。', 'Lý Hướng Đông mỉm cười.'),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes('“走吧！”', '“Đi thôi!”'),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes('“真的吗？”', '“Thật sao?”'),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes('他说：“走吧。”', 'Hắn nói: "Đi thôi."'),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes('他说……', 'Hắn thì thào…'),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes('李二哥咂舌，思索片刻点头：', 'Lý Nhị Ca tặc lưỡi, ngẫm nghĩ một chút rồi gật đầu:'),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes('吱呀——', 'Kẽo kẹt—'),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes('好的~', 'Vâng vâng~ Rửa rửa~'),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes('她说：“', 'Anh nói: “'),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes('她若真的只是一個二十來歲的小姑娘，', 'Nếu cô thật sự chỉ là một cô gái hơn hai mươi tuổi,'),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes(
+        '【叮！兌換健體丸一粒，扣除2000積分，當前剩餘積分101882分。】',
+        '【Ting! Đổi một viên Kiện Thể Hoàn, khấu trừ 2000 điểm tích lũy, số điểm tích lũy còn lại hiện tại là 101.882 điểm.】',
+      ),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes('【叮！系統已升級】', '【Ting! Hệ thống đã nâng cấp】'),
+    ).not.toContain('truncated_tail');
+
+    expect(
+      issueCodes('請閱讀《邊城》', 'Xin hãy đọc 《Biên Thành》'),
+    ).not.toContain('truncated_tail');
   });
 
   it('detects a paraphrased replay of the previous chapter when the sources differ', () => {
@@ -170,6 +260,16 @@ describe('translation validator', () => {
 
     expect(valid.issues.map((issue) => issue.code)).not.toContain('chapter_structure');
     expect(missing.issues).toContainEqual(expect.objectContaining({ code: 'chapter_structure' }));
+  });
+
+  it('không báo lỗi cấu trúc chương khi bản dịch hoặc nguồn có tiêu đề trùng lặp liên tiếp cho cùng một chương', () => {
+    const source = 'Chương 373: 斷手\n\n第373章 斷手\n\n原文一。\n\nChương 374: 催命符\n\n第374章 催命符\n\n原文二。';
+    const translationWithDuplicateHeading = 'Chương 373: Bẻ tay\n\nNội dung một.\n\nChương 374: Phù chú đòi mạng\n\nChương 374: Phù chú đòi mạng\n\nNội dung hai.';
+
+    const result = validateTranslation(source, translationWithDuplicateHeading, {
+      minimumSourceLengthForRatioCheck: Number.MAX_SAFE_INTEGER,
+    });
+    expect(result.issues.map((issue) => issue.code)).not.toContain('chapter_structure');
   });
 
   it('supports selectively disabling heuristic checks', () => {

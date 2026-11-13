@@ -32,4 +32,13 @@ describe('crawlerSanitizer', () => {
     const cleaned = stripCrawlerNoise(raw);
     expect(cleaned).toBe('Nội dung chương chính.');
   });
+
+  it('loại bỏ các dòng author note mojibake ?? và PS nhưng giữ nguyên câu hỏi thoại', () => {
+    const raw = `“Bà cụ Từ ơi, bà không sao chứ ạ? Có cần cháu vào trong giúp một tay không?”\n\n??Chú ý! Cần cho cốt truyện!\n\nPS: Hôm nay tác giả bận nên đăng trễ.\n\n“Không sao, cháu cứ về trước đi.”`;
+    const cleaned = stripCrawlerNoise(raw);
+    expect(cleaned).toContain('“Bà cụ Từ ơi, bà không sao chứ ạ? Có cần cháu vào trong giúp một tay không?”');
+    expect(cleaned).toContain('“Không sao, cháu cứ về trước đi.”');
+    expect(cleaned).not.toContain('??Chú ý');
+    expect(cleaned).not.toContain('PS: Hôm nay tác giả');
+  });
 });

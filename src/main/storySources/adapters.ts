@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import type {
   StoryChapterContent,
   StoryChapterReference,
   StorySite,
   StorySourceAnalysis,
 } from "../../shared/types.js";
+import { stripCrawlerNoise } from "../../core/crawlerSanitizer.js";
 import {
   assertSnapshotUrl,
   parseStoryUrl,
@@ -680,7 +682,7 @@ function assertCleanNovel543StoryText(text: string): void {
  * a same-chapter successor has been verified, removing it would turn a
  * truncated chapter into an apparently complete one.
  */
-const HULI_UNFINISHED_PAGE_TAIL = /\s*\u672c\u7ae0\u672a\u5b8c(?:[\uFF0C,\.\u3002!\uFF01\u2026~\uFF5E]*)\s*$/u;
+const HULI_UNFINISHED_PAGE_TAIL = /(?:^|\n)\s*本章未完\s*[，,。.！!？?…~～]*\s*(?:(?:请\s*)?点击\s*下一页\s*(?:继续(?:\s*阅读)?)?|下一页\s*继续(?:\s*阅读)?)?(?:\s*[，,。.！!？?…~～]*\s*(?:此页为本章\s*第\s*\d{1,4}\s*页\s*\/\s*共\s*\d{1,4}\s*页|如内容不全或无法翻页|或提示是最新章节|请退出\s*\[?\s*阅\s*#?\s*读\s*#?\s*模\s*#?\s*式\s*\]?))*[\s\p{Punctuation}\p{Symbol}\u200d\ufe0f]*$/u;
 const LIEHUO_UNFINISHED_PAGE_TAIL = /\s*本章未完(?:[，,]\s*请)?(?:点击下一页继续阅读)?(?:\s*[》〉>]+)?[，,\.。!！…~～]*\s*$/u;
 const HULI_NEXT_PAGE_TAIL = /\s*(?:(?:\u70b9\u51fb|\u9ede\u64ca)\s*)?(?:\u4e0b\u4e00|\u4e0b)\s*[\u9875\u9801](?:\s*(?:\u7ee7\u7eed|\u7e7c\u7e8c)?(?:\u9605\u8bfb|\u95b1\u8b80)?)?[\s~\uFF5E\u2026]*$/u;
 const HULI_PAGE_COUNTER_TAIL = /\s*(?:\u6b64\u9875\u4e3a\u672c\u7ae0|\u6b64\u9801\u70ba\u672c\u7ae0)\s*\u7b2c\s*\d+\s*[\u9875\u9801]\s*\/\s*\u5171\s*\d+\s*[\u9875\u9801][\s~\uFF5E\u2026]*$/u;
@@ -1165,7 +1167,15 @@ function xszjChapterNextPage(snapshot: StoryPageSnapshot, current: ParsedStoryUr
 }
 
 function cleanXszjText(raw: string, heading: string): string {
-  const text = removeRepeatedHeading(cleanIxdzsStoryText(raw), heading);
+  let text = cleanIxdzsStoryText(raw);
+  const headingWithoutCounter = heading.replace(XSZJ_PAGE_COUNTER, "").trim();
+  text = removeRepeatedHeading(text, heading);
+  text = removeRepeatedHeading(text, headingWithoutCounter);
+  const embedded = /第\s*(\d+|[零〇一二三四五六七八九十百千万萬两兩]+)\s*章\s*(.*)$/u.exec(headingWithoutCounter);
+  if (embedded) {
+    text = removeRepeatedHeading(text, embedded[0].trim());
+    if (embedded[2]) text = removeRepeatedHeading(text, embedded[2].trim());
+  }
   const lines = text.split("\n").filter((line) => !XSZJ_READER_EDGE_NOISE.test(line.trim()));
   return lines.join("\n").trim();
 }
@@ -1193,7 +1203,7 @@ class XszjAdapter implements Adapter {
       bookTitle: chooseBookTitle(book, "xszj"),
       ...(extractAuthor(book) ? { author: extractAuthor(book) } : {}),
       chapters: catalog.chapters,
-      notices: ["XSZJ/爱下电子书: tool chỉ lấy vùng mục lục và thân chương đã xác minh; trang cùng chương được ghép tuần tự khi trang hiển thị (N/tổng)."],
+      notices: [],
     };
   }
 
@@ -1220,10 +1230,17 @@ class XszjAdapter implements Adapter {
         if (visited.has(actual.normalizedUrl)) throw new StorySourceError("SOURCE_CHANGED", "XSZJ tạo vòng lặp phân trang chương.");
         visited.add(actual.normalizedUrl);
         const heading = firstValue(snapshot, "h1", ".bookname");
-        const raw = firstRawValue(snapshot, "#content", "article.page-content");
+        const raw = firstRawValue(snapshot, "#booktxt", "#content", "article.page-content");
         if (!heading || !raw) throw new StorySourceError("SOURCE_CHANGED", "DOM chương XSZJ thiếu tiêu đề hoặc vùng nội dung an toàn.");
-        const headingLabel = parseChapterLabel(heading.replace(XSZJ_PAGE_COUNTER, "").trim());
-        if (chapter.number !== undefined && headingLabel.number !== chapter.number) {
+        const headingWithoutCounter = heading.replace(XSZJ_PAGE_COUNTER, "").trim();
+        let headingLabel = parseChapterLabel(headingWithoutCounter);
+        if (headingLabel.number === undefined) {
+          const embedded = /第\s*(\d+|[零〇一二三四五六七八九十百千万萬两兩]+)\s*章/u.exec(headingWithoutCounter);
+          if (embedded) {
+            headingLabel = parseChapterLabel(headingWithoutCounter.slice(embedded.index));
+          }
+        }
+        if (chapter.number !== undefined && headingLabel.number !== undefined && headingLabel.number !== chapter.number) {
           throw new StorySourceError("SOURCE_CHANGED", "Số chương XSZJ trong nội dung không khớp mục lục.");
         }
         const counter = XSZJ_PAGE_COUNTER.exec(heading);
@@ -1327,16 +1344,15 @@ class StaticNovelAdapter implements Adapter {
       : analysis.site === "uaa002"
         ? [".reader-content"]
         : analysis.site === "c6k6"
-          ? [".panel-readcontent"]
+          ? [".novelcontent", ".content_novel", ".panel-readcontent"]
           : analysis.site === "liehuozw"
             ? [".novelcontent", ".content_novel"]
             : analysis.site === "novel543"
               ? [".chapter-content .content"]
             : [];
-    const contentSelectors = analysis.site === "novel543" ? siteContentSelectors : [...siteContentSelectors,
-      "#content", ".chapter-content", ".chapter-content .content", ".read-content",
-      ".read-content-inner", ".article-content", ".novel-content", ".reader-content", ".reader-chap", ".novelcontent", ".content_novel", ".panel-readcontent", "article", "main",
-    ];
+    // A missing verified reader is a source-layout error, never permission to
+    // fall back to an entire article/main containing menus or recommendations.
+    const contentSelectors = siteContentSelectors;
     const pendingUrls = [...chapter.partUrls];
     const visitedUrls = new Set<string>();
     for (let partIndex = 0; partIndex < pendingUrls.length; partIndex += 1) {
@@ -1475,7 +1491,11 @@ function chapterContent(
   sourceUrls: string[],
   warnings: string[],
 ): StoryChapterContent {
+  // Prepare once before both the story digest and translation consume it.
+  const beforeCleanup = text;
+  text = stripCrawlerNoise(text);
   assertPlausibleStoryText(text, chapter.title);
+  if (text !== beforeCleanup) warnings.push(`Đã lọc ${beforeCleanup.length - text.length} ký tự rác nguồn đã xác minh trước khi bàn giao chương.`);
   return {
     id: chapter.id,
     order: chapter.order,
@@ -1485,6 +1505,7 @@ function chapterContent(
     sourceUrls,
     mergedPartCount: sourceUrls.length,
     characterCount: text.length,
+    sourcePreparation: { version: "source-v1", sha256: createHash("sha256").update(text).digest("hex"), finalPassRemovedCharacters: beforeCleanup.length - text.length },
     warnings,
   };
 }

@@ -79,7 +79,7 @@ function connectHeartbeat() {
 }
 
 const NOISE_SELECTOR = [
-  "script", "style", "noscript", "iframe", "ins", "figure",
+  "script", "style", "noscript", "iframe", "ins", "#cf-top-feed-box",
   ".ad", ".ads", ".advert", ".advertisement", "[id^=ad_]", "[class^=ad-]", "[class*= ad-]",
 ].join(",");
 const BLOCK_SELECTOR = "p,div,li,blockquote,pre,section,article";
@@ -99,6 +99,7 @@ function normalizeText(raw) {
 function textOf(element) {
   if (!element) return "";
   const clone = element.cloneNode(true);
+  clone.querySelectorAll("script,style,noscript").forEach((node) => node.remove());
   clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
   return normalizeText(clone.textContent ?? "");
 }
@@ -107,6 +108,9 @@ function storyTextOf(element) {
   if (!element) return "";
   const clone = element.cloneNode(true);
   clone.querySelectorAll(NOISE_SELECTOR).forEach((node) => node.remove());
+  if (element.matches("article.page-content") && element.querySelector(":scope > section")) {
+    clone.querySelectorAll(":scope > h2, :scope > .chapter-meta").forEach((node) => node.remove());
+  }
   clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
   clone.querySelectorAll(BLOCK_SELECTOR).forEach((block) => {
     block.before("\n");
@@ -124,12 +128,14 @@ function isVisibleChallengeControl(element) {
 }
 
 function challengeState() {
+  const hasChallengeDocument = Boolean(document.querySelector('script[src*="/cdn-cgi/challenge-platform/"],#challenge-running,#challenge-stage,#challenge-form')) || Array.from(document.scripts).some((script) => /window\._cf_chl_opt\s*=/u.test(script.textContent || ""));
+  if (!hasChallengeDocument && Array.from(document.querySelectorAll("#booktxt,#content,article.page-content,#list,.u-chapter")).some((node) => storyTextOf(node).length >= 40)) return "none";
   const interactive = Array.from(document.querySelectorAll(
     'iframe[src*="challenges.cloudflare.com"],.cf-turnstile,.cf-turnstile button,.cf-turnstile input[type="checkbox"]',
   )).some(isVisibleChallengeControl);
   if (interactive) return "interactive";
   const text = `${document.title}\n${textOf(document.body)}`;
-  return /Just a moment|Checking your browser|Verify you are human|cf-chl-|Cloudflare Ray ID/iu.test(text)
+  return hasChallengeDocument || /^(?:Just a moment|Checking your browser|Chờ một chút|请稍候|請稍候)[.!…。\s]*$/iu.test(document.title.trim()) || /(?:checking your browser|xác minh bảo mật|xác minh bạn không phải|验证您是否|驗證您是否)/iu.test(text) && /cloudflare|cf[-_]chl[-_]/iu.test(text)
     ? "passive"
     : "none";
 }
@@ -184,7 +190,7 @@ function visible(element) {
  */
 async function expandIxdzsCatalog(requestedUrl) {
   if (!isIxdzsBook(requestedUrl)) return;
-  const trigger = document.querySelector("li.catalog-all");
+  const trigger = document.querySelector("h2.catalog-toggle, .catalog-toggle, .catalog-all a, li.catalog-all a, li.catalog-all");
   if (!visible(trigger)) return;
   const before = document.querySelectorAll(".u-chapter a[href]").length;
   if (!before) return;
@@ -211,8 +217,8 @@ async function collect(requestedUrl) {
   await expandIxdzsCatalog(requested);
 
   const elements = {};
-  for (const selector of ["h1", ".bookname", "#content", "article.page-content"]) {
-    const extractor = selector === "#content" || selector === "article.page-content" ? storyTextOf : textOf;
+  for (const selector of ["h1", ".bookname", "#booktxt", "#content", "article.page-content"]) {
+    const extractor = selector === "#booktxt" || selector === "#content" || selector === "article.page-content" ? storyTextOf : textOf;
     const values = Array.from(document.querySelectorAll(selector)).map(extractor).filter(Boolean).slice(0, 5_000);
     if (values.length) elements[selector] = values;
   }
@@ -221,12 +227,12 @@ async function collect(requestedUrl) {
   const snapshot = {
     requestedUrl: requested,
     url: current,
-    status: 200,
     title: String(document.title ?? "").normalize("NFC").slice(0, 1_000),
     ...(canonicalUrl ? { canonicalUrl } : {}),
     charset: String(document.characterSet || "UTF-8").slice(0, 32),
     htmlLanguage: String(document.documentElement.lang || "").slice(0, 64),
     bodyText: textOf(document.body),
+    rawBodyText: document.body?.innerText ?? document.body?.textContent ?? '',
     elements,
     links: safeLinks(),
     fontFamilies: [],

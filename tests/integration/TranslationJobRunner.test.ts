@@ -478,7 +478,7 @@ describe('TranslationJobRunner', () => {
       segments: Array<{ attempts: number; translatedText: string }>;
     }
     expect(sendAndWait).toHaveBeenCalledTimes(6)
-    expect(startNewConversation).toHaveBeenCalledTimes(2)
+    expect(startNewConversation).toHaveBeenCalledTimes(3)
     expect(saved.segments[4]).toMatchObject({ attempts: 2, translatedText: uniqueTranslation(5) })
     expect(saved.activityLog).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: expect.stringContaining('lặp bất thường nội dung đoạn 1') }),
@@ -1775,7 +1775,7 @@ describe('TranslationJobRunner', () => {
       chatGpt: {
         ensureReady: vi.fn().mockResolvedValue(undefined),
         startNewConversation: resumedStartNewConversation,
-        sendAndWait: vi.fn().mockResolvedValue('BAN-DICH-SAU-RESTART'),
+        sendAndWait: vi.fn().mockResolvedValue('BAN-DICH-SAU-RESTART.'),
         cancelGeneration: vi.fn().mockResolvedValue(undefined),
       },
       persistence,
@@ -3057,8 +3057,8 @@ describe('TranslationJobRunner', () => {
     })
     await completed
 
-    // 1 lần lúc bắt đầu + 1 lần xoay sau khi đạt trần số đoạn
-    expect(startNewConversation).toHaveBeenCalledTimes(2)
+    // 1 lần lúc bắt đầu + 2 lần xoay sau mỗi 5 đoạn (đoạn 5 và đoạn 10)
+    expect(startNewConversation).toHaveBeenCalledTimes(3)
     expect(sendAndWait).toHaveBeenCalledTimes(11)
   }, 25_000)
 
@@ -3107,10 +3107,10 @@ describe('TranslationJobRunner', () => {
     })
     await completed
 
-    // 31 đoạn: Xoay chat tại đoạn 10, 20, 30 (tổng 1 + 3 = 4 lần startNewConversation)
+    // 31 đoạn: Xoay chat tại đoạn 5, 10, 15, 20, 25, 30 (tổng 1 + 6 = 7 lần startNewConversation)
     // Trình duyệt được giữ sống liên tục, KHÔNG bị tắt/khởi động lại (restartForRecovery = 0)
     expect(restartForRecovery).toHaveBeenCalledTimes(0)
-    expect(startNewConversation).toHaveBeenCalledTimes(4)
+    expect(startNewConversation).toHaveBeenCalledTimes(7)
     expect(sendAndWait).toHaveBeenCalledTimes(31)
     expect(persistence.values.get(jobId)).toMatchObject({
       status: 'completed',

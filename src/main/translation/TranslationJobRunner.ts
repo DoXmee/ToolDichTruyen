@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { readFile, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
+import { pipelineRestartOptions } from './TranslationPipelineV3.js';
 import {
   autoExtractStoryMemory,
   buildContinuationRetryPrompt,
@@ -64,7 +65,7 @@ function storyMemoryToStoryBible(memory: StoryMemory, promptMode?: string): Stor
     category: ent.category ?? "character",
     zh: ent.chinese,
     vi: ent.vietnamese,
-    aliases: ent.aliases?.map((a) => ({ zh: a })),
+    aliases: ent.aliases?.map((a) => (typeof a === 'string' ? { zh: a } : { zh: (a as any).zh || (a as any).chinese, viDisplay: (a as any).viDisplay || (a as any).vietnamese })),
     gender: ent.gender,
     narrationPronoun: ent.narrationPronoun,
     role: ent.role,
@@ -139,6 +140,8 @@ export interface StartTranslationRequest {
   allowedAiProviders?: AiProvider[];
   autoExport?: TranslationAutoExportBinding;
   memory?: StoryMemory;
+  batchChaptersCount?: number;
+  sourceChapters?: import('../../core/translationPipelineV3.js').ChapterInput[];
   settings?: Partial<TranslationSettings> & {
     maxChunkChars?: number;
     timeoutMs?: number;
@@ -148,6 +151,7 @@ export interface StartTranslationRequest {
 interface PersistedTranslationJob extends TranslationJob {
   settings: TranslationSettings;
   memory: StoryMemory;
+  executionMode?: "web" | "api";
   storyDigestAttempted?: boolean;
   conversationInitialized: boolean;
   conversationRecoveryPending: boolean;
@@ -330,8 +334,8 @@ const MAX_CHATGPT_TO_KIMI_RESCUE_CYCLES = 3;
 // contextual new-chat replay. This budget applies only to a detected refusal.
 const SAFETY_REFUSAL_MAXIMUM_ATTEMPTS = 6;
 
-export const CONVERSATION_ROTATION_CHARACTER_THRESHOLD = 75_000;
-export const CONVERSATION_ROTATION_SEGMENT_CEILING = 10;
+export const CONVERSATION_ROTATION_CHARACTER_THRESHOLD = 32_000;
+export const CONVERSATION_ROTATION_SEGMENT_CEILING = 5;
 export const BROWSER_RECYCLE_SEGMENT_INTERVAL = 0;
 
 function normalizeAiProvider(provider: unknown): AiProvider {
@@ -503,7 +507,10 @@ function isChatGptPageFailure(validation: TranslationValidationResult): boolean 
 /** Short or structurally truncated output is an incomplete answer signal. */
 function isAbnormallyShortTranslation(validation: TranslationValidationResult): boolean {
   return validation.issues.some(
-    (issue) => issue.code === "too_short" || issue.code === "likely_truncated",
+    (issue) =>
+      issue.code === "too_short" ||
+      issue.code === "likely_truncated" ||
+      issue.code === "truncated_tail",
   );
 }
 
@@ -1300,6 +1307,7 @@ export class TranslationJobRunner {
       throw new Error("Hãy hủy hoặc chờ tác vụ đang hoạt động trước khi bắt đầu lại.");
     }
     return this.start({
+      ...pipelineRestartOptions(job),
       source: job.sourceText,
       promptMode: job.promptMode,
       ...(job.customPrompt ? { customPrompt: job.customPrompt } : {}),
@@ -2702,16 +2710,17 @@ export class TranslationJobRunner {
           await this.checkpoint(job);
           if (this.shouldStop(job, signal)) return "stopped";
           this.emit(job.id, "segment-status", { segment: publicSegment(segment) });
+          const isChatGptWebReasoning = job.aiProvider === "chatgpt" && job.executionMode !== "api";
           this.logActivity(
             job,
-            `Đang gửi yêu cầu sửa chữ Hán còn sót (lượt ${localAttempts}/${maximumLocalAttempts}, bật suy luận sâu)...`,
+            `Đang gửi yêu cầu sửa chữ Hán còn sót (lượt ${localAttempts}/${maximumLocalAttempts}${isChatGptWebReasoning ? ", bật suy luận sâu" : ""})...`,
             "info",
             segment,
           );
           const response = await this.dependencies.chatGpt.sendAndWait(promptWithRecovery, {
             timeoutMs: Math.max(responseTimeoutForProvider(job), 300_000),
             signal,
-            reasoning: true,
+            reasoning: isChatGptWebReasoning ? true : false,
           });
           if (this.shouldStop(job, signal)) return "stopped";
           this.consumeRecoveryContext(job);
@@ -2739,7 +2748,7 @@ export class TranslationJobRunner {
           if (!parsed.error && segment.validation?.valid) {
             this.logActivity(
               job,
-              `Đã sửa sạch chữ Hán còn sót thành công (đã tắt suy luận sâu để tiếp tục dịch bình thường).`,
+              `Đã sửa sạch chữ Hán còn sót thành công${isChatGptWebReasoning ? " (đã tắt suy luận sâu để tiếp tục dịch bình thường)" : ""}.`,
               "info",
               segment,
             );
@@ -2995,7 +3004,9 @@ export class TranslationJobRunner {
     }
 
     const prevCount = job.memory?.entities?.length ?? 0;
-    const extracted = autoExtractStoryMemory(segment.sourceText, segment.translatedText, {
+    const extracted = (job as PersistedTranslationJob & { pipelineV3?: unknown }).pipelineV3
+      ? { entities: [], relations: [], recentDialogues: [] }
+      : autoExtractStoryMemory(segment.sourceText, segment.translatedText, {
       genre: job.promptMode,
       existingEntities: job.memory?.entities,
     });
@@ -3007,7 +3018,7 @@ export class TranslationJobRunner {
         (e) => e.category !== "character" && e.category !== "location",
       ),
     };
-    job.memory = mergeStoryMemory(
+    job.memory = (job as PersistedTranslationJob & { pipelineV3?: unknown }).pipelineV3 ? job.memory! : mergeStoryMemory(
       job.memory,
       safeExtracted,
     );
@@ -3559,9 +3570,14 @@ export class TranslationJobRunner {
     const clusters = createCharacterClusters(charProfiles, 18);
     const totalClusters = Math.min(Math.max(clusters.length, 1), 3);
 
+    const isChatGptWebReasoning = job.aiProvider === "chatgpt" && job.executionMode !== "api";
+    const providerLabel = job.executionMode === "api"
+      ? (job.aiProvider ? job.aiProvider.toUpperCase() + " API" : "Gemini API")
+      : (job.aiProvider ? job.aiProvider.toUpperCase() : "AI");
+
     this.logActivity(
       job,
-      `Đã lọc được ${charProfiles.length} nhân vật cốt lõi và ${locProfiles.length} địa danh bối cảnh sạch. Bắt đầu gửi ${totalClusters} mẻ phân tích sâu lên ChatGPT (chế độ suy luận)...`,
+      `Đã lọc được ${charProfiles.length} nhân vật cốt lõi và ${locProfiles.length} địa danh bối cảnh sạch. Bắt đầu gửi ${totalClusters} mẻ phân tích sâu lên ${providerLabel}${isChatGptWebReasoning ? " (chế độ suy luận)" : ""}...`,
       "info",
     );
 
@@ -3596,7 +3612,7 @@ export class TranslationJobRunner {
         const digestResponse = await this.dependencies.chatGpt.sendAndWait(prompt, {
           timeoutMs: 300_000, // 5 phút thoải mái cho reasoning mode
           signal,
-          reasoning: true,    // Chế độ suy luận sâu theo yêu cầu của bạn
+          reasoning: isChatGptWebReasoning ? true : false,
         });
 
         if (this.shouldStop(job, signal)) return;
@@ -3604,10 +3620,19 @@ export class TranslationJobRunner {
         const parsed = parseStoryDigestResponse(digestResponse);
         if (parsed.characters.length > 0 || parsed.locations.length > 0) {
           const existingChinese = new Set((job.memory.entities ?? []).map((e) => e.chinese));
+          const hasHan = (text?: string) => Boolean(text && /[\u4e00-\u9fa5]/u.test(text));
           let newChars = 0;
           let newLocs = 0;
+
+          const faultyCharacters: typeof parsed.characters = [];
+          const faultyLocations: typeof parsed.locations = [];
+
           for (const ch of parsed.characters) {
             if (isNonEntityOrCommonWord(ch.chinese, ch.vietnamese, ch.role, ch.notes)) {
+              continue;
+            }
+            if (hasHan(ch.vietnamese)) {
+              faultyCharacters.push(ch);
               continue;
             }
             if (!existingChinese.has(ch.chinese)) {
@@ -3620,10 +3645,89 @@ export class TranslationJobRunner {
             if (isNonEntityOrCommonWord(loc.chinese, loc.vietnamese, undefined, loc.notes)) {
               continue;
             }
+            if (hasHan(loc.vietnamese)) {
+              faultyLocations.push(loc);
+              continue;
+            }
             if (!existingChinese.has(loc.chinese)) {
               job.memory.entities.push(loc);
               existingChinese.add(loc.chinese);
               newLocs++;
+            }
+          }
+
+          // Xử lý gửi lại cho AI dịch nếu có tên còn sót chữ Hán (không tự sửa, báo lỗi và yêu cầu AI dịch lại)
+          const allFaulty = [...faultyCharacters, ...faultyLocations];
+          if (allFaulty.length > 0) {
+            const sampleFaulty = allFaulty[0]!;
+            this.logActivity(
+              job,
+              `Phát hiện ${allFaulty.length} tên còn sót chữ Hán trong trường tiếng Việt (ví dụ: ${sampleFaulty.chinese} -> "${sampleFaulty.vietnamese}"). Từ chối nạp vào bộ nhớ, đang gửi lại cho AI dịch lại chuẩn xác...`,
+              "warning",
+            );
+
+            let remainingFaulty = [...allFaulty];
+            const maxNameRetries = 2;
+            for (let rAttempt = 1; rAttempt <= maxNameRetries && remainingFaulty.length > 0; rAttempt++) {
+              if (this.shouldStop(job, signal)) return;
+              const retryPrompt = `Các tên sau đây bị lỗi do phản hồi trước còn sót chữ Hán trong trường tiếng Việt:\n` +
+                remainingFaulty.map((f) => `- Tên tiếng Trung: ${f.chinese} (Phản hồi cũ: "${f.vietnamese}" - LỖI: còn sót chữ Hán)`).join('\n') +
+                `\n\nYÊU CẦU BẮT BUỘC:\n` +
+                `- Dịch lại chính xác 100% sang tiếng Việt tự nhiên thuần túy, tuyệt đối KHÔNG ĐỂ SÓT bất kỳ chữ Hán nào trong trường vietnamese.\n` +
+                `- Trả về duy nhất 1 khối JSON hợp lệ theo định dạng sau (không giải thích thêm):\n` +
+                `\`\`\`json\n` +
+                `{\n` +
+                `  "characters": [\n` +
+                remainingFaulty.map((f) => `    {"chinese": "${f.chinese}", "vietnamese": "tên tiếng Việt thuần túy", "gender": "${(f as any).gender || 'unknown'}", "role": "${f.role || ''}"}`).join(',\n') +
+                `\n  ]\n` +
+                `}\n` +
+                `\`\`\``;
+
+              try {
+                const retryResponse = await this.dependencies.chatGpt.sendAndWait(retryPrompt, {
+                  timeoutMs: 120_000,
+                  signal,
+                  reasoning: isChatGptWebReasoning ? true : false,
+                });
+                if (this.shouldStop(job, signal)) return;
+
+                const retryParsed = parseStoryDigestResponse(retryResponse);
+                const stillFaulty: typeof allFaulty = [];
+                for (const rf of retryParsed.characters) {
+                  if (hasHan(rf.vietnamese) || !rf.vietnamese) {
+                    stillFaulty.push(rf);
+                  } else if (!isNonEntityOrCommonWord(rf.chinese, rf.vietnamese, rf.role, rf.notes) && !existingChinese.has(rf.chinese)) {
+                    job.memory.entities.push(rf);
+                    existingChinese.add(rf.chinese);
+                    newChars++;
+                  }
+                }
+                remainingFaulty = stillFaulty;
+                if (remainingFaulty.length === 0) {
+                  this.logActivity(
+                    job,
+                    `AI đã dịch lại sạch chữ Hán thành công cho các tên bị lỗi trước đó.`,
+                    "info",
+                  );
+                  break;
+                }
+              } catch (rErr: unknown) {
+                if (this.shouldStop(job, signal)) return;
+                const rMsg = rErr instanceof Error ? rErr.message : String(rErr);
+                this.logActivity(
+                  job,
+                  `Lần gửi lại dịch tên ${rAttempt}/${maxNameRetries} không thành công: ${rMsg}`,
+                  "warning",
+                );
+              }
+            }
+
+            if (remainingFaulty.length > 0) {
+              this.logActivity(
+                job,
+                `Bỏ qua ${remainingFaulty.length} tên vẫn còn dính chữ Hán sau khi gửi lại dịch (tuyệt đối không nạp vào bộ nhớ để tránh lỗi bản dịch).`,
+                "warning",
+              );
             }
           }
           if (parsed.relationships.length > 0) {

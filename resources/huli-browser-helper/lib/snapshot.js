@@ -7,7 +7,7 @@ export const SNAPSHOT_SELECTORS = [
   "#pagination", ".pagination",
 ];
 
-const STORY_NOISE_SELECTOR = 'script,style,iframe,ins,figure,.adBlock,.gadBlock,.cf-unit,#comment,.bh-rec-embed,.recommend-wrap,[class^="ad-"],[class*=" ad-"]';
+const STORY_NOISE_SELECTOR = 'script,style,noscript,iframe,ins,.adBlock,.gadBlock,.cf-unit,#comment,.bh-rec-embed,.recommend-wrap,[class^="ad-"],[class*=" ad-"]';
 const STORY_BLOCK_SELECTOR = "p,div,li,blockquote,pre,section,article";
 // Huli's real reader can split this footer over multiple paragraphs/lines,
 // including its page-count/help text and a decorative emoticon. It remains a
@@ -50,6 +50,7 @@ function textOf(element) {
   if (!element) return "";
   if (element.matches("#nr")) return storyTextOf(element);
   const clone = element.cloneNode(true);
+  clone.querySelectorAll("script,style,noscript").forEach((node) => node.remove());
   clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
   return (clone.textContent ?? "").normalize("NFC").trim();
 }
@@ -209,7 +210,7 @@ export function chapterPaginationFor(document) {
   };
 }
 
-export function collectStorySnapshot(document, requestedUrl, status = 200) {
+export function collectStorySnapshot(document, requestedUrl, status) {
   const actualUrl = normalizeHuliUrl(document.location.href);
   const elements = {};
   for (const selector of SNAPSHOT_SELECTORS) {
@@ -223,18 +224,21 @@ export function collectStorySnapshot(document, requestedUrl, status = 200) {
   const canonicalUrl = safeHuliUrl(document.querySelector('link[rel="canonical"]')?.href);
   const bodyText = textOf(document.body);
   const interactive = hasVisibleChallengeControl(document);
-  const passive = /Just a moment|Checking your browser|cf-chl-|Cloudflare Ray ID/iu.test(`${document.title}\n${bodyText}`);
+  const hasReader = Array.from(document.querySelectorAll("#nr,#chapterList,.chaplist .all")).some((node) => textOf(node).length >= 40);
+  const documentChallenge = Boolean(document.querySelector('script[src*="/cdn-cgi/challenge-platform/"],#challenge-running,#challenge-stage,#challenge-form')) || Array.from(document.scripts).some((script) => /window\._cf_chl_opt\s*=/u.test(script.textContent || ""));
+  const passive = documentChallenge || /^(?:Just a moment|Checking your browser|Chờ một chút|请稍候|請稍候)[.!…。\s]*$/iu.test(document.title.trim()) || /checking your browser|xác minh bảo mật|xác minh bạn không phải/iu.test(bodyText) && /cloudflare|cf[-_]chl[-_]/iu.test(bodyText);
   const catalogPagination = catalogPaginationFor(document);
   const chapterPagination = chapterPaginationFor(document);
   const snapshot = {
     requestedUrl: normalizeHuliUrl(requestedUrl),
     url: actualUrl,
-    status,
+    ...(status === undefined ? {} : { status }),
     title: String(document.title ?? "").normalize("NFC").slice(0, 1_000),
     ...(canonicalUrl ? { canonicalUrl } : {}),
     charset: String(document.characterSet || "UTF-8").slice(0, 32),
     htmlLanguage: String(document.documentElement.lang || "").slice(0, 64),
     bodyText,
+    rawBodyText: document.body?.innerText ?? document.body?.textContent ?? '',
     elements,
     links,
     fontFamilies: [],
@@ -242,7 +246,7 @@ export function collectStorySnapshot(document, requestedUrl, status = 200) {
     fontHashes: [],
     ...(catalogPagination ? { catalogPagination } : {}),
     ...(chapterPagination ? { chapterPagination } : {}),
-    challenge: interactive ? "interactive" : passive ? "passive" : "none",
+    challenge: hasReader && !documentChallenge ? "none" : interactive ? "interactive" : passive ? "passive" : "none",
   };
   if (new TextEncoder().encode(JSON.stringify(snapshot)).byteLength > MAX_SNAPSHOT_BYTES) {
     throw new RangeError("Page snapshot exceeds the 2 MiB bridge limit.");

@@ -1,4 +1,4 @@
-export const EXTENSION_VERSION = "1.0.11";
+export const EXTENSION_VERSION = "1.0.13";
 export const HEARTBEAT_PORT_NAME = "huli-heartbeat";
 export const PAIR_FRAGMENT_PREFIX = "#tdt-pair=";
 export const POLL_DELAY_MS = 800;
@@ -140,6 +140,9 @@ export function normalizeHuliUrl(rawUrl) {
 export function huliPageIdentity(rawUrl) {
   const normalized = new URL(normalizeHuliUrl(rawUrl));
   normalized.hostname = withSubdomain(normalized.hostname, "m");
+  // These observed reader aliases redirect between each other. Only unify
+  // their identity; navigation retains the website's actual HTTPS URL.
+  if (["m.huliwang.net", "m.ihuliwang.net", "m.ihuliwang.com"].includes(normalized.hostname)) normalized.hostname = "m.huliwang.net";
   const catalog = /^\/dir\/(\d+)(?:[-_/](\d+))?\.html$/u.exec(normalized.pathname);
   if (catalog?.[1]) {
     const page = catalog[2] ? Number.parseInt(catalog[2], 10) : 1;

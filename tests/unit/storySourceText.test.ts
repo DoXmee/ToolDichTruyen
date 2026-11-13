@@ -172,6 +172,17 @@ describe("story source text safety", () => {
     expect(cleanIxdzsStoryText(raw)).toBe("故事正文第一段，人物仍然在继续行动。\n故事正文第二段，情节自然结束在这里。");
   });
 
+  it("removes leading IXDZS book metadata and trailing promotional game ads", () => {
+    const raw = [
+      "《恶姐随军大东北，开局扇醒三炮灰》·渡苍洲·言情穿越·主角：陆时瑜",
+      "三天后到东北火车站接我，我来随军。",
+      "姐，你终于想通了？太好了！",
+      "🔥 读完本章的人还在玩 · 真人互动多结局爽剧（你的选择决定主角生死）",
+      "🔥 逼女总裁脱鞋验诊",
+    ].join("\n");
+    expect(cleanIxdzsStoryText(raw)).toBe("三天后到东北火车站接我，我来随军。\n姐，你终于想通了？太好了！");
+  });
+
   it.each(["作者有話要說", "作者有话要说"])("removes a trailing Xbanxia %s note only from the latter half", (marker) => {
     const story = [
       "夜色漸深，他們沿著山路繼續前行，誰也沒有回頭。",
