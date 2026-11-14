@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   batchRenameInTranslation,
+  enforceLockedEntities,
   inspectNameLocks,
   lockNamesInSource,
   unlockNamesInTranslation,
@@ -187,5 +188,46 @@ describe('nameLocker module', () => {
     const result = lockNamesInSource(source, entities);
     expect(result.lockedSourceText).toBe('康家的人来到大院和军区，遇到了袁家的人。');
     expect(result.lockedCount).toBe(0);
+  });
+
+  describe('enforceLockedEntities', () => {
+    it('corrects hallucinated surname drift (e.g. Quách Quốc Xương -> Tống Quốc Xương)', () => {
+      const translation = 'Quách Quốc Xương chậm chạp ngẩng đầu lên, còn ⟦Quách Quốc Xương⟧ thì thở dài.';
+      const lockedEntities = [
+        { chinese: '宋國昌', vietnamese: 'Tống Quốc Xương', category: 'character' },
+        { chinese: '郭小霞', vietnamese: 'Quách Tiểu Hà', category: 'character' },
+      ];
+      const allCharacters = [
+        { vi: 'Tống Quốc Xương' },
+        { vi: 'Quách Tiểu Hà' },
+      ];
+
+      const fixed = enforceLockedEntities(translation, lockedEntities, allCharacters);
+
+      expect(fixed).toBe('Tống Quốc Xương chậm chạp ngẩng đầu lên, còn ⟦Tống Quốc Xương⟧ thì thở dài.');
+    });
+
+    it('corrects English name slips (e.g. From Phi -> Từ Phi)', () => {
+      const translation = 'Đúng lúc này, From Phi từ xa đi tới.';
+      const lockedEntities = [
+        { chinese: '从飞', vietnamese: 'Từ Phi', category: 'character' },
+      ];
+
+      const fixed = enforceLockedEntities(translation, lockedEntities);
+
+      expect(fixed).toBe('Đúng lúc này, Từ Phi từ xa đi tới.');
+    });
+
+    it('corrects sensitive locations when locked (Kyoto -> Kinh Đô, Lan Châu -> Lan Thành)', () => {
+      const translation = 'Đoàn đại biểu đến Kyoto rồi quay về Lan Châu tham dự triển lãm.';
+      const lockedEntities = [
+        { chinese: '京都', vietnamese: 'Kinh Đô', category: 'location' },
+        { chinese: '蘭城', vietnamese: 'Lan Thành', category: 'location' },
+      ];
+
+      const fixed = enforceLockedEntities(translation, lockedEntities);
+
+      expect(fixed).toBe('Đoàn đại biểu đến Kinh Đô rồi quay về Lan Thành tham dự triển lãm.');
+    });
   });
 });

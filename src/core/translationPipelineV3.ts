@@ -8,7 +8,8 @@ export interface Identity { id: string; source: string; vi: string; kind: Identi
 export interface Evidence { paragraphId: string; quote: string }
 export interface Paragraph { id: string; chapterId: string; text: string }
 export interface ChapterInput { id: string; number: number; title: string; text: string; urls?: string[] }
-export interface Registry { characters: Identity[]; relations: RelationFact[]; unresolved: unknown[] }
+export interface LocationEntity { id: string; source: string; vi: string; type?: string }
+export interface Registry { characters: Identity[]; relations: RelationFact[]; locations?: LocationEntity[]; unresolved: unknown[] }
 export interface RelationFact { fromId: string; toId: string; fact: string; evidence: Evidence[]; samples: Array<{ speakerId: string; listenerId: string; self: string; call: string; scene: string }> }
 export interface SceneFact { paragraphId: string; speaker: string; listener: string; facts: string; suggestedAddress: string; evidence: Evidence[] }
 export interface AnalysisResult {
@@ -31,7 +32,7 @@ export const isGenericNameForm=(value:string)=>{
   return /^(?:那|这|此)?(?:个|位)?(?:他|她|它|牠|男子|女子|少年|男人|女人|哥哥|弟弟|姐姐|妹妹|姑娘|夫人|太夫人|老太太|老夫人|嬷嬷|丫鬟|小姐|少爷|公子|老爷|大娘|老侯爷|侯爷|老国公|国公|皇帝|皇上|皇后|太后|皇太后|贵妃|太子|太子妃|公主|长公主|大长公主|王爷|王妃|[大二三四五六七八九十]+(?:老爷|太太|夫人|小姐|少爷|公子|姑娘|哥|姐|弟|妹|兄|嫂|叔|伯|舅|爷))$/u.test(normalized)
     || /^(?:(?:大|二|三|四|五|六|七|八|九|十|小|老|表|堂|族|亲|干|义|继|生|养|曾|高|外){0,4})(?:父亲|母亲|爸爸|妈妈|爹爹|娘亲|阿爹|阿娘|爹|娘|父|母|祖父|祖母|爷爷|奶奶|外公|外婆|姥爷|姥姥|兄长|哥哥|兄|哥|弟弟|弟|姐姐|姊姊|姐|妹妹|妹|伯父|伯母|叔叔|叔父|叔母|叔|伯|舅舅|舅父|舅母|舅|姨姨|姨妈|姨娘|姨母|姨父|姨|姑姑|姑母|姑妈|姑父|姑|婶婶|婶母|婶娘|婶|嫂嫂|嫂子|嫂|弟媳|弟妹|姐夫|妹夫|媳妇|儿媳|女婿|夫君|丈夫|相公|妻子|娘子|父王|母后|父皇|母妃|皇兄|皇姐|皇弟|皇妹)(?:大人)?$/u.test(normalized);
 };
-export const emptyRegistry = (): Registry => ({ characters: [], relations: [], unresolved: [] });
+export const emptyRegistry = (): Registry => ({ characters: [], relations: [], locations: [], unresolved: [] });
 export function parseProtocolJson(text: string): Record<string, unknown> {
   if (!text || typeof text !== 'string') {
     throw new Error('Phản hồi trống, không có nội dung JSON.');

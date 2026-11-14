@@ -10,15 +10,19 @@ describe('Chapter Scout & Garbage Removal (Turn 1 & Turn 2)', () => {
       segmentId: 'CH1',
       sourceText: 'Chương 1\n顾国强走来。\n读完本章的人都在看...',
       knownEntities: [{ chinese: '顾国强', vietnamese: 'Cố Quốc Cường' }],
+      knownLocations: [{ chinese: '京都', vietnamese: 'Kinh Đô' }],
     });
 
     expect(prompt).toContain('[TDT_SCOUT]');
     expect(prompt).toContain('KIỂM TRA TÍNH TOÀN VẸN (integrity)');
     expect(prompt).toContain('ĐỊNH VỊ RÁC / QUẢNG CÁO (garbage)');
     expect(prompt).toContain('NHÂN VẬT MỚI (newCharacters)');
+    expect(prompt).toContain('ĐỊA DANH & ĐƠN VỊ CÔNG XƯỞNG (locations)');
     expect(prompt).toContain('QUAN HỆ & GỢI Ý XƯNG HÔ (relations)');
     expect(prompt).toContain('DANH SÁCH NHÂN VẬT ĐÃ BIẾT');
     expect(prompt).toContain('顾国强 -> Cố Quốc Cường');
+    expect(prompt).toContain('DANH SÁCH ĐỊA DANH ĐÃ BIẾT');
+    expect(prompt).toContain('京都 -> Kinh Đô');
   });
 
   it('safely removes garbage snippets without deleting story text or chapter titles', () => {

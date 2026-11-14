@@ -96,7 +96,10 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
 1. Dịch đủ 100% nội dung, không tóm tắt, không bỏ sót câu/đoạn, không để lại bất kỳ chữ Hán nào. CHỈ XUẤT TIẾNG VIỆT THUẦN TÚY: Tuyệt đối không chèn câu chào/lời dẫn tiếng Anh (như 'Let's', 'Here is') vào bài dịch.
 2. BẢO TOÀN TIÊU ĐỀ & SỐ THỨ TỰ CHƯƠNG (BẮT BUỘC): Nếu trong nguồn <NGUYEN_BAN> có tiêu đề chương (ví dụ "Chương 108: ..."), bản dịch BẮT BUỘC phải dịch đúng số chương đó. TUYỆT ĐỐI KHÔNG lặp lại số chương của đoạn trước và không tự ý nhảy số chương.
 3. NGUYÊN TẮC GIỮ NGUYÊN TÊN TRONG NGOẶC (BẮT BUỘC): Mọi danh từ riêng đã được đóng ngoặc ⟦...⟧ BẮT BUỘC PHẢI GIỮ NGUYÊN vẹn cả dấu ngoặc và nội dung bên trong. NGHIÊM CẤM TỰ Ý SỬA TÊN, VIẾT TẮT HOẶC LÀM RỤNG KÝ TỰ: Tuyệt đối giữ nguyên vẹn từng ký tự và dấu thanh tiếng Việt ('Lục Thời Dã' CẤM thành 'Lục Thời D', 'Chu Húc' CẤM thành 'Châu').
-   - CHÍNH TẢ & ĐỊA DANH: '深圳'/'深市' BẮT BUỘC là 'Thâm Quyến' (CẤM 'Thâm Puyến', 'Thâm Cuyến'); 'Thương Tuyết' (CẤM 'Thường Tuyết'); 'Từ Ngọc Trân' (CẤM 'Tú Ngọc Trân'); Họ '周' nhân vật bắt buộc là 'Chu' (Chu Doanh Trưởng, anh Chu, Lão Chu), CẤM dịch thành 'Châu' (trừ 'Quảng Châu'); '苞米屯' BẮT BUỘC là 'thôn Bắp Ngô' (CẤM 'Bắp Ngô Tấn').
+   - CẤM TỰ Ý ĐỔI HỌ HOẶC SỬA TÊN NHÂN VẬT ĐÃ KHÓA: Nếu tên đóng ngoặc là ⟦Tống Quốc Xương⟧, NGHIÊM CẤM tự ý đổi thành 'Quách Quốc Xương' hay bất kỳ họ nào khác. Tên trong ngoặc là định danh tuyệt đối bất khả xâm phạm!
+   - TUYỆT ĐỐI CẤM DỊCH TÊN NGƯỜI / CHỮ HÁN SANG TIẾNG ANH: Không bao giờ được dịch chữ Hán thành từ tiếng Anh (CẤM '从飞' -> 'From Phi', CẤM tự ý dịch thành 'Jack', 'Mary'...), trừ khi nguyên tác chữ Hán ghi rõ là người phương Tây có tên tiếng Anh rõ ràng.
+   - CHÍNH TẢ & ĐỊA DANH BẮT BUỘC: '京都' BẮT BUỘC là 'Kinh Đô' (TUYỆT ĐỐI CẤM 'Kyoto'); '蘭城'/'兰城' BẮT BUỘC là 'Lan Thành' (CẤM 'Lan Châu', CẤM 'Lân Thành'); '深圳'/'深市' BẮT BUỘC là 'Thâm Quyến' (CẤM 'Thâm Puyến', 'Thâm Cuyến'); 'Thương Tuyết' (CẤM 'Thường Tuyết'); 'Từ Ngọc Trân' (CẤM 'Tú Ngọc Trân'); Họ '周' nhân vật bắt buộc là 'Chu' (Chu Doanh Trưởng, anh Chu, Lão Chu), CẤM dịch thành 'Châu' (trừ 'Quảng Châu'); '苞米屯' BẮT BUỘC là 'thôn Bắp Ngô' (CẤM 'Bắp Ngô Tấn').
+   - CHUẨN MỰC CHÍNH TẢ TIẾNG VIỆT: Nghiêm cấm xuất ra các chuỗi ký tự lỗi gõ phím Telex (như 'alwcf', 'chajy', 'rz', 'dnah', 'dug', 'ldim', 'monic'). Toàn bộ câu từ phải là tiếng Việt chuẩn mực, đúng ngữ pháp và từ ngữ từ điển.
 4. QUY ƯỚC TỪ LÓNG THỜI ĐẠI & TÊN NGOẠI QUỐC:
    - Từ lóng & địa danh: "漂亮国" -> "Mỹ" (CẤM "Bình Lượng Quốc"); "老大哥" -> "Liên Xô"; "华国" -> "Trung Quốc"; "海市" -> "Thượng Hải"; "广市" -> "Quảng Châu"; "深市" -> "Thâm Quyến"; "港城" -> "Hồng Kông"; "澳门" -> "Ma Cao".
    - Chức danh thời đại: "厂长" BẮT BUỘC dịch là "xưởng trưởng" / "giám đốc xưởng" (NGHIÊM CẤM "Hán Trưởng"); "副厂长" -> "phó xưởng trưởng"; "书记" -> "bí thư"; "大队长" -> "đại đội trưởng"; "营长" -> "doanh trưởng".
@@ -396,16 +399,20 @@ export interface ChapterScoutPromptInput {
   segmentId: string;
   sourceText: string;
   knownEntities?: Array<{ chinese: string; vietnamese: string }>;
+  knownLocations?: Array<{ chinese: string; vietnamese: string }>;
 }
 
 export function compileChapterScoutPrompt(input: ChapterScoutPromptInput): string {
-  const { segmentId, sourceText, knownEntities = [] } = input;
+  const { segmentId, sourceText, knownEntities = [], knownLocations = [] } = input;
   const knownStr = knownEntities.length
     ? `DANH SÁCH NHÂN VẬT ĐÃ BIẾT (KHÔNG CẦN BÁO LẠI TRỪ KHI CÓ QUAN HỆ/XƯNG HÔ MỚI):\n${knownEntities.slice(0, 30).map(e => `- ${e.chinese} -> ${e.vietnamese}`).join('\n')}\n`
     : '';
+  const knownLocStr = knownLocations.length
+    ? `DANH SÁCH ĐỊA DANH ĐÃ BIẾT (KHÔNG CẦN BÁO LẠI):\n${knownLocations.slice(0, 20).map(l => `- ${l.chinese} -> ${l.vietnamese}`).join('\n')}\n`
+    : '';
 
   return `[TDT_V3_ANALYSIS] [TDT_SCOUT]
-Nhiệm vụ: Trinh sát nội dung chương truyện, kiểm tra tính toàn vẹn, phát hiện rác và trích xuất nhân vật/quan hệ mới.
+Nhiệm vụ: Trinh sát nội dung chương truyện, kiểm tra tính toàn vẹn, phát hiện rác và trích xuất nhân vật/địa danh/quan hệ mới.
 
 CÁC NHIỆM VỤ CỤ THỂ:
 1. KIỂM TRA TÍNH TOÀN VẸN (integrity):
@@ -417,25 +424,31 @@ CÁC NHIỆM VỤ CỤ THỂ:
    - Các loại rác cần xóa: Lời nhắn tác giả xin hoa/vé, quảng cáo website, liên kết điều hướng, mã game.
    - Nếu không có rác, để mảng rỗng [].
 3. NHÂN VẬT MỚI (newCharacters):
-   - Tìm các nhân vật người hoặc thú cưng THẬT SỰ mới trong văn bản (chưa có trong danh sách đã biết).
+   - Quét TOÀN DIỆN 100% nhân vật xuất hiện trong văn bản (chưa có trong danh sách đã biết), BAO GỒM CẢ NHÂN VẬT PHỤ XUẤT HIỆN THOÁNG QUA 1 LẦN (như người đi đường, cán sự, đồng nghiệp, người thân... ví dụ: 从飞 -> Từ Phi, 曹大伟 -> Tào Đại Vĩ, 李小娟 -> Lý Tiểu Quyên). Tuyệt đối không được bỏ sót!
    - "source": Tên chữ Hán nguyên văn.
-   - "vi": Phiên âm Hán-Việt chuẩn xác 100% (CẤM âm Pinyin, CẤM tiếng Anh).
+   - "vi": Phiên âm Hán-Việt thuần Việt chuẩn xác 100% (CẤM âm Pinyin, CẤM tiếng Anh, CẤM 'From Phi').
    - "gender": "male" | "female" | "unknown".
    - "role": Thân phận hoặc vai vế nếu có, không có thì để "".
-4. QUAN HỆ & GỢI Ý XƯNG HÔ (relations):
+4. ĐỊA DANH & ĐƠN VỊ CÔNG XƯỞNG (locations):
+   - Trích xuất toàn bộ địa danh (thành phố, thị xã, huyện, thôn, trấn, địa danh giả tưởng/có thật như 京都 -> Kinh Đô, 蘭城 -> Lan Thành) và đơn vị, công xưởng xuất hiện trong văn bản.
+   - "source": Chữ Hán nguyên văn.
+   - "vi": Phiên âm Hán-Việt thuần Việt chuẩn xác (CẤM tiếng Anh như Kyoto).
+   - "type": "city" | "town" | "village" | "org" | "other".
+5. QUAN HỆ & GỢI Ý XƯNG HÔ (relations):
    - Nhận diện các mối quan hệ và gợi ý xưng hô giữa các nhân vật xuất hiện trong phân cảnh này.
    - "charA": Tên người thứ nhất.
    - "charB": Tên người thứ hai.
    - "relation": Mối quan hệ (ví dụ: Bạn bè, Vợ chồng, Bố con, Anh em...).
    - "suggestion": GỢI Ý xưng hô tham khảo (ví dụ: "anh - em", "bố - con", "tôi - cậu"). LƯU Ý: Đây chỉ là gợi ý tham khảo linh hoạt, KHÔNG khóa cứng.
 
-${knownStr}
+${knownStr}${knownLocStr}
 ĐỊNH DẠNG ĐẦU RA BẮT BUỘC (DUY NHẤT 1 KHỐI JSON HỢP LỆ, KHÔNG KÈM LỜI DẪN NGOÀI):
 \`\`\`json
 {
   "integrity": { "status": "ok", "reason": "" },
   "garbage": [],
   "newCharacters": [],
+  "locations": [],
   "relations": []
 }
 \`\`\`

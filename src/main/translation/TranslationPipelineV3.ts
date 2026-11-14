@@ -12,7 +12,7 @@ import {
   compileStoryBiblePrompt,
 } from '../../core/promptCompilerV2.js';
 import { removeGarbageSnippets, type GarbageSnippet } from '../../core/crawlerSanitizer.js';
-import { unlockNamesInTranslation } from '../../core/nameLocker.js';
+import { unlockNamesInTranslation, enforceLockedEntities } from '../../core/nameLocker.js';
 import { sanitizeTranslationResponse } from '../../core/assistantResponse.js';
 import { getGenreProfile } from '../../core/genreProfile.js';
 import { isNonEntityOrCommonWord, scanBookForEntities } from '../../core/storyDigestScanner.js';
@@ -139,8 +139,49 @@ function memoryProjection(job: Host): void {
   job.memory.identitySchemaVersion = 3;
 }
 
+const CORE_DEFAULT_LOCATIONS: Array<{ source: string; vi: string; type?: string }> = [
+  { source: '京都', vi: 'Kinh Đô', type: 'city' },
+  { source: '蘭城', vi: 'Lan Thành', type: 'city' },
+  { source: '兰城', vi: 'Lan Thành', type: 'city' },
+  { source: '深市', vi: 'Thâm Quyến', type: 'city' },
+  { source: '深圳', vi: 'Thâm Quyến', type: 'city' },
+  { source: '滬市', vi: 'Thượng Hải', type: 'city' },
+  { source: '上海', vi: 'Thượng Hải', type: 'city' },
+  { source: '羊城', vi: 'Quảng Châu', type: 'city' },
+  { source: '廣州', vi: 'Quảng Châu', type: 'city' },
+  { source: '广州', vi: 'Quảng Châu', type: 'city' },
+  { source: '港城', vi: 'Hồng Kông', type: 'city' },
+  { source: '香港', vi: 'Hồng Kông', type: 'city' },
+];
+
 function seedRegistry(memory: Host | undefined): Registry {
   const r = emptyRegistry();
+  r.locations = [];
+
+  // Seed standard key locations to prevent cross-language drift (e.g. Kyoto, Lan Châu)
+  for (const def of CORE_DEFAULT_LOCATIONS) {
+    r.locations.push({
+      id: `L${String(r.locations.length + 1).padStart(5, '0')}`,
+      source: def.source,
+      vi: def.vi,
+      type: def.type,
+    });
+  }
+
+  // Also import any location entities previously saved in memory
+  for (const e of memory?.entities || []) {
+    if (e.category === 'location' && e.chinese && e.vietnamese) {
+      if (!r.locations.some((l) => l.source === e.chinese)) {
+        r.locations.push({
+          id: e.id || `L${String(r.locations.length + 1).padStart(5, '0')}`,
+          source: e.chinese,
+          vi: e.vietnamese,
+          type: e.role || 'location',
+        });
+      }
+    }
+  }
+
   let serial = Math.max(
     0,
     ...(memory?.entities || []).map((e: Host) => (/^C\d+$/u.test(e.id) ? Number(e.id.slice(1)) : 0)),
@@ -320,10 +361,15 @@ async function processBatch(
           chinese: c.source,
           vietnamese: c.vi,
         }));
+        const knownLocations = (state.registry.locations || []).map((l) => ({
+          chinese: l.source,
+          vietnamese: l.vi,
+        }));
         const scoutPrompt = compileChapterScoutPrompt({
           segmentId: segment.id,
           sourceText: segment.sourceText,
           knownEntities,
+          knownLocations,
         });
 
         let scoutData: Record<string, unknown> | null = null;
@@ -431,6 +477,32 @@ async function processBatch(
           host.logActivity(job, `V3 · Ghi nhận ${newCount} nhân vật mới vào bộ nhớ từ Lượt 1.`, 'info', segment);
         }
 
+        // 3b. Nạp địa danh mới vào bộ nhớ
+        const newLocations = Array.isArray(scoutData.locations) ? scoutData.locations : [];
+        let newLocCount = 0;
+        if (!state.registry.locations) state.registry.locations = [];
+        for (const loc of newLocations as Array<{ source?: string; vi?: string; type?: string }>) {
+          if (!loc.source || !loc.vi) continue;
+          if (/[\u4e00-\u9fa5]/u.test(loc.vi)) continue;
+          const s = loc.source.trim();
+          const v = loc.vi.trim();
+          if (s.length <= 1) continue;
+          const exists = state.registry.locations.find((x) => x.source === s);
+          if (!exists) {
+            const id = 'L' + String(state.registry.locations.length + 1).padStart(5, '0');
+            state.registry.locations.push({
+              id,
+              source: s,
+              vi: v,
+              type: loc.type || 'location',
+            });
+            newLocCount++;
+          }
+        }
+        if (newLocCount > 0) {
+          host.logActivity(job, `V3 · Ghi nhận ${newLocCount} địa danh mới vào bộ nhớ từ Lượt 1.`, 'info', segment);
+        }
+
         // 4. Nạp quan hệ / gợi ý xưng hô
         const relations = Array.isArray(scoutData.relations) ? scoutData.relations : [];
         for (const r of relations as Array<{ charA?: string; charB?: string; relation?: string; suggestion?: string }>) {
@@ -477,39 +549,53 @@ async function processBatch(
       state.stage = 'translation';
 
       // Tạo StoryBible từ registry để khóa tên vào khung và gợi ý xưng hô
-      const bible: StoryBible = {
-        schemaVersion: 2,
-        profileId: job.promptMode || 'period',
-        entities: state.registry.characters
-          .filter((c) => !isNonEntityOrCommonWord(c.source, c.vi, c.role) && !/[\u4e00-\u9fa5]/u.test(c.vi))
-          .flatMap((c) => {
-            const list: Array<any> = [{
-              id: c.id,
+      const charEntities = state.registry.characters
+        .filter((c) => !isNonEntityOrCommonWord(c.source, c.vi, c.role) && !/[\u4e00-\u9fa5]/u.test(c.vi))
+        .flatMap((c) => {
+          const list: Array<any> = [{
+            id: c.id,
+            category: 'character',
+            zh: c.source,
+            vi: c.vi,
+            aliases: c.forms.filter((f) => f.source !== c.source).map((f) => ({ zh: f.source })),
+            gender: c.gender === 'male' ? 'male' : c.gender === 'female' ? 'female' : 'unknown',
+            role: c.role,
+            status: 'active',
+          }];
+          const viParts = c.vi.trim().split(/\s+/);
+          if (c.source.length === 3 && viParts.length === 3 && c.kind !== 'animal') {
+            const shortZh = c.source.slice(1);
+            const shortVi = viParts.slice(1).join(' ');
+            list.push({
+              id: c.id + '-given',
               category: 'character',
-              zh: c.source,
-              vi: c.vi,
-              aliases: c.forms.filter((f) => f.source !== c.source).map((f) => ({ zh: f.source })),
+              zh: shortZh,
+              vi: shortVi,
+              aliases: [],
               gender: c.gender === 'male' ? 'male' : c.gender === 'female' ? 'female' : 'unknown',
               role: c.role,
               status: 'active',
-            }];
-            const viParts = c.vi.trim().split(/\s+/);
-            if (c.source.length === 3 && viParts.length === 3 && c.kind !== 'animal') {
-              const shortZh = c.source.slice(1);
-              const shortVi = viParts.slice(1).join(' ');
-              list.push({
-                id: c.id + '-given',
-                category: 'character',
-                zh: shortZh,
-                vi: shortVi,
-                aliases: [],
-                gender: c.gender === 'male' ? 'male' : c.gender === 'female' ? 'female' : 'unknown',
-                role: c.role,
-                status: 'active',
-              });
-            }
-            return list;
-          }),
+            });
+          }
+          return list;
+        });
+
+      const locEntities = (state.registry.locations || [])
+        .filter((l) => Boolean(l.source && l.vi) && !/[\u4e00-\u9fa5]/u.test(l.vi))
+        .map((l) => ({
+          id: l.id,
+          category: 'location' as const,
+          zh: l.source,
+          vi: l.vi,
+          aliases: [] as { zh: string }[],
+          gender: 'unknown' as const,
+          status: 'active' as const,
+        }));
+
+      const bible: StoryBible = {
+        schemaVersion: 2,
+        profileId: job.promptMode || 'period',
+        entities: [...charEntities, ...locEntities],
         relations: state.registry.relations.map((r) => ({
           id: `${r.fromId}-${r.toId}`,
           from: r.fromId,
@@ -563,6 +649,8 @@ async function processBatch(
 
         // Lấy bản dịch sạch trong thẻ <BAN_DICH> và gỡ ngoặc ⟦ ⟧ tên riêng
         let translated = sanitizeTranslationResponse(prepared.cleanSource, response);
+        // Ép sửa nếu AI tự ý đổi họ nhân vật đã khóa (ví dụ Quách Quốc Xương -> Tống Quốc Xương) hoặc trôi tên tiếng Anh
+        translated = enforceLockedEntities(translated, compiled.presentEntities, state.registry.characters);
         translated = unlockNamesInTranslation(translated);
         translated = normalizeVietnamesePunctuation(translated);
 

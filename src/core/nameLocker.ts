@@ -7,8 +7,11 @@ export function normalizeChineseNameForMatching(text: string): string {
 
 export interface LockableEntity {
   id?: string;
-  chinese: string;
-  vietnamese: string;
+  category?: 'character' | 'location' | 'item' | 'organization' | string;
+  chinese?: string;
+  vietnamese?: string;
+  zh?: string;
+  vi?: string;
   aliases?: readonly (string | { zh: string; viDisplay?: string })[];
   ambiguous?: boolean;
 }
@@ -61,23 +64,23 @@ export function lockNamesInSource(
   // Filter valid entities with both Chinese and Vietnamese names
   const validEntities = entities
     .filter((e) => {
-      if (!e.chinese?.trim() || !e.vietnamese?.trim() || e.ambiguous) return false;
-      const zh = e.chinese.trim();
+      const zh = (e.chinese || e.zh || '').trim();
+      const vi = (e.vietnamese || e.vi || '').trim();
+      if (!zh || !vi || e.ambiguous) return false;
       // Chặn thực thể 1 chữ Hán đơn lẻ để bảo vệ từ vựng thông thường
       if (zh.length <= 1) return false;
       // Chặn danh từ chung, phương hướng, địa điểm chung không được đóng ngoặc khóa cứng
       if (NON_LOCKABLE_WORDS.has(zh)) return false;
       // Chặn thực thể họ tộc [Họ] + 家 (như 康家, 袁家, 褚家) bị khóa thành ⟦Khang Gia⟧
       if (zh.length <= 3 && zh.endsWith('家')) return false;
-      const vi = e.vietnamese.trim();
       // Chặn các chuỗi ghi chú / mô tả / từ phủ định bị lưu nhầm vào trường tên tiếng Việt
       if (/không phải|chưa rõ|lỗi|ghi chú|tạm thời|danh từ chung/i.test(vi)) return false;
       return true;
     })
     .map((e) => ({
       ...e,
-      chinese: e.chinese.trim(),
-      vietnamese: e.vietnamese.trim(),
+      chinese: (e.chinese || e.zh || '').trim(),
+      vietnamese: (e.vietnamese || e.vi || '').trim(),
     }));
 
   // Build replacement entries including full names and unambiguous aliases
@@ -147,7 +150,8 @@ export function lockNamesInSource(
 
     // For 3-character person names (e.g. "陆时淮" -> "Lục Thời Hoài"), also register given-name alias ("时淮" -> "Thời Hoài")
     const viParts = ent.vietnamese.trim().split(/\s+/);
-    if (ent.chinese.length === 3 && viParts.length === 3 && !parenMatch) {
+    const isPerson = !ent.category || ent.category === 'character';
+    if (isPerson && ent.chinese.length === 3 && viParts.length === 3 && !parenMatch) {
       const givenZh = ent.chinese.slice(1);
       const givenVi = viParts.slice(1).join(' ');
       addKey(givenZh, givenVi);
@@ -257,6 +261,91 @@ export function unlockNamesInTranslation(translatedText: string): string {
 
   // 3. Normalize multiple horizontal spaces into a single space (preserving newlines)
   result = result.replace(/([^\S\r\n]){2,}/gu, ' ');
+
+  return result;
+}
+
+/**
+ * Post-translation Lock Enforcement:
+ * Detects and corrects hallucinated surname drift (e.g. when LLM changes "Tống Quốc Xương" -> "Quách Quốc Xương"
+ * due to in-context contamination with nearby characters like "Quách Tiểu Hà"), as well as English name slips.
+ */
+export function enforceLockedEntities(
+  translatedText: string,
+  lockedEntities: readonly LockableEntity[],
+  allRegistryCharacters?: readonly { vi?: string; vietnamese?: string; source?: string; chinese?: string }[],
+): string {
+  if (!translatedText || !lockedEntities || lockedEntities.length === 0) return translatedText;
+
+  let result = translatedText;
+
+  // 1. Build a set of all valid full character names across the story
+  const validFullNames = new Set(
+    (allRegistryCharacters || lockedEntities)
+      .map((e) => ((e as any).vi || (e as any).vietnamese || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+
+  // 2. Enforce surname integrity for multi-word characters
+  for (const ent of lockedEntities) {
+    if (ent.category && ent.category !== 'character') continue;
+    const vi = (ent.vietnamese || ent.vi || '').trim();
+    const parts = vi.split(/\s+/);
+
+    if (parts.length >= 3) {
+      const canonicalSurname = parts[0]!;
+      const givenName = parts.slice(1).join(' ');
+      const escapedGiven = givenName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+
+      // Match [Optional Bracket] [WrongSurname] [GivenName] [Optional Bracket]
+      // e.g. "Quách Quốc Xương" or "⟦Quách Quốc Xương⟧"
+      const pattern = new RegExp(
+        `(⟦\\s*)?(\\b[\\p{Lu}][\\p{Ll}]+)\\s+(${escapedGiven})(\\s*⟧)?`,
+        'gu',
+      );
+
+      result = result.replace(pattern, (match, openB, wrongSurname, gv, closeB) => {
+        const fullCandidate = `${wrongSurname} ${gv}`.toLowerCase();
+        // If this surname+givenName candidate does NOT exist in the known valid registry characters,
+        // it is a hallucinated surname drift (e.g. Quách Quốc Xương instead of Tống Quốc Xương)
+        if (!validFullNames.has(fullCandidate)) {
+          const prefix = openB || '';
+          const suffix = closeB || '';
+          return `${prefix}${canonicalSurname} ${gv}${suffix}`;
+        }
+        return match;
+      });
+    }
+
+    // 3. Catch English name drift for Chinese characters (e.g. "From Phi" for "Từ Phi")
+    if (parts.length >= 2) {
+      const givenName = parts.slice(1).join(' ');
+      const escapedGiven = givenName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+      // Match English preposition "From" + given name
+      const fromPattern = new RegExp(`\\bFrom\\s+(${escapedGiven})\\b`, 'gi');
+      result = result.replace(fromPattern, vi);
+    }
+  }
+
+  // 4. Enforce canonical sensitive locations if present in locked entities
+  const hasKyotoLock = lockedEntities.some(
+    (e) => (e.chinese || e.zh) === '京都' || (e.vietnamese || e.vi) === 'Kinh Đô',
+  );
+  if (hasKyotoLock) {
+    result = result.replace(/\bKyoto\b/gi, 'Kinh Đô');
+  }
+
+  const hasLanThanhLock = lockedEntities.some((e) => {
+    const zh = e.chinese || e.zh;
+    const vi = e.vietnamese || e.vi;
+    return zh === '蘭城' || zh === '兰城' || vi === 'Lan Thành';
+  });
+  if (hasLanThanhLock) {
+    result = result.replace(/\b(?:Lan Châu|Lân Thành)\b/g, 'Lan Thành');
+  }
+  if (hasLanThanhLock) {
+    result = result.replace(/\b(?:Lan Châu|Lân Thành)\b/g, 'Lan Thành');
+  }
 
   return result;
 }
