@@ -161,6 +161,7 @@ export interface StartTranslationRequest {
   resolvedPrompt: string;
   aiProvider?: AiProvider;
   allowedAiProviders?: AiProvider[];
+  executionMode?: "web" | "api";
   autoExport?: TranslationAutoExportBinding;
   memory?: StoryMemory;
   batchChaptersCount?: number;
@@ -1111,6 +1112,7 @@ export class TranslationJobRunner {
       status: "queued",
       aiProvider: initialProvider,
       allowedAiProviders,
+      ...(request.executionMode ? { executionMode: request.executionMode } : {}),
       promptMode: request.promptMode,
       ...(request.customPrompt ? { customPrompt: request.customPrompt } : {}),
       resolvedPrompt: request.resolvedPrompt,

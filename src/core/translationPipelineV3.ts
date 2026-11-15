@@ -7,10 +7,10 @@
  *    - Giới hạn DOM tin nhắn: tối đa ~12.500 ký tự (prompt + nguồn).
  *    - Quản lý session, cookies, Cloudflare, luân chuyển chat định kỳ.
  * 2. DEEPSEEK API (Direct HTTP REST API):
- *    - Context lớn, tính phí theo token, giới hạn completion output 4k-8k tokens.
+ *    - Context lớn 64k-128k, tính phí theo token, giới hạn completion output 8.192 tokens.
  *    - Tối ưu chi phí: trinh sát chùm lớn (36k ký tự), gom sửa chữ Hán định kỳ (2 lần/bộ).
  * 3. GEMINI API (Direct HTTP REST API):
- *    - Context siêu lớn 1M tokens, giới hạn output 8k tokens.
+ *    - Context siêu lớn 1M tokens, giới hạn output 65.536 tokens.
  *    - Trinh sát chùm tới 50k ký tự.
  * 
  * NGUYÊN TẮC BẮT BUỘC KHI PHÁT TRIỂN / SỬA LỖI:
@@ -24,6 +24,7 @@
 import { sify, tify } from 'chinese-conv';
 import { transcribeHanViet } from './storyMemoryExtractor.js';
 import { parseChapterHeaderLine } from './titleParser.js';
+import { getProviderLimits } from './aiProviderLimits.js';
 
 export type IdentityKind = 'person' | 'animal';
 export interface NameForm { id: string; source: string; vi: string; kind: 'name' | 'short' | 'address' | 'nickname'; evidence?: Evidence[] }
@@ -294,38 +295,28 @@ export function groupAdaptiveChapterChunks(
 ): Array<{ id: string; index: number; start: number; end: number; text: string; chapterCount: number }> {
   const executionMode = options?.executionMode || 'web';
   const provider = options?.aiProvider || 'chatgpt';
-  const isDeepSeekApi = executionMode === 'api' && provider === 'deepseek';
-  const isGeminiApi = executionMode === 'api' && provider === 'gemini';
   const rawCustomPrompt = (options?.customPrompt || '').trim();
 
-  // Rào sẵn trần giới hạn cho prompt người dùng để bảo vệ giới hạn an toàn đầu vào
-  const maxPromptCap = executionMode === 'web' ? 3000 : isDeepSeekApi ? 6000 : 10000;
+  // Nguồn cấu hình chuẩn duy nhất từ aiProviderLimits
+  const limits = getProviderLimits(provider, executionMode);
+
+  // Rào sẵn trần giới hạn cho prompt người dùng để bảo vệ an toàn đầu vào
+  const maxPromptCap = limits.maxCustomPromptChars;
   const customPrompt = rawCustomPrompt.slice(0, maxPromptCap);
 
   // Tính dung lượng prompt khung và dung lượng nguồn tối đa thích ứng:
   let baseMaxChars: number;
   if (executionMode === 'web') {
-    // Với ChatGPT Web: Trần DOM an toàn tuyệt đối là 12.500 ký tự.
-    // Khung prompt cơ bản tốn ~4.800 ký tự.
-    // Tính toán trước dung lượng prompt người dùng để khấu trừ vào nguồn văn bản:
-    const estimatedBasePrompt = 4800;
-    const totalPromptEst = estimatedBasePrompt + customPrompt.length;
-    const availableForSource = 12500 - totalPromptEst;
-    // maxBatchChars cho Web dao động linh hoạt từ 1.200 đến 2.200 ký tự
-    baseMaxChars = Math.max(1200, Math.min(2200, availableForSource));
-  } else if (isDeepSeekApi) {
-    // Với DeepSeek API: Output token tối đa an toàn là 4.096 token (~12.000 ký tự tiếng Việt).
-    // Tỷ lệ nở chữ Hán sang tiếng Việt là ~2.5x - 3.0x.
-    // Nguồn tối đa cho 1 mẻ dịch: 3.800 chữ Hán, giảm nhẹ nếu prompt người dùng quá dài.
-    const userPromptPenalty = Math.floor(customPrompt.length / 5);
-    baseMaxChars = Math.max(2000, 3800 - userPromptPenalty);
-  } else if (isGeminiApi) {
-    // Với Gemini API: Context 1M tokens, output token 8.192.
-    // Nguồn tối đa cho 1 mẻ dịch: 5.000 chữ Hán.
-    const userPromptPenalty = Math.floor(customPrompt.length / 5);
-    baseMaxChars = Math.max(3000, 5000 - userPromptPenalty);
+    // Với Web (ChatGPT Web / Kimi Web): Trần DOM an toàn trừ đi ước tính khung prompt và custom prompt
+    const totalPromptEst = limits.estimatedBasePromptChars + customPrompt.length;
+    const availableForSource = limits.safeTotalMessageChars - totalPromptEst;
+    baseMaxChars = Math.max(limits.minBatchCharsFloor, Math.min(limits.defaultMaxBatchChars, availableForSource));
   } else {
-    baseMaxChars = 2200;
+    // Với API (DeepSeek API / Gemini API):
+    // Output token tối đa: DeepSeek 8.192 tokens, Gemini 65.536 tokens.
+    // Nguồn tối đa cho 1 mẻ dịch: defaultMaxBatchChars, khấu trừ nhẹ nếu prompt người dùng quá dài.
+    const userPromptPenalty = Math.floor(customPrompt.length / 5);
+    baseMaxChars = Math.max(limits.minBatchCharsFloor, limits.defaultMaxBatchChars - userPromptPenalty);
   }
 
   const maxBatchChars = options?.maxBatchChars ?? baseMaxChars;

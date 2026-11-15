@@ -125,10 +125,11 @@ describe('installed-runner-compatible two-turn workflow (Turn 1: Scout & Turn 2:
     await runner.shutdown();
 
     // The job MUST complete without failing!
+    // 2 cluster scout attempts fail without faking integrity -> safely fallbacks to single-segment scout (2 attempts) -> completes translation
     expect(j.status, j.error).toBe('completed');
     expect(j.translatedText).toContain('Bản dịch chương 1.');
     expect(j.translatedText).toContain('Bản dịch chương 2.');
-    expect(calls).toEqual(['scout', 'scout', 'translation']); // 2 scout attempts then fallback to translation
+    expect(calls).toEqual(['scout', 'scout', 'scout', 'scout', 'translation']);
   });
 
   it('repairs localized stray Han characters without retranslating full chapters', async () => {

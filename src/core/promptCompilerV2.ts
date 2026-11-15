@@ -1,6 +1,7 @@
 import type { GenreProfile } from './genreProfile.js';
 import { lockNamesInSource, normalizeChineseNameForMatching, type LockableEntity } from './nameLocker.js';
 import { stripCrawlerNoise } from './crawlerSanitizer.js';
+import { getProviderLimits } from './aiProviderLimits.js';
 import {
   resolveDirectionalAddress,
   type SceneState,
@@ -25,6 +26,7 @@ export interface PromptCompilerInput {
   isContinuationTurn?: boolean;
   skipEntityExtraction?: boolean;
   executionMode?: 'web' | 'api';
+  aiProvider?: string;
 }
 
 export interface CompiledPromptResult {
@@ -91,8 +93,9 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
   // --- BUILD 8 CANONICAL BLOCKS ---
 
   // KHỐI A: LUẬT KỸ THUẬT LÕI & CHỈ ĐẠO DỊCH THUẬT
+  const limits = getProviderLimits(input.aiProvider || (input.executionMode === 'web' ? 'chatgpt' : 'gemini'), input.executionMode || 'api');
   const hasCustomPrompt = Boolean(customPrompt?.trim());
-  const maxCustomPromptLen = input.executionMode === 'web' ? 3000 : 8000;
+  const maxCustomPromptLen = input.executionMode === 'web' ? limits.maxCustomPromptChars : Math.max(8000, limits.maxCustomPromptChars);
   const sanitizedCustomPrompt = customPrompt ? customPrompt.trim().slice(0, maxCustomPromptLen) : '';
 
   const technicalRules = [
@@ -504,4 +507,89 @@ ${knownStr}${knownLocStr}
 
 VĂN BẢN CẦN TRINH SÁT (id: ${segmentId}):
 ${sourceText}`;
+}
+
+export interface ClusterScoutSegmentInput {
+  segmentId: string;
+  sourceText: string;
+  chapterNumber?: number;
+}
+
+export interface ClusterScoutPromptInput {
+  segments: ClusterScoutSegmentInput[];
+  knownEntities?: Array<{ chinese: string; vietnamese: string }>;
+  knownLocations?: Array<{ chinese: string; vietnamese: string }>;
+}
+
+export function compileClusterScoutPrompt(input: ClusterScoutPromptInput): string {
+  const { segments, knownEntities = [], knownLocations = [] } = input;
+  const knownStr = knownEntities.length
+    ? `DANH SÁCH NHÂN VẬT ĐÃ BIẾT (KHÔNG CẦN BÁO LẠI TRỪ KHI CÓ QUAN HỆ/XƯNG HÔ MỚI):\n${knownEntities.slice(0, 30).map((e) => `- ${e.chinese} -> ${e.vietnamese}`).join('\n')}\n`
+    : '';
+  const knownLocStr = knownLocations.length
+    ? `DANH SÁCH ĐỊA DANH ĐÃ BIẾT (KHÔNG CẦN BÁO LẠI):\n${knownLocations.slice(0, 20).map((l) => `- ${l.chinese} -> ${l.vietnamese}`).join('\n')}\n`
+    : '';
+
+  const segmentBlocks = segments.map((s) => {
+    return `<<< PHÂN ĐOẠN: ${s.segmentId} >>>\n${s.sourceText}\n<<< HẾT PHÂN ĐOẠN: ${s.segmentId} >>>`;
+  }).join('\n\n');
+
+  const exampleSegments = (segments.length > 0 ? segments.slice(0, 2) : [{ segmentId: 'V3-CH1' }])
+    .map((s) => `    {
+      "segmentId": "${s.segmentId}",
+      "integrity": { "status": "ok", "reason": "", "endingEvidence": "" },
+      "garbage": []
+    }`).join(',\n');
+
+  return `[TDT_V3_ANALYSIS] [TDT_CLUSTER_SCOUT]
+Nhiệm vụ: Trinh sát đồng thời chùm gồm ${segments.length} phân đoạn truyện. Đánh giá tính toàn vẹn (integrity) và lọc rác (garbage) ĐỘC LẬP cho từng phân đoạn; đồng thời trích xuất nhân vật, địa danh và quan hệ mới cho toàn bộ chùm.
+
+CÁC NHIỆM VỤ CỤ THỂ:
+1. ĐÁNH GIÁ TÍNH TOÀN VẸN (integrity) CHO TỪNG PHÂN ĐOẠN BẮT BUỘC:
+   - "segmentId": Khớp chính xác ID phân đoạn (ví dụ: "${segments[0]?.segmentId || 'V3-CH1'}").
+   - "integrity.status":
+       * "ok": Phân đoạn nguyên vẹn, câu chữ đầy đủ, không bị cụt hay mất trang.
+       * "truncated": Bị ngắt ngang giữa câu, cụt đuôi, thiếu nửa chương hoặc mất trang.
+       * "corrupted": Bị lỗi encode, lẫn truyện khác hoàn toàn hoặc toàn bộ là rác/quảng cáo.
+       * "uncertain": Nghi ngờ thiếu đoạn hoặc bất thường nghiêm trọng.
+   - "integrity.reason": Giải thích ngắn gọn nếu status != "ok" (nếu "ok" thì để "").
+   - "integrity.endingEvidence": Trích 10-20 ký tự cuối phân đoạn để làm chứng cứ toàn vẹn.
+
+2. ĐỊNH VỊ RÁC / QUẢNG CÁO (garbage) CHO TỪNG PHÂN ĐOẠN:
+   - "garbage": Mảng các chuỗi rác nguyên văn trong phân đoạn đó để Tool cắt bỏ (lời tác giả xin phiếu, link web, mã game...). Nếu không có, để [].
+
+3. NHÂN VẬT MỚI TOÀN CHÙM (newCharacters):
+   - Quét TOÀN DIỆN 100% nhân vật xuất hiện trong các phân đoạn (chưa có trong danh sách đã biết), BAO GỒM CẢ NHÂN VẬT PHỤ.
+   - "source": Tên chữ Hán nguyên văn.
+   - "vi": Phiên âm Hán-Việt thuần Việt chuẩn xác (CẤM Pinyin, CẤM tiếng Anh).
+   - "gender": "male" | "female" | "unknown".
+   - "role": Thân phận hoặc vai vế nếu có, không có thì để "".
+
+4. ĐỊA DANH & ĐƠN VỊ TOÀN CHÙM (locations):
+   - Trích xuất địa danh (thành phố, huyện, thôn, trấn) và đơn vị, công xưởng mới.
+   - "source": Chữ Hán nguyên văn.
+   - "vi": Phiên âm Hán-Việt chuẩn xác.
+   - "type": "city" | "town" | "village" | "org" | "other".
+
+5. QUAN HỆ & GỢI Ý XƯNG HÔ TOÀN CHÙM (relations):
+   - "charA": Tên người thứ nhất.
+   - "charB": Tên người thứ hai.
+   - "relation": Mối quan hệ.
+   - "suggestion": Gợi ý xưng hô tham khảo (linh hoạt, không bắt buộc khóa cứng).
+
+${knownStr}${knownLocStr}
+ĐỊNH DẠNG ĐẦU RA BẮT BUỘC (DUY NHẤT 1 KHỐI JSON HỢP LỆ, KHÔNG KÈM BẤT KỲ LỜI DẪN NÀO):
+\`\`\`json
+{
+  "segments": [
+${exampleSegments}
+  ],
+  "newCharacters": [],
+  "locations": [],
+  "relations": []
+}
+\`\`\`
+
+DANH SÁCH NỘI DUNG CẦN TRINH SÁT:
+${segmentBlocks}`;
 }

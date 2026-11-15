@@ -33,8 +33,10 @@ import {
 } from '../../core/translationPipelineV3.js';
 import {
   compileChapterScoutPrompt,
+  compileClusterScoutPrompt,
   compileStoryBiblePrompt,
 } from '../../core/promptCompilerV2.js';
+import { getProviderLimits } from '../../core/aiProviderLimits.js';
 import { removeGarbageSnippets, type GarbageSnippet } from '../../core/crawlerSanitizer.js';
 import { unlockNamesInTranslation, enforceLockedEntities } from '../../core/nameLocker.js';
 import { sanitizeTranslationResponse } from '../../core/assistantResponse.js';
@@ -367,14 +369,13 @@ async function executeClusterScout(
   let totalChars = 0;
   const mode = job.executionMode || 'web';
   const provider = job.aiProvider || job.provider || 'chatgpt';
-  const isDeepSeekApi = mode === 'api' && provider === 'deepseek';
-  const isGeminiApi = mode === 'api' && provider === 'gemini';
-  // Dung lượng tối đa an toàn khi trinh sát chùm cho từng loại AI:
+  
+  // Nguồn giới hạn chuẩn duy nhất từ aiProviderLimits:
   // - Gemini API: 50.000 ký tự (context 1M token)
   // - DeepSeek API: 36.000 ký tự (context 64k-128k token)
   // - Web AI (ChatGPT Web): 4.000 ký tự (đảm bảo prompt nhẹ, không quá tải browser)
-  const maxClusterChars = isGeminiApi ? 50000 : isDeepSeekApi ? 36000 : 4000;
-  // Không giới hạn số lượng chương/phân đoạn (Infinity) - chỉ giới hạn theo dung lượng ký tự tối đa của AI
+  const limits = getProviderLimits(provider, mode);
+  const maxClusterChars = limits.maxClusterScoutChars;
   const maxSegmentsInCluster = Infinity;
 
   for (let idx = startIndex; idx < job.segments.length; idx++) {
@@ -403,7 +404,6 @@ async function executeClusterScout(
   );
   await host.checkpoint(job);
 
-  const clusterSource = segmentsToScout.map((s) => s.sourceText).join('\n\n');
   const knownEntities = state.registry.characters.map((c) => ({
     chinese: c.source,
     vietnamese: c.vi,
@@ -413,9 +413,14 @@ async function executeClusterScout(
     vietnamese: l.vi,
   }));
 
-  const scoutPrompt = compileChapterScoutPrompt({
-    segmentId: `Cluster-${startNum}-${endNum}`,
-    sourceText: clusterSource,
+  const segmentInputs = segmentsToScout.map((s) => ({
+    segmentId: s.id,
+    sourceText: s.sourceText,
+    chapterNumber: s.index + 1,
+  }));
+
+  const scoutPrompt = compileClusterScoutPrompt({
+    segments: segmentInputs,
     knownEntities,
     knownLocations,
   });
@@ -447,24 +452,102 @@ async function executeClusterScout(
     }
   }
 
+  // NGUYÊN TẮC BẢO TOÀN TÍNH TOÀN VẸN:
+  // Nếu AI trả về lỗi sau số lần thử, TUYỆT ĐỐI KHÔNG giả định integrity = "ok" và KHÔNG đánh dấu scoutDone.
+  // Thay vào đó, để từng phân đoạn tự động fallback sang Lượt 1 trinh sát riêng lẻ để đảm bảo an toàn tuyệt đối!
   if (!scoutData) {
     host.logActivity(
       job,
-      `V3 · Trinh sát chùm không lấy được JSON sau ${maxScoutAttempts} lần thử. Tự động dùng cấu hình an toàn cho chùm này.`,
-      'info',
+      `V3 · Trinh sát chùm không nhận được JSON sau ${maxScoutAttempts} lần thử. Giữ nguyên trạng thái để từng phân đoạn tự trinh sát độc lập ở Lượt 1.`,
+      'warning',
       job.segments[startIndex],
     );
-    scoutData = {
-      integrity: { status: 'ok' },
-      garbage: [],
-      newCharacters: [],
-      relations: [],
-      locations: [],
-    };
+    return;
   }
 
-  const garbage = (Array.isArray(scoutData.garbage) ? scoutData.garbage : []) as GarbageSnippet[];
+  // 1. Ánh xạ kết quả integrity và garbage riêng biệt theo từng segmentId
+  const rawSegments = Array.isArray(scoutData.segments) ? (scoutData.segments as any[]) : [];
+  const segResultMap = new Map<string, any>();
+  for (const segRes of rawSegments) {
+    if (segRes && typeof segRes === 'object') {
+      if (segRes.segmentId) {
+        const idStr = String(segRes.segmentId).trim();
+        segResultMap.set(idStr, segRes);
+        // Hỗ trợ cả key bỏ tiền tố 'V3-'
+        if (idStr.startsWith('V3-')) {
+          segResultMap.set(idStr.slice(3), segRes);
+        }
+      }
+    }
+  }
+
+  const globalIntegrity = (scoutData.integrity || {}) as { status?: string; reason?: string };
+  const globalGarbage = (Array.isArray(scoutData.garbage) ? scoutData.garbage : []) as GarbageSnippet[];
+
+  let successfulScoutCount = 0;
+  let totalGarbageChars = 0;
+
+  for (const s of segmentsToScout) {
+    const segRes = segResultMap.get(s.id)
+      || segResultMap.get(s.id.replace(/^V3-/u, ''))
+      || (segmentsToScout.length === 1 && (scoutData.integrity || Array.isArray(scoutData.garbage)) ? scoutData : null);
+
+    if (!segRes) {
+      host.logActivity(
+        job,
+        `V3 · Trinh sát chùm: AI không trả dữ liệu cho phân đoạn ${s.id}. Chuyển sang trinh sát riêng ở Lượt 1.`,
+        'warning',
+        s,
+      );
+      s.preparedV3 = { cleanSource: s.sourceText, scoutDone: false };
+      continue;
+    }
+
+    const integrity = (segRes.integrity || globalIntegrity) as { status?: string; reason?: string };
+    const integrityStatus = (integrity.status || 'uncertain').toLowerCase().trim();
+
+    // Nếu phát hiện chương bị cụt (truncated), lẫn truyện/quảng cáo (corrupted) hoặc chưa rõ (uncertain):
+    // TUYỆT ĐỐI KHÔNG đánh dấu scoutDone = true!
+    if (['truncated', 'corrupted', 'refetch', 'uncertain'].includes(integrityStatus)) {
+      host.logActivity(
+        job,
+        `V3 · Trinh sát chùm phát hiện phân đoạn ${s.id} không nguyên vẹn (${integrityStatus}): ${integrity.reason || 'cần kiểm tra lại'}. Tạm dừng phân đoạn này để xử lý riêng ở Lượt 1.`,
+        'warning',
+        s,
+      );
+      s.preparedV3 = {
+        cleanSource: s.sourceText,
+        scoutDone: false,
+      };
+      continue;
+    }
+
+    // Phân đoạn hoàn chỉnh (status === "ok"): lọc rác cục bộ của đúng phân đoạn đó
+    const segGarbage = (Array.isArray(segRes.garbage) ? segRes.garbage : globalGarbage) as GarbageSnippet[];
+    let cleanSource = s.sourceText;
+    if (segGarbage.length > 0) {
+      const beforeLen = cleanSource.length;
+      cleanSource = removeGarbageSnippets(cleanSource, segGarbage);
+      totalGarbageChars += (beforeLen - cleanSource.length);
+    }
+
+    s.preparedV3 = {
+      cleanSource,
+      scoutDone: true,
+    };
+    s.sourceText = cleanSource;
+    successfulScoutCount++;
+  }
+
+  // 2. Thu hoạch nhân vật mới toàn chùm
   const newCharacters = Array.isArray(scoutData.newCharacters) ? scoutData.newCharacters : [];
+  // Gom cả nhân vật khai báo bên trong từng segment nếu có
+  for (const segRes of rawSegments) {
+    if (Array.isArray(segRes.newCharacters)) {
+      newCharacters.push(...segRes.newCharacters);
+    }
+  }
+
   let newCharCount = 0;
   for (const c of newCharacters as Array<{ source?: string; vi?: string; gender?: string; role?: string }>) {
     if (!c.source || !c.vi || isGenericNameForm(c.source)) continue;
@@ -486,7 +569,14 @@ async function executeClusterScout(
     }
   }
 
+  // 3. Thu hoạch địa danh mới toàn chùm
   const newLocations = Array.isArray(scoutData.locations) ? scoutData.locations : [];
+  for (const segRes of rawSegments) {
+    if (Array.isArray(segRes.locations)) {
+      newLocations.push(...segRes.locations);
+    }
+  }
+
   let newLocCount = 0;
   if (!state.registry.locations) state.registry.locations = [];
   for (const loc of newLocations as Array<{ source?: string; vi?: string; type?: string }>) {
@@ -508,7 +598,14 @@ async function executeClusterScout(
     }
   }
 
+  // 4. Thu hoạch quan hệ mới toàn chùm
   const relations = Array.isArray(scoutData.relations) ? scoutData.relations : [];
+  for (const segRes of rawSegments) {
+    if (Array.isArray(segRes.relations)) {
+      relations.push(...segRes.relations);
+    }
+  }
+
   for (const r of relations as Array<{ charA?: string; charB?: string; relation?: string; suggestion?: string }>) {
     if (!r.charA || !r.charB) continue;
     const from = state.registry.characters.find((c) => c.source === r.charA || c.vi === r.charA);
@@ -529,24 +626,9 @@ async function executeClusterScout(
     }
   }
 
-  let totalGarbageChars = 0;
-  for (const s of segmentsToScout) {
-    let cleanSource = s.sourceText;
-    if (garbage.length > 0) {
-      const beforeLen = cleanSource.length;
-      cleanSource = removeGarbageSnippets(cleanSource, garbage);
-      totalGarbageChars += (beforeLen - cleanSource.length);
-    }
-    s.preparedV3 = {
-      cleanSource,
-      scoutDone: true,
-    };
-    s.sourceText = cleanSource;
-  }
-
   host.logActivity(
     job,
-    `V3 · Đã trinh sát xong chùm ${segmentsToScout.length} chương: Thêm ${newCharCount} nhân vật, ${newLocCount} địa danh, lọc sạch ${totalGarbageChars} ký tự rác. Sẵn sàng dịch thẳng từng chương!`,
+    `V3 · Đã trinh sát xong chùm ${segmentsToScout.length} chương (${successfulScoutCount}/${segmentsToScout.length} đạt chuẩn toàn vẹn): Thêm ${newCharCount} nhân vật, ${newLocCount} địa danh, lọc sạch ${totalGarbageChars} ký tự rác.`,
     'info',
     job.segments[startIndex],
   );
@@ -599,9 +681,10 @@ async function flushPendingHanRepairs(
 
   try {
     const repairResponse = await send(host, job, repairPrompt, signal, false);
-    const parsed = localizedRepairBatchResponseError(repairResponse, allTargets.map(t => ({ targetId: t.targetId, text: t.sentence, start: 0, end: 0 })));
+    const parsed = localizedRepairBatchResponseError(repairResponse, allTargets.map((t) => ({ targetId: t.targetId, text: t.sentence, start: 0, end: 0 })));
+    const successfullyRepairedIds = new Set<string>();
+
     if (!parsed.error && parsed.replacements && parsed.replacements.size > 0) {
-      let replacedCount = 0;
       for (const item of queue) {
         const seg = job.segments[item.segmentIndex];
         if (seg && seg.translatedText) {
@@ -610,29 +693,48 @@ async function flushPendingHanRepairs(
             const rep = parsed.replacements.get(t.targetId);
             if (rep) {
               segReplacements.set(t.targetId, rep);
-              replacedCount++;
             }
           }
           if (segReplacements.size > 0) {
-            seg.translatedText = replaceLocalizedTargets(seg.translatedText, item.targets, segReplacements);
+            const updated = replaceLocalizedTargets(seg.translatedText, item.targets, segReplacements);
+            seg.translatedText = updated;
+            for (const [targetId] of segReplacements) {
+              successfullyRepairedIds.add(targetId);
+            }
           }
         }
       }
-      host.logActivity(
-        job,
-        `V3 · Đã sửa sạch ${replacedCount}/${allTargets.length} câu sót chữ Hán thành công trong đợt ${checkpointName}!`,
-        'info',
-      );
-      await host.checkpoint(job);
     }
-  } catch (err) {
+
+    // NGUYÊN TẮC BẢO TOÀN HÀNG ĐỢI SỬA CHỮ HÁN:
+    // Tuyệt đối không xóa toàn bộ queue nếu có câu chưa sửa xong.
+    // Chỉ loại bỏ các câu đã sửa thành công; giữ lại các câu còn thiếu/lỗi để đợt sau tiếp tục sửa.
+    const remainingQueue: typeof state.pendingHanRepairs = [];
+    for (const item of queue) {
+      const remainingTargets = item.targets.filter((t) => !successfullyRepairedIds.has(t.targetId));
+      if (remainingTargets.length > 0) {
+        remainingQueue.push({
+          ...item,
+          targets: remainingTargets,
+        });
+      }
+    }
+    state.pendingHanRepairs = remainingQueue;
+
     host.logActivity(
       job,
-      `V3 · Đợt sửa chữ Hán ${checkpointName} chưa đạt (${String(err)}), tiếp tục bảo lưu để xuất bản an toàn.`,
+      `V3 · Đã sửa sạch ${successfullyRepairedIds.size}/${allTargets.length} câu sót chữ Hán trong đợt ${checkpointName}${remainingQueue.length > 0 ? ` (còn lại ${allTargets.length - successfullyRepairedIds.size} câu giữ trong hàng đợi)` : ''}!`,
+      'info',
+    );
+    await host.checkpoint(job);
+  } catch (err) {
+    // Nếu API lỗi/timeout, giữ nguyên 100% hàng đợi pendingHanRepairs và lưu checkpoint an toàn
+    host.logActivity(
+      job,
+      `V3 · Đợt sửa chữ Hán ${checkpointName} chưa hoàn tất do lỗi mạng/API (${String(err)}). Bảo lưu toàn bộ hàng đợi để thử lại trong đợt tiếp theo.`,
       'warning',
     );
-  } finally {
-    state.pendingHanRepairs = [];
+    await host.checkpoint(job);
   }
 }
 
@@ -736,11 +838,20 @@ async function processBatch(
         }
 
         // 1. Kiểm tra tính toàn vẹn (integrity)
-        const integrity = (scoutData.integrity || {}) as { status?: string; reason?: string };
-        if (['truncated', 'corrupted', 'refetch'].includes(integrity.status || '')) {
+        let integrity = (scoutData.integrity || {}) as { status?: string; reason?: string };
+        if (!integrity.status && Array.isArray(scoutData.segments)) {
+          const matched = (scoutData.segments as any[]).find(
+            (s) => s?.segmentId === segment.id || s?.segmentId === segment.id.replace(/^V3-/u, '')
+          );
+          if (matched?.integrity) {
+            integrity = matched.integrity;
+          }
+        }
+        const integrityStatus = (integrity.status || 'ok').toLowerCase().trim();
+        if (['truncated', 'corrupted', 'refetch', 'uncertain'].includes(integrityStatus)) {
           host.logActivity(
             job,
-            `V3 · Phát hiện nguồn ${segment.id} bất thường (${integrity.status}): ${integrity.reason || 'cần kiểm tra'}`,
+            `V3 · Phát hiện nguồn ${segment.id} bất thường (${integrityStatus}): ${integrity.reason || 'cần kiểm tra'}`,
             'warning',
             segment,
           );
@@ -753,6 +864,9 @@ async function processBatch(
             await host.checkpoint(job);
             continue;
           }
+          // NGUYÊN TẮC BẢO VỆ TÍNH TOÀN VẸN:
+          // Nếu nguồn bị cụt hoặc lỗi mà không refetch được, TUYỆT ĐỐI KHÔNG chuyển sang dịch!
+          throw new Error(`Phân đoạn ${segment.id} không toàn vẹn (${integrityStatus}): ${integrity.reason || 'Bị cắt cụt/mất trang'}. Vui lòng kiểm tra lại nguồn.`);
         }
 
         // 2. Tool tự động cắt rác theo vị trí/chuỗi do AI chỉ ra
@@ -943,6 +1057,7 @@ async function processBatch(
         genreProfile,
         sceneState: 'normal',
         executionMode: job.executionMode === 'api' ? 'api' : 'web',
+        aiProvider: job.aiProvider || job.provider || 'chatgpt',
         customPrompt: job.customPrompt || job.resolvedPrompt,
         skipEntityExtraction: true, // KHÔNG BẮT AI TRẢ VỀ <THUC_THE_MOI> Ở LƯỢT 2!
       });
@@ -1069,6 +1184,28 @@ async function processBatch(
           if (isMidpoint || isFinal) {
             await flushPendingHanRepairs(host, job, signal, isFinal ? 'cuối truyện' : 'giữa truyện');
           }
+          if (isFinal && state.pendingHanRepairs && state.pendingHanRepairs.length > 0) {
+            await flushPendingHanRepairs(host, job, signal, 'quét chót cuối truyện');
+          }
+        }
+
+        // Kiểm định toàn vẹn chữ Hán toàn bộ truyện ở phân đoạn cuối cùng (100%)
+        if (segment.index === job.segments.length - 1) {
+          const residualHanSegments: string[] = [];
+          for (const s of job.segments) {
+            if (s.translatedText && /[\u4e00-\u9fa5]/u.test(s.translatedText)) {
+              residualHanSegments.push(s.id);
+            }
+          }
+          if (residualHanSegments.length > 0) {
+            host.logActivity(
+              job,
+              `V3 · Kiểm định cuối truyện: Phát hiện ${residualHanSegments.length} phân đoạn còn sót ký tự chữ Hán (${residualHanSegments.slice(0, 5).join(', ')}${residualHanSegments.length > 5 ? '...' : ''}).`,
+              'warning',
+            );
+          } else {
+            host.logActivity(job, `V3 · Kiểm định toàn bộ bản dịch cuối truyện: Đạt chuẩn 100% không còn chữ Hán sót!`, 'info');
+          }
         }
 
         return await host.completeSegment(job, segment, signal);
@@ -1112,6 +1249,7 @@ export function installTranslationPipelineV3(target: unknown, services: Pipeline
         executionMode: mode,
         aiProvider: provider,
         customPrompt: typeof customPrompt === 'string' ? customPrompt : '',
+        maxChapters: starting.batchChaptersCount,
       });
     }
     return originalChunker(source, options);
@@ -1127,6 +1265,12 @@ export function installTranslationPipelineV3(target: unknown, services: Pipeline
   };
   host.launch = function (job: Host) {
     if (starting && !job.pipelineV3) {
+      if (starting.executionMode) {
+        job.executionMode = starting.executionMode;
+      }
+      if (starting.aiProvider) {
+        job.aiProvider = starting.aiProvider;
+      }
       const batch = starting.batchChaptersCount ?? 2;
       if (batch !== 0 && (batch < 1 || batch > 3)) throw Error('Số chương mỗi mẻ phải từ 1 đến 3.');
       job.pipelineV3 = {

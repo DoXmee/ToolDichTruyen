@@ -164,36 +164,41 @@ export function localizedRepairBatchResponseError(
     /<CAU_DA_SUA\s+id=["']([^"']+)["']\s*>([\s\S]*?)<\/CAU_DA_SUA>/giu,
   )];
 
-  if (matches.length !== targets.length) {
-    const candidateLines = candidate
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !line.startsWith('<') && !line.startsWith('#'));
-    if (candidateLines.length === targets.length) {
-      const replacements = new Map<string, string>();
-      for (let i = 0; i < targets.length; i++) {
-        const t = targets[i]!;
-        const cleaned = candidateLines[i]!.replace(/^\d+[\.\:\-\s]+/, '').trim();
-        replacements.set(t.targetId, cleaned);
-      }
-      return { replacements };
-    }
-    return { error: 'Phản hồi sửa cục bộ không chứa đủ các câu theo mã target.' };
-  }
-
   const expected = new Map(targets.map((target) => [target.targetId, target]));
   const replacements = new Map<string, string>();
-  for (const match of matches) {
-    const targetId = match[1]?.trim() ?? '';
-    const target = expected.get(targetId);
-    if (!target || replacements.has(targetId)) {
-      return { error: 'Phản hồi sửa cục bộ có mã target không hợp lệ hoặc trùng lặp.' };
+
+  if (matches.length > 0) {
+    for (const match of matches) {
+      const targetId = match[1]?.trim() ?? '';
+      const target = expected.get(targetId);
+      if (!target || replacements.has(targetId)) {
+        continue;
+      }
+      const responseError = localizedRepairResponseError(target, match[2] ?? '', targetId);
+      if (!responseError) {
+        replacements.set(targetId, (match[2] ?? '').normalize('NFC').trim());
+      }
     }
-    const responseError = localizedRepairResponseError(target, match[2] ?? '', targetId);
-    if (responseError) return { error: responseError };
-    replacements.set(targetId, (match[2] ?? '').normalize('NFC').trim());
+    if (replacements.size > 0) {
+      return { replacements };
+    }
   }
-  return { replacements };
+
+  // Fallback: Nếu không dùng thẻ <CAU_DA_SUA> nhưng trả về đúng số dòng tương ứng các target
+  const candidateLines = candidate
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('<') && !line.startsWith('#'));
+  if (candidateLines.length === targets.length) {
+    for (let i = 0; i < targets.length; i++) {
+      const t = targets[i]!;
+      const cleaned = candidateLines[i]!.replace(/^\d+[\.\:\-\s]+/, '').trim();
+      replacements.set(t.targetId, cleaned);
+    }
+    return { replacements };
+  }
+
+  return { error: 'Phản hồi sửa cục bộ không chứa câu sửa hợp lệ theo mã target.' };
 }
 
 export function replaceLocalizedTargets(
