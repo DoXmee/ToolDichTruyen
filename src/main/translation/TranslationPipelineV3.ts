@@ -1,3 +1,26 @@
+/**
+ * ============================================================================
+ * QUY TẮC KIẾN TRÚC NGHIÊM NGẶT - 3 LUỒNG AI ĐỘC LẬP (STRICT ARCHITECTURE GUARDRAILS)
+ * ============================================================================
+ * Hệ thống Tool Dịch Truyện vận hành 3 luồng dịch hoàn toàn tách biệt:
+ * 1. CHATGPT WEB (Web Browser UI / Playwright CDP):
+ *    - Giới hạn DOM tin nhắn: tối đa ~12.500 ký tự (prompt + nguồn).
+ *    - Quản lý session, cookies, Cloudflare, luân chuyển chat định kỳ.
+ * 2. DEEPSEEK API (Direct HTTP REST API):
+ *    - Context lớn, tính phí theo token, giới hạn completion output 4k-8k tokens.
+ *    - Tối ưu chi phí: trinh sát chùm lớn (36k ký tự), gom sửa chữ Hán định kỳ (2 lần/bộ).
+ * 3. GEMINI API (Direct HTTP REST API):
+ *    - Context siêu lớn 1M tokens, giới hạn output 8k tokens.
+ *    - Trinh sát chùm tới 50k ký tự.
+ * 
+ * NGUYÊN TẮC BẮT BUỘC KHI PHÁT TRIỂN / SỬA LỖI:
+ * - 3 luồng độc lập về cấu hình, phân mẻ, prompt và xử lý lỗi.
+ * - Khi chỉnh sửa bất kỳ luồng nào, Developer/Agent BẮT BUỘC phải khảo sát kỹ,
+ *   hỏi rõ người dùng và CHỈ ĐƯỢC PHÉP sửa đúng phạm vi luồng đó.
+ * - TUYỆT ĐỐI CẤM can thiệp hoặc sửa đổi logic chung gây ảnh hưởng chéo sang các luồng khác!
+ * ============================================================================
+ */
+
 import {
   emptyRegistry,
   groupChapterChunks,
@@ -351,7 +374,8 @@ async function executeClusterScout(
   // - DeepSeek API: 36.000 ký tự (context 64k-128k token)
   // - Web AI (ChatGPT Web): 4.000 ký tự (đảm bảo prompt nhẹ, không quá tải browser)
   const maxClusterChars = isGeminiApi ? 50000 : isDeepSeekApi ? 36000 : 4000;
-  const maxSegmentsInCluster = isGeminiApi ? 40 : isDeepSeekApi ? 30 : 2;
+  // Không giới hạn số lượng chương/phân đoạn (Infinity) - chỉ giới hạn theo dung lượng ký tự tối đa của AI
+  const maxSegmentsInCluster = Infinity;
 
   for (let idx = startIndex; idx < job.segments.length; idx++) {
     const s = job.segments[idx];
@@ -1083,9 +1107,11 @@ export function installTranslationPipelineV3(target: unknown, services: Pipeline
     if (starting) {
       const mode = starting.executionMode || 'web';
       const provider = starting.aiProvider || starting.provider || 'chatgpt';
+      const customPrompt = starting.customPrompt || starting.prompt || '';
       return groupAdaptiveChapterChunks(source, {
         executionMode: mode,
         aiProvider: provider,
+        customPrompt: typeof customPrompt === 'string' ? customPrompt : '',
       });
     }
     return originalChunker(source, options);

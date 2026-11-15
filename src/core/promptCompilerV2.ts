@@ -92,11 +92,12 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
 
   // KHỐI A: LUẬT KỸ THUẬT LÕI & CHỈ ĐẠO DỊCH THUẬT
   const hasCustomPrompt = Boolean(customPrompt?.trim());
-  const sanitizedCustomPrompt = customPrompt ? customPrompt.trim().slice(0, 8000) : '';
+  const maxCustomPromptLen = input.executionMode === 'web' ? 3000 : 8000;
+  const sanitizedCustomPrompt = customPrompt ? customPrompt.trim().slice(0, maxCustomPromptLen) : '';
 
   const technicalRules = [
     `1. DỊCH ĐỦ 100% NỘI DUNG THUẦN VIỆT: Dịch trọn vẹn, không tóm tắt, không bỏ sót câu/đoạn, không để lại bất kỳ chữ Hán nào. CHỈ XUẤT TIẾNG VIỆT THUẦN TÚY: Tuyệt đối không chèn câu chào/lời dẫn tiếng Anh (như 'Let's', 'Here is') vào bài dịch.`,
-    `2. BẢO TOÀN TIÊU ĐỀ & SỐ THỨ TỰ CHƯƠNG (BẮT BUỘC): Nếu trong nguồn <NGUYEN_BAN> có tiêu đề chương (ví dụ "Chương 108: ..."), bản dịch BẮT BUỘC phải dịch đúng số chương đó. TUYỆT ĐỐI KHÔNG lặp lại số chương của đoạn trước và không tự ý nhảy số chương.`,
+    `2. BẢO TOÀN TIÊU ĐỀ & SỐ THỨ TỰ CHƯƠNG (BẮT BUỘC): Nếu trong nguồn <NGUYEN_BAN> có tiêu đề chương (ví dụ "Chương 108: ..."), bản dịch BẮT BUỘC phải dịch đúng số chương đó. TUYỆT ĐỐI KHÔNG lặp lại số chương của đoạn trước và không tự ý nhảy số chương. Nếu trong nguồn KHÔNG có tiêu đề chương (đoạn tiếp diễn của chương dài), TUYỆT ĐỐI KHÔNG tự bịa ra tiêu đề chương mới!`,
     `3. NGUYÊN TẮC GIỮ NGUYÊN TÊN TRONG NGOẶC (BẮT BUỘC): Mọi danh từ riêng đã được đóng ngoặc ⟦...⟧ BẮT BUỘC PHẢI GIỮ NGUYÊN vẹn cả dấu ngoặc và nội dung bên trong. NGHIÊM CẤM TỰ Ý SỬA TÊN, VIẾT TẮT HOẶC LÀM RỤNG KÝ TỰ: Tuyệt đối giữ nguyên vẹn từng ký tự và dấu thanh tiếng Việt ('Lục Thời Dã' CẤM thành 'Lục Thời D', 'Chu Húc' CẤM thành 'Châu').
    - CẤM TỰ Ý ĐỔI HỌ HOẶC SỬA TÊN NHÂN VẬT ĐÃ KHÓA: Nếu tên đóng ngoặc là ⟦Tống Quốc Xương⟧, NGHIÊM CẤM tự ý đổi thành 'Quách Quốc Xương' hay bất kỳ họ nào khác. Tên trong ngoặc là định danh tuyệt đối bất khả xâm phạm!
    - TUYỆT ĐỐI CẤM DỊCH TÊN NGƯỜI / CHỮ HÁN SANG TIẾNG ANH: Không bao giờ được dịch chữ Hán thành từ tiếng Anh (CẤM '从飞' -> 'From Phi', CẤM 'Jack', 'Mary'...), trừ khi nguyên tác chữ Hán ghi rõ là người phương Tây có tên tiếng Anh rõ ràng.
@@ -161,7 +162,7 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
   // KHỐI A & B RÚT GỌN CHO LƯỢT TIẾP TỤC TRONG CÙNG CHAT (BẢO LƯU 100% CẤM KỴ & MỎ NEO CỐT LÕI)
   const technicalContinuationRules = [
     `1. Dịch đủ 100% nội dung, không tóm tắt, không bỏ sót câu/đoạn, không để lại bất kỳ chữ Hán nào.`,
-    `2. BẢO TOÀN TIÊU ĐỀ & SỐ THỨ TỰ CHƯƠNG (BẮT BUỘC): Nếu trong nguồn <NGUYEN_BAN> có tiêu đề chương (ví dụ "Chương ${segmentIndex + 1}: ..."), bản dịch BẮT BUỘC dịch đúng số chương đó. TUYỆT ĐỐI KHÔNG lặp lại số chương của đoạn trước và không tự ý nhảy số chương.`,
+    `2. BẢO TOÀN TIÊU ĐỀ & SỐ THỨ TỰ CHƯƠNG (BẮT BUỘC): Nếu trong nguồn <NGUYEN_BAN> có tiêu đề chương (ví dụ "Chương ${segmentIndex + 1}: ..."), bản dịch BẮT BUỘC dịch đúng số chương đó. TUYỆT ĐỐI KHÔNG lặp lại số chương của đoạn trước và không tự ý nhảy số chương. Nếu trong nguồn KHÔNG có tiêu đề chương (đoạn tiếp diễn của chương dài), TUYỆT ĐỐI KHÔNG tự bịa ra tiêu đề chương mới!`,
     `3. BẢO TOÀN 100% DANH TỪ TRONG NGOẶC ⟦...⟧: Mọi danh từ riêng đã được đóng ngoặc ⟦...⟧ BẮT BUỘC PHẢI GIỮ NGUYÊN vẹn cả dấu ngoặc và nội dung bên trong (Ví dụ: ⟦Cố Quốc Cường⟧ phải xuất hiện đúng dạng ⟦Cố Quốc Cường⟧ trong bản dịch). CẤM làm rụng chữ (như Lục Thời D), CẤM đổi họ Chu thành Châu. '深圳'/'深市' BẮT BUỘC là 'Thâm Quyến' (CẤM 'Thâm Puyến', 'Thâm Cuyến'). Em trai nói chuyện thân mật với chị gái xưng 'em', CẤM xưng 'tôi'.`,
   ];
 

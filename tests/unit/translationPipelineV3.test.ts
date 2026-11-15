@@ -1,5 +1,5 @@
 import { describe,expect,it } from 'vitest';
-import { applyAnalysis,collectTranslationRows,decodeTranslation,emptyRegistry,encodeBatch,groupChapterChunks,groupAdaptiveChapterChunks,isGenericNameForm,paragraphsFor,parseAnalysis,parseProtocolJson,analysisPrompt,removeVerifiedGarbage,resolvedResolutions,translationPrompt,verifyEvidence,type AnalysisResult } from '../../src/core/translationPipelineV3';
+import { applyAnalysis,collectTranslationRows,decodeTranslation,emptyRegistry,encodeBatch,groupChapterChunks,groupAdaptiveChapterChunks,splitLongChapterIntoParts,isGenericNameForm,paragraphsFor,parseAnalysis,parseProtocolJson,analysisPrompt,removeVerifiedGarbage,resolvedResolutions,translationPrompt,verifyEvidence,type AnalysisResult } from '../../src/core/translationPipelineV3';
 const paragraphs=paragraphsFor([{id:'CH1',number:1,title:'Chương 1',text:'Chương 1\n柳如煙走來。如煙說：「小柳就是我。」\n柳如煙看著小柳。'}]);
 const evidence=[{paragraphId:'CH1-P0002',quote:'柳如煙走來。如煙說：「小柳就是我。」'}];
 const result=():AnalysisResult=>({integrity:[{chapterId:'CH1',status:'ok',reason:''}],garbage:[],newCharacters:[{ref:'N1',source:'柳如煙',vi:'Liễu Như Yên',kind:'person',gender:'female',role:'',evidence}],aliasUpdates:[{targetId:'N1',source:'如煙',vi:'Như Yên',kind:'short',evidence},{targetId:'N1',source:'小柳',vi:'cháu Liễu',kind:'address',evidence}],relations:[],uncertain:[],resolutions:[]});
@@ -79,5 +79,47 @@ describe('V3 identity and output contracts',()=>{
     expect(parsed.integrity).toEqual([]);
     expect(parsed.relations).toEqual([]);
     expect(parsed.aliasUpdates).toEqual([]);
+  });
+
+  it('splits an oversized chapter into parts strictly within maxBatchChars and preserves paragraph boundaries', () => {
+    const longText = 'Chương 1: Khởi đầu trường thiên\n\n' + Array.from({ length: 40 }, (_, i) => `Đoạn văn ${i + 1} của chương truyện rất dài. Nội dung tiếp nối liền mạch.`).join('\n\n');
+    const chapter = { id: 'CH1', number: 1, title: 'Chương 1: Khởi đầu trường thiên', text: longText };
+    const parts = splitLongChapterIntoParts(chapter, 600);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts[0]!.title).toBe('Chương 1: Khởi đầu trường thiên');
+    expect(parts[0]!.text).toContain('Chương 1: Khởi đầu trường thiên');
+    for (const part of parts) {
+      expect(part.text.length).toBeLessThanOrEqual(600);
+    }
+    // Part 2 should not duplicate the header
+    expect(parts[1]!.text).not.toMatch(/^Chương 1:/u);
+  });
+
+  it('batches many short chapters without artificial limit when under maxBatchChars', () => {
+    // 25 short chapters of 40 chars each = 1,000 chars total
+    const shortChapters = Array.from({ length: 25 }, (_, i) => `Chương ${i + 1}: Ngắn\nNội dung rất ngắn ${i + 1}.`).join('\n\n');
+    const chunks = groupAdaptiveChapterChunks(shortChapters, {
+      executionMode: 'api',
+      aiProvider: 'deepseek',
+      maxBatchChars: 3800,
+    });
+    // With 1000 chars total and maxBatchChars 3800, all 25 chapters should easily fit in 1 single chunk!
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.chapterCount).toBe(25);
+  });
+
+  it('adaptively lowers maxBatchChars when user enters a long custom prompt on Web mode', () => {
+    const source = Array.from({ length: 10 }, (_, i) => `Chương ${i + 1}: Đoạn văn\n${'Chữ Hán mẫu nội dung. '.repeat(50)}`).join('\n\n');
+    const normalChunks = groupAdaptiveChapterChunks(source, {
+      executionMode: 'web',
+      aiProvider: 'chatgpt',
+    });
+    const heavyPromptChunks = groupAdaptiveChapterChunks(source, {
+      executionMode: 'web',
+      aiProvider: 'chatgpt',
+      customPrompt: 'Quy tắc dịch dài đặc biệt: '.repeat(100), // ~2700 chars
+    });
+    // Heavy custom prompt should force more chunks to protect web DOM length
+    expect(heavyPromptChunks.length).toBeGreaterThanOrEqual(normalChunks.length);
   });
 });

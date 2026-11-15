@@ -1,3 +1,26 @@
+/**
+ * ============================================================================
+ * QUY TẮC KIẾN TRÚC NGHIÊM NGẶT - 3 LUỒNG AI ĐỘC LẬP (STRICT ARCHITECTURE GUARDRAILS)
+ * ============================================================================
+ * Hệ thống Tool Dịch Truyện vận hành 3 luồng dịch hoàn toàn tách biệt:
+ * 1. CHATGPT WEB (Web Browser UI / Playwright CDP):
+ *    - Giới hạn DOM tin nhắn: tối đa ~12.500 ký tự (prompt + nguồn).
+ *    - Quản lý session, cookies, Cloudflare, luân chuyển chat định kỳ.
+ * 2. DEEPSEEK API (Direct HTTP REST API):
+ *    - Context lớn, tính phí theo token, giới hạn completion output 4k-8k tokens.
+ *    - Tối ưu chi phí: trinh sát chùm lớn (36k ký tự), gom sửa chữ Hán định kỳ (2 lần/bộ).
+ * 3. GEMINI API (Direct HTTP REST API):
+ *    - Context siêu lớn 1M tokens, giới hạn output 8k tokens.
+ *    - Trinh sát chùm tới 50k ký tự.
+ * 
+ * NGUYÊN TẮC BẮT BUỘC KHI PHÁT TRIỂN / SỬA LỖI:
+ * - 3 luồng độc lập về cấu hình, phân mẻ, prompt và xử lý lỗi.
+ * - Khi chỉnh sửa bất kỳ luồng nào, Developer/Agent BẮT BUỘC phải khảo sát kỹ,
+ *   hỏi rõ người dùng và CHỈ ĐƯỢC PHÉP sửa đúng phạm vi luồng đó.
+ * - TUYỆT ĐỐI CẤM can thiệp hoặc sửa đổi logic chung gây ảnh hưởng chéo sang các luồng khác!
+ * ============================================================================
+ */
+
 import { sify, tify } from 'chinese-conv';
 import { transcribeHanViet } from './storyMemoryExtractor.js';
 import { parseChapterHeaderLine } from './titleParser.js';
@@ -168,33 +191,163 @@ export interface AdaptiveChapterGroupOptions {
   aiProvider?: 'chatgpt' | 'kimi' | 'deepseek' | 'gemini';
   maxBatchChars?: number;
   maxChapters?: number;
+  customPrompt?: string;
+}
+
+/** Cắt nhỏ một dòng văn bản đơn lẻ nếu dài bất thường (vượt maxChars) theo ranh giới dấu câu */
+function splitOversizedLine(line: string, maxChars: number): string[] {
+  if (line.length <= maxChars) return [line];
+  const slices: string[] = [];
+  let start = 0;
+  while (start < line.length) {
+    if (start + maxChars >= line.length) {
+      slices.push(line.slice(start));
+      break;
+    }
+    const searchWindow = line.slice(start, start + maxChars);
+    const puncMatch = [...searchWindow.matchAll(/[。！？!?；;，,\n]/gu)];
+    let cut = -1;
+    if (puncMatch.length > 0) {
+      const lastPunc = puncMatch[puncMatch.length - 1]!;
+      cut = start + lastPunc.index! + lastPunc[0].length;
+    }
+    if (cut <= start || cut > start + maxChars) {
+      cut = start + maxChars;
+    }
+    slices.push(line.slice(start, cut));
+    start = cut;
+  }
+  return slices;
+}
+
+/**
+ * Tự động bẻ nhỏ 1 chương siêu dài thành các phần nhỏ (parts) theo ranh giới đoạn văn
+ * để không bao giờ vượt trần giới hạn token đầu vào của AI hoặc trần output bản dịch.
+ * - Phần 1 giữ nguyên tiêu đề chương (Chương N: Tiêu đề).
+ * - Các phần tiếp theo tiếp nối nội dung mượt mà, không lặp lại tiêu đề chương.
+ */
+export function splitLongChapterIntoParts(
+  chapter: ChapterInput,
+  maxChars: number,
+): ChapterInput[] {
+  if (chapter.text.length <= maxChars) return [chapter];
+
+  const lines = chapter.text.split(/\r?\n/u);
+  const parts: ChapterInput[] = [];
+  let currentLines: string[] = [];
+  let currentLen = 0;
+  let partIndex = 1;
+
+  const headerMatch = lines[0]?.match(/^[ \t]*Chương[ \t]+\d+[^\n]*/iu);
+  const headerLine = headerMatch ? lines[0]!.trim() : '';
+  const startIdx = headerMatch ? 1 : 0;
+
+  if (headerLine) {
+    currentLines.push(headerLine);
+    currentLen += headerLine.length;
+  }
+
+  for (let i = startIdx; i < lines.length; i++) {
+    const rawLine = lines[i]!;
+    const lineChunks = rawLine.length > maxChars ? splitOversizedLine(rawLine, maxChars - 100) : [rawLine];
+
+    for (const chunk of lineChunks) {
+      const addedLen = (currentLines.length > 0 ? 1 : 0) + chunk.length;
+      if (currentLines.length > 0 && (currentLen + addedLen > maxChars)) {
+        const text = currentLines.join('\n').trim();
+        if (text) {
+          parts.push({
+            id: `${chapter.id}-P${partIndex}`,
+            number: chapter.number,
+            title: partIndex === 1 ? chapter.title : `${chapter.title} (phần ${partIndex})`,
+            text,
+          });
+          partIndex++;
+        }
+        currentLines = [chunk];
+        currentLen = chunk.length;
+      } else {
+        currentLines.push(chunk);
+        currentLen += addedLen;
+      }
+    }
+  }
+
+  if (currentLines.length > 0) {
+    const text = currentLines.join('\n').trim();
+    if (text) {
+      parts.push({
+        id: partIndex > 1 ? `${chapter.id}-P${partIndex}` : chapter.id,
+        number: chapter.number,
+        title: partIndex > 1 ? `${chapter.title} (phần ${partIndex})` : chapter.title,
+        text,
+      });
+    }
+  }
+
+  return parts.length > 0 ? parts : [chapter];
 }
 
 export function groupAdaptiveChapterChunks(
   source: string,
   options?: AdaptiveChapterGroupOptions,
 ): Array<{ id: string; index: number; start: number; end: number; text: string; chapterCount: number }> {
-  const chapters = splitChapters(source);
-  const result: Array<{ id: string; index: number; start: number; end: number; text: string; chapterCount: number }> = [];
   const executionMode = options?.executionMode || 'web';
   const provider = options?.aiProvider || 'chatgpt';
   const isDeepSeekApi = executionMode === 'api' && provider === 'deepseek';
   const isGeminiApi = executionMode === 'api' && provider === 'gemini';
-  // Ngưỡng ký tự mẻ dịch thích ứng linh hoạt theo tải từng AI:
-  // - Web AI (ChatGPT Web): 2.200 chữ Hán (để tổng prompt kèm StoryBible luôn < 12.000 ký tự, không bao giờ lỗi prompt quá dài)
-  // - DeepSeek API: 3.800 chữ Hán
-  // - Gemini API: 5.000 chữ Hán
-  const defaultMaxChars = isDeepSeekApi ? 3800 : isGeminiApi ? 5000 : 2200;
-  const maxBatchChars = options?.maxBatchChars ?? defaultMaxChars;
-  const defaultMaxChapters = executionMode === 'web' ? 2 : isDeepSeekApi ? 10 : 15;
-  const maxChapters = options?.maxChapters
-    ? Math.min(Math.max(options.maxChapters, 1), defaultMaxChapters)
-    : defaultMaxChapters;
+  const rawCustomPrompt = (options?.customPrompt || '').trim();
 
+  // Rào sẵn trần giới hạn cho prompt người dùng để bảo vệ giới hạn an toàn đầu vào
+  const maxPromptCap = executionMode === 'web' ? 3000 : isDeepSeekApi ? 6000 : 10000;
+  const customPrompt = rawCustomPrompt.slice(0, maxPromptCap);
+
+  // Tính dung lượng prompt khung và dung lượng nguồn tối đa thích ứng:
+  let baseMaxChars: number;
+  if (executionMode === 'web') {
+    // Với ChatGPT Web: Trần DOM an toàn tuyệt đối là 12.500 ký tự.
+    // Khung prompt cơ bản tốn ~4.800 ký tự.
+    // Tính toán trước dung lượng prompt người dùng để khấu trừ vào nguồn văn bản:
+    const estimatedBasePrompt = 4800;
+    const totalPromptEst = estimatedBasePrompt + customPrompt.length;
+    const availableForSource = 12500 - totalPromptEst;
+    // maxBatchChars cho Web dao động linh hoạt từ 1.200 đến 2.200 ký tự
+    baseMaxChars = Math.max(1200, Math.min(2200, availableForSource));
+  } else if (isDeepSeekApi) {
+    // Với DeepSeek API: Output token tối đa an toàn là 4.096 token (~12.000 ký tự tiếng Việt).
+    // Tỷ lệ nở chữ Hán sang tiếng Việt là ~2.5x - 3.0x.
+    // Nguồn tối đa cho 1 mẻ dịch: 3.800 chữ Hán, giảm nhẹ nếu prompt người dùng quá dài.
+    const userPromptPenalty = Math.floor(customPrompt.length / 5);
+    baseMaxChars = Math.max(2000, 3800 - userPromptPenalty);
+  } else if (isGeminiApi) {
+    // Với Gemini API: Context 1M tokens, output token 8.192.
+    // Nguồn tối đa cho 1 mẻ dịch: 5.000 chữ Hán.
+    const userPromptPenalty = Math.floor(customPrompt.length / 5);
+    baseMaxChars = Math.max(3000, 5000 - userPromptPenalty);
+  } else {
+    baseMaxChars = 2200;
+  }
+
+  const maxBatchChars = options?.maxBatchChars ?? baseMaxChars;
+  // Không giới hạn số lượng chương gộp (Infinity) - chỉ giới hạn theo dung lượng ký tự đầu vào!
+  const maxChapters = options?.maxChapters ?? Infinity;
+
+  // 1. Phân rã trước các chương siêu dài thành các phần nhỏ (parts) nếu vượt quá maxBatchChars
+  const rawChapters = splitChapters(source);
+  const chapters: ChapterInput[] = [];
+  for (const c of rawChapters) {
+    if (c.text.length > maxBatchChars) {
+      const parts = splitLongChapterIntoParts(c, maxBatchChars);
+      chapters.push(...parts);
+    } else {
+      chapters.push(c);
+    }
+  }
+
+  const result: Array<{ id: string; index: number; start: number; end: number; text: string; chapterCount: number }> = [];
   let i = 0;
   let offset = 0;
   while (i < chapters.length) {
-    // Luôn lấy tối thiểu 1 chương NGUYÊN VẸN. TUYỆT ĐỐI KHÔNG CẮT NGANG GIỮA CHƯƠNG!
     const batch = [chapters[i]!];
     let currentLength = chapters[i]!.text.length;
 
