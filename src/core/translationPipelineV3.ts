@@ -177,12 +177,18 @@ export function groupAdaptiveChapterChunks(
   const chapters = splitChapters(source);
   const result: Array<{ id: string; index: number; start: number; end: number; text: string; chapterCount: number }> = [];
   const executionMode = options?.executionMode || 'web';
-  const isDeepSeekApi = executionMode === 'api' && options?.aiProvider === 'deepseek';
-  const defaultMaxChars = isDeepSeekApi ? 3500 : executionMode === 'web' ? 5000 : 14000;
+  const provider = options?.aiProvider || 'chatgpt';
+  const isDeepSeekApi = executionMode === 'api' && provider === 'deepseek';
+  const isGeminiApi = executionMode === 'api' && provider === 'gemini';
+  // Ngưỡng ký tự mẻ dịch thích ứng linh hoạt theo tải từng AI:
+  // - Web AI (ChatGPT Web): 2.200 chữ Hán (để tổng prompt kèm StoryBible luôn < 12.000 ký tự, không bao giờ lỗi prompt quá dài)
+  // - DeepSeek API: 3.800 chữ Hán
+  // - Gemini API: 5.000 chữ Hán
+  const defaultMaxChars = isDeepSeekApi ? 3800 : isGeminiApi ? 5000 : 2200;
   const maxBatchChars = options?.maxBatchChars ?? defaultMaxChars;
-  const defaultMaxChapters = executionMode === 'web' ? 3 : isDeepSeekApi ? 10 : 20;
+  const defaultMaxChapters = executionMode === 'web' ? 2 : isDeepSeekApi ? 10 : 15;
   const maxChapters = options?.maxChapters
-    ? Math.min(Math.max(options.maxChapters, 1), 20)
+    ? Math.min(Math.max(options.maxChapters, 1), defaultMaxChapters)
     : defaultMaxChapters;
 
   let i = 0;

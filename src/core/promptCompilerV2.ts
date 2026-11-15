@@ -48,9 +48,10 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
     previousSegmentTailZh,
     previousSegmentTailVi,
     previousSummary,
-    maxCharacters = 13_000,
+    maxCharacters: customMaxChars,
     customPrompt,
   } = input;
+  const maxCharacters = input.executionMode === 'web' ? 11_000 : (customMaxChars ?? 13_000);
 
   // 0. Sanitize crawler noise & interactive ads from source text
   const cleanSourceText = stripCrawlerNoise(sourceText);
@@ -343,8 +344,8 @@ Nếu trong đoạn không có tên riêng/biệt danh mới nào chưa khóa th
   const blockH = input.skipEntityExtraction ? blockHNoExtraction : blockHWithExtraction;
 
   // ASSEMBLE WITH PROGRESSIVE FIT-TO-BUDGET LOGIC
-  const selectedBlockA = input.isContinuationTurn ? blockAContinuation : blockA;
-  let selectedBlockB = input.isContinuationTurn ? blockBContinuation : blockB;
+  const selectedBlockA = (input.isContinuationTurn || input.executionMode === 'web') ? blockAContinuation : blockA;
+  let selectedBlockB = (input.isContinuationTurn || input.executionMode === 'web') ? blockBContinuation : blockB;
   let currentBlockH = blockH;
   const assemble = (includeC: boolean) => {
     const list = [selectedBlockA, selectedBlockB, includeC ? blockC : '', blockD, blockE, blockF, blockG, currentBlockH];

@@ -342,9 +342,16 @@ async function executeClusterScout(
   const state = job.pipelineV3 as State;
   const segmentsToScout: Host[] = [];
   let totalChars = 0;
-  // Giới hạn an toàn input cho mẻ trinh sát DeepSeek (tối đa ~36.000 ký tự chữ Hán)
-  const maxClusterChars = 36000;
-  const maxSegmentsInCluster = 30;
+  const mode = job.executionMode || 'web';
+  const provider = job.aiProvider || job.provider || 'chatgpt';
+  const isDeepSeekApi = mode === 'api' && provider === 'deepseek';
+  const isGeminiApi = mode === 'api' && provider === 'gemini';
+  // Dung lượng tối đa an toàn khi trinh sát chùm cho từng loại AI:
+  // - Gemini API: 50.000 ký tự (context 1M token)
+  // - DeepSeek API: 36.000 ký tự (context 64k-128k token)
+  // - Web AI (ChatGPT Web): 4.000 ký tự (đảm bảo prompt nhẹ, không quá tải browser)
+  const maxClusterChars = isGeminiApi ? 50000 : isDeepSeekApi ? 36000 : 4000;
+  const maxSegmentsInCluster = isGeminiApi ? 40 : isDeepSeekApi ? 30 : 2;
 
   for (let idx = startIndex; idx < job.segments.length; idx++) {
     const s = job.segments[idx];
@@ -625,10 +632,8 @@ async function processBatch(
 
     // === LƯỢT 1: TRINH SÁT, KIỂM TRA ĐỨT TRANG & ĐỊNH VỊ RÁC ===
     if (!prepared?.scoutDone) {
-      if (isDeepSeekApi) {
-        await executeClusterScout(host, job, segment.index, signal, services);
-        prepared = segment.preparedV3 as { cleanSource: string; scoutDone?: boolean } | undefined;
-      }
+      await executeClusterScout(host, job, segment.index, signal, services);
+      prepared = segment.preparedV3 as { cleanSource: string; scoutDone?: boolean } | undefined;
     }
 
     if (!prepared?.scoutDone) {
@@ -1076,22 +1081,11 @@ export function installTranslationPipelineV3(target: unknown, services: Pipeline
   let starting: Host | undefined;
   host.chunker = function (source: string, options: unknown) {
     if (starting) {
-      const batchCount = starting.batchChaptersCount;
       const mode = starting.executionMode || 'web';
-      const isDeepSeekApi = mode === 'api' && (starting.aiProvider === 'deepseek' || starting.provider === 'deepseek');
-      if (isDeepSeekApi) {
-        return groupAdaptiveChapterChunks(source, {
-          executionMode: 'api',
-          aiProvider: 'deepseek',
-          maxBatchChars: 3500,
-        });
-      }
-      if (batchCount === 1 || batchCount === 2 || batchCount === 3) {
-        return groupChapterChunks(source, batchCount);
-      }
+      const provider = starting.aiProvider || starting.provider || 'chatgpt';
       return groupAdaptiveChapterChunks(source, {
         executionMode: mode,
-        aiProvider: starting.aiProvider,
+        aiProvider: provider,
       });
     }
     return originalChunker(source, options);
