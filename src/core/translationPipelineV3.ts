@@ -141,9 +141,86 @@ export function splitChapters(source: string): ChapterInput[] {
     return { id: 'CH'+number, number, title: h[0].trim(), text: source.slice(h.index, headers[i+1]?.index ?? source.length).trim() }; });
 }
 export function groupChapterChunks(source: string, count: number): Array<{ id: string; index: number; start: number; end: number; text: string }> {
-  if(count!==2&&count!==3)throw new Error('Chỉ chọn 2 hoặc 3 chương mỗi mẻ.');
-  const chapters=splitChapters(source),result=[];let offset=0;
-  for(let i=0;i<chapters.length;i+=count){const text=chapters.slice(i,i+count).map(c=>c.text).join('\n\n');result.push({id:`V3-${chapters[i]!.id}-${chapters[Math.min(i+count-1,chapters.length-1)]!.id}`,index:result.length,start:offset,end:offset+text.length,text});offset+=text.length+2;}return result;
+  if (count < 1 || count > 3) throw new Error('Chỉ chọn 1, 2 hoặc 3 chương mỗi mẻ.');
+  const chapters = splitChapters(source);
+  const result: Array<{ id: string; index: number; start: number; end: number; text: string }> = [];
+  let offset = 0;
+  for (let i = 0; i < chapters.length; i += count) {
+    const batch = chapters.slice(i, i + count);
+    const text = batch.map((c) => c.text).join('\n\n');
+    const first = batch[0]!;
+    const last = batch[batch.length - 1]!;
+    const id = first.id === last.id ? `V3-${first.id}` : `V3-${first.id}-${last.id}`;
+    result.push({
+      id,
+      index: result.length,
+      start: offset,
+      end: offset + text.length,
+      text,
+    });
+    offset += text.length + 2;
+  }
+  return result;
+}
+
+export interface AdaptiveChapterGroupOptions {
+  executionMode?: 'web' | 'api';
+  aiProvider?: 'chatgpt' | 'kimi' | 'deepseek' | 'gemini';
+  maxBatchChars?: number;
+  maxChapters?: number;
+}
+
+export function groupAdaptiveChapterChunks(
+  source: string,
+  options?: AdaptiveChapterGroupOptions,
+): Array<{ id: string; index: number; start: number; end: number; text: string; chapterCount: number }> {
+  const chapters = splitChapters(source);
+  const result: Array<{ id: string; index: number; start: number; end: number; text: string; chapterCount: number }> = [];
+  const executionMode = options?.executionMode || 'web';
+  const isDeepSeekApi = executionMode === 'api' && options?.aiProvider === 'deepseek';
+  const defaultMaxChars = isDeepSeekApi ? 3500 : executionMode === 'web' ? 5000 : 14000;
+  const maxBatchChars = options?.maxBatchChars ?? defaultMaxChars;
+  const defaultMaxChapters = executionMode === 'web' ? 3 : isDeepSeekApi ? 10 : 20;
+  const maxChapters = options?.maxChapters
+    ? Math.min(Math.max(options.maxChapters, 1), 20)
+    : defaultMaxChapters;
+
+  let i = 0;
+  let offset = 0;
+  while (i < chapters.length) {
+    // Luôn lấy tối thiểu 1 chương NGUYÊN VẸN. TUYỆT ĐỐI KHÔNG CẮT NGANG GIỮA CHƯƠNG!
+    const batch = [chapters[i]!];
+    let currentLength = chapters[i]!.text.length;
+
+    while (batch.length < maxChapters && (i + batch.length) < chapters.length) {
+      const next = chapters[i + batch.length]!;
+      if (currentLength + 2 + next.text.length <= maxBatchChars) {
+        batch.push(next);
+        currentLength += 2 + next.text.length;
+      } else {
+        break;
+      }
+    }
+
+    const text = batch.map((c) => c.text).join('\n\n');
+    const first = batch[0]!;
+    const last = batch[batch.length - 1]!;
+    const id = first.id === last.id ? `V3-${first.id}` : `V3-${first.id}-${last.id}`;
+
+    result.push({
+      id,
+      index: result.length,
+      start: offset,
+      end: offset + text.length,
+      text,
+      chapterCount: batch.length,
+    });
+
+    offset += text.length + 2;
+    i += batch.length;
+  }
+
+  return result;
 }
 export function paragraphsFor(chapters: ChapterInput[]): Paragraph[] {
   return chapters.flatMap(c => c.text.split(/\r?\n/u).filter(p=>p.trim()).map((text,i)=>({ id:`${c.id}-P${String(i+1).padStart(4,'0')}`,chapterId:c.id,text })));

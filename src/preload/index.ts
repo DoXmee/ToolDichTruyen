@@ -283,6 +283,20 @@ const storyTool: StoryToolApi = Object.freeze({
       titles: string[];
       model: string;
     }>,
+  getGeminiApiConfig: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.geminiApiGetConfig),
+  configureGeminiApi: (request: any) =>
+    ipcRenderer.invoke(IPC_CHANNELS.geminiApiSetConfig, request),
+  testGeminiApiKey: (request: any) =>
+    ipcRenderer.invoke(IPC_CHANNELS.geminiApiTestKey, request),
+  getDeepSeekApiConfig: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.deepseekApiGetConfig),
+  configureDeepSeekApi: (request: any) =>
+    ipcRenderer.invoke(IPC_CHANNELS.deepseekApiSetConfig, request),
+  testDeepSeekApiKey: (request: any) =>
+    ipcRenderer.invoke(IPC_CHANNELS.deepseekApiTestKey, request),
+  checkDeepSeekBalance: (request: any) =>
+    ipcRenderer.invoke(IPC_CHANNELS.deepseekApiCheckBalance, request),
   listAccounts: () =>
     ipcRenderer.invoke(IPC_CHANNELS.accountsList) as Promise<AccountsSnapshot>,
   selectAccount: (id: string) =>

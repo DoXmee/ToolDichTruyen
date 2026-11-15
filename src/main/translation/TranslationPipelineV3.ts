@@ -1,6 +1,7 @@
 import {
   emptyRegistry,
   groupChapterChunks,
+  groupAdaptiveChapterChunks,
   parseProtocolJson,
   splitChapters,
   isGenericNameForm,
@@ -27,6 +28,7 @@ import {
   localizedHanTargets,
   localizedRepairBatchResponseError,
   replaceLocalizedTargets,
+  type LocalizedHanTarget,
 } from '../../core/localizedHanRepair.js';
 import { buildLocalizedHanRepairPrompt } from '../../core/promptBuilder.js';
 import fs from 'node:fs/promises';
@@ -44,7 +46,15 @@ interface State {
   bootstrapCursor: number;
   stage: string;
   sourceChapters: ChapterInput[];
+  pendingHanRepairs?: Array<{
+    segmentIndex: number;
+    segmentId: string;
+    targets: LocalizedHanTarget[];
+    cleanSource: string;
+  }>;
 }
+
+export { DeepSeekApiAdapter } from '../deepseek/DeepSeekApiAdapter.js';
 
 export interface PipelineServices {
   refetchRaw?: (chapter: ChapterInput, signal: AbortSignal) => Promise<string>;
@@ -69,8 +79,9 @@ export function readPipelineOptions(payload: Record<string, unknown>): {
   batchChaptersCount: number;
   sourceChapters: ChapterInput[];
 } {
-  const count = payload.batchChaptersCount ?? 2;
-  if (count !== 2 && count !== 3) throw Error('Chỉ chọn hai hoặc ba chương mỗi mẻ.');
+  const rawCount = payload.batchChaptersCount;
+  const count = typeof rawCount === 'number' ? rawCount : 2;
+  if (count !== 0 && (count < 1 || count > 3)) throw Error('Số chương mỗi mẻ phải từ 1 đến 3 (hoặc 0 để tự động thích ứng).');
   const refs = payload.sourceChapters ?? [];
   if (!Array.isArray(refs) || refs.length > 10000) throw Error('Danh sách nguồn chương không hợp lệ.');
   const chapters = refs.map((value: unknown) => {
@@ -321,6 +332,279 @@ async function bootstrap(host: Host, job: Host, signal: AbortSignal): Promise<vo
   );
 }
 
+async function executeClusterScout(
+  host: Host,
+  job: Host,
+  startIndex: number,
+  signal: AbortSignal,
+  services: PipelineServices,
+): Promise<void> {
+  const state = job.pipelineV3 as State;
+  const segmentsToScout: Host[] = [];
+  let totalChars = 0;
+  // Giới hạn an toàn input cho mẻ trinh sát DeepSeek (tối đa ~36.000 ký tự chữ Hán)
+  const maxClusterChars = 36000;
+  const maxSegmentsInCluster = 30;
+
+  for (let idx = startIndex; idx < job.segments.length; idx++) {
+    const s = job.segments[idx];
+    if (s.status === 'completed' || s.preparedV3?.scoutDone) continue;
+    if (segmentsToScout.length > 0 && totalChars + s.sourceText.length > maxClusterChars) {
+      break;
+    }
+    segmentsToScout.push(s);
+    totalChars += s.sourceText.length;
+    if (segmentsToScout.length >= maxSegmentsInCluster) {
+      break;
+    }
+  }
+
+  if (segmentsToScout.length === 0) return;
+
+  state.stage = 'analysis';
+  const startNum = segmentsToScout[0]!.index + 1;
+  const endNum = segmentsToScout[segmentsToScout.length - 1]!.index + 1;
+  host.logActivity(
+    job,
+    `V3 · Trinh sát chùm (${segmentsToScout.length} chương: đoạn ${startNum} đến ${endNum}, ~${totalChars} chữ): Khóa tên riêng, địa danh và lọc rác toàn cụm...`,
+    'info',
+    job.segments[startIndex],
+  );
+  await host.checkpoint(job);
+
+  const clusterSource = segmentsToScout.map((s) => s.sourceText).join('\n\n');
+  const knownEntities = state.registry.characters.map((c) => ({
+    chinese: c.source,
+    vietnamese: c.vi,
+  }));
+  const knownLocations = (state.registry.locations || []).map((l) => ({
+    chinese: l.source,
+    vietnamese: l.vi,
+  }));
+
+  const scoutPrompt = compileChapterScoutPrompt({
+    segmentId: `Cluster-${startNum}-${endNum}`,
+    sourceText: clusterSource,
+    knownEntities,
+    knownLocations,
+  });
+
+  let scoutData: Record<string, unknown> | null = null;
+  let scoutAttempts = 0;
+  const maxScoutAttempts = 2;
+
+  while (scoutAttempts < maxScoutAttempts) {
+    scoutAttempts++;
+    try {
+      const currentPrompt = scoutAttempts > 1
+        ? `${scoutPrompt}\n\nLƯU Ý BẮT BUỘC: Lần trước định dạng trả lời không phải JSON. BẮT BUỘC chỉ trả về duy nhất 1 khối JSON chuẩn, tuyệt đối không dịch văn bản hay thêm bất kỳ lời dẫn nào!`
+        : scoutPrompt;
+      const scoutResponse = await send(host, job, currentPrompt, signal, true);
+      scoutData = parseProtocolJson(scoutResponse);
+      break;
+    } catch (scoutErr) {
+      if (signal.aborted) throw signal.reason;
+      host.logActivity(
+        job,
+        `V3 · Trinh sát chùm chưa nhận được JSON hợp lệ (thử lần ${scoutAttempts}/${maxScoutAttempts}): ${String(scoutErr)}`,
+        'warning',
+        job.segments[startIndex],
+      );
+      if (scoutAttempts < maxScoutAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+  }
+
+  if (!scoutData) {
+    host.logActivity(
+      job,
+      `V3 · Trinh sát chùm không lấy được JSON sau ${maxScoutAttempts} lần thử. Tự động dùng cấu hình an toàn cho chùm này.`,
+      'info',
+      job.segments[startIndex],
+    );
+    scoutData = {
+      integrity: { status: 'ok' },
+      garbage: [],
+      newCharacters: [],
+      relations: [],
+      locations: [],
+    };
+  }
+
+  const garbage = (Array.isArray(scoutData.garbage) ? scoutData.garbage : []) as GarbageSnippet[];
+  const newCharacters = Array.isArray(scoutData.newCharacters) ? scoutData.newCharacters : [];
+  let newCharCount = 0;
+  for (const c of newCharacters as Array<{ source?: string; vi?: string; gender?: string; role?: string }>) {
+    if (!c.source || !c.vi || isGenericNameForm(c.source)) continue;
+    if (isNonEntityOrCommonWord(c.source, c.vi, c.role)) continue;
+    if (/[\u4e00-\u9fa5]/u.test(c.vi)) continue;
+    const exists = state.registry.characters.find((x) => x.source === c.source);
+    if (!exists) {
+      const id = 'C' + String(state.registry.characters.length + 1).padStart(5, '0');
+      state.registry.characters.push({
+        id,
+        source: c.source,
+        vi: c.vi,
+        kind: c.gender === 'animal' ? 'animal' : 'person',
+        gender: (c.gender as 'male' | 'female' | 'unknown') || 'unknown',
+        role: c.role || '',
+        forms: [{ id: 'F01', source: c.source, vi: c.vi, kind: 'name', evidence: [] }],
+      });
+      newCharCount++;
+    }
+  }
+
+  const newLocations = Array.isArray(scoutData.locations) ? scoutData.locations : [];
+  let newLocCount = 0;
+  if (!state.registry.locations) state.registry.locations = [];
+  for (const loc of newLocations as Array<{ source?: string; vi?: string; type?: string }>) {
+    if (!loc.source || !loc.vi) continue;
+    if (/[\u4e00-\u9fa5]/u.test(loc.vi)) continue;
+    const s = loc.source.trim();
+    const v = loc.vi.trim();
+    if (s.length <= 1) continue;
+    const exists = state.registry.locations.find((x) => x.source === s);
+    if (!exists) {
+      const id = 'L' + String(state.registry.locations.length + 1).padStart(5, '0');
+      state.registry.locations.push({
+        id,
+        source: s,
+        vi: v,
+        type: loc.type || 'location',
+      });
+      newLocCount++;
+    }
+  }
+
+  const relations = Array.isArray(scoutData.relations) ? scoutData.relations : [];
+  for (const r of relations as Array<{ charA?: string; charB?: string; relation?: string; suggestion?: string }>) {
+    if (!r.charA || !r.charB) continue;
+    const from = state.registry.characters.find((c) => c.source === r.charA || c.vi === r.charA);
+    const to = state.registry.characters.find((c) => c.source === r.charB || c.vi === r.charB);
+    if (from && to && from.id !== to.id) {
+      const existingRel = state.registry.relations.find((x) => x.fromId === from.id && x.toId === to.id);
+      if (!existingRel) {
+        state.registry.relations.push({
+          fromId: from.id,
+          toId: to.id,
+          fact: r.relation || '',
+          evidence: [],
+          samples: r.suggestion
+            ? [{ speakerId: from.id, listenerId: to.id, self: '', call: '', scene: r.suggestion }]
+            : [],
+        });
+      }
+    }
+  }
+
+  let totalGarbageChars = 0;
+  for (const s of segmentsToScout) {
+    let cleanSource = s.sourceText;
+    if (garbage.length > 0) {
+      const beforeLen = cleanSource.length;
+      cleanSource = removeGarbageSnippets(cleanSource, garbage);
+      totalGarbageChars += (beforeLen - cleanSource.length);
+    }
+    s.preparedV3 = {
+      cleanSource,
+      scoutDone: true,
+    };
+    s.sourceText = cleanSource;
+  }
+
+  host.logActivity(
+    job,
+    `V3 · Đã trinh sát xong chùm ${segmentsToScout.length} chương: Thêm ${newCharCount} nhân vật, ${newLocCount} địa danh, lọc sạch ${totalGarbageChars} ký tự rác. Sẵn sàng dịch thẳng từng chương!`,
+    'info',
+    job.segments[startIndex],
+  );
+
+  memoryProjection(job);
+  await host.saveJobMemory(job);
+  await host.checkpoint(job);
+}
+
+async function flushPendingHanRepairs(
+  host: Host,
+  job: Host,
+  signal: AbortSignal,
+  checkpointName: string,
+): Promise<void> {
+  const state = job.pipelineV3 as State;
+  const queue = state.pendingHanRepairs;
+  if (!queue || queue.length === 0) return;
+
+  const allTargets: Array<{ targetId: string; sentence: string; segmentIndex: number; origTarget: LocalizedHanTarget }> = [];
+  for (const item of queue) {
+    for (const t of item.targets) {
+      allTargets.push({
+        targetId: t.targetId,
+        sentence: t.text,
+        segmentIndex: item.segmentIndex,
+        origTarget: t,
+      });
+    }
+  }
+
+  if (allTargets.length === 0) {
+    state.pendingHanRepairs = [];
+    return;
+  }
+
+  host.logActivity(
+    job,
+    `V3 · Tiến hành đợt sửa lỗi chữ Hán ${checkpointName}: Gửi 1 mẻ duy nhất sửa toàn bộ ${allTargets.length} câu tích lũy...`,
+    'info',
+  );
+
+  const repairPrompt = buildLocalizedHanRepairPrompt({
+    basePrompt: `[TDT_V3_TRANSLATION]\n${job.customPrompt || job.resolvedPrompt}`,
+    targets: allTargets.map((t) => ({ targetId: t.targetId, sentence: t.sentence })),
+    attempt: 1,
+    hanSample: '',
+    includeBasePrompt: true,
+  });
+
+  try {
+    const repairResponse = await send(host, job, repairPrompt, signal, false);
+    const parsed = localizedRepairBatchResponseError(repairResponse, allTargets.map(t => ({ targetId: t.targetId, text: t.sentence, start: 0, end: 0 })));
+    if (!parsed.error && parsed.replacements && parsed.replacements.size > 0) {
+      let replacedCount = 0;
+      for (const item of queue) {
+        const seg = job.segments[item.segmentIndex];
+        if (seg && seg.translatedText) {
+          const segReplacements = new Map<string, string>();
+          for (const t of item.targets) {
+            const rep = parsed.replacements.get(t.targetId);
+            if (rep) {
+              segReplacements.set(t.targetId, rep);
+              replacedCount++;
+            }
+          }
+          if (segReplacements.size > 0) {
+            seg.translatedText = replaceLocalizedTargets(seg.translatedText, item.targets, segReplacements);
+          }
+        }
+      }
+      host.logActivity(
+        job,
+        `V3 · Đã sửa sạch ${replacedCount}/${allTargets.length} câu sót chữ Hán thành công trong đợt ${checkpointName}!`,
+        'info',
+      );
+      await host.checkpoint(job);
+    }
+  } catch (err) {
+    host.logActivity(
+      job,
+      `V3 · Đợt sửa chữ Hán ${checkpointName} chưa đạt (${String(err)}), tiếp tục bảo lưu để xuất bản an toàn.`,
+      'warning',
+    );
+  } finally {
+    state.pendingHanRepairs = [];
+  }
+}
+
 /**
  * Bước 2: Dịch mỗi phân đoạn/chương qua 2 lượt tuần tự:
  * - Lượt 1: Trinh sát tính toàn vẹn (đứt câu/mất trang), AI chỉ ra vị trí rác để Tool tự cắt, cập nhật nhân vật/xưng hô mới.
@@ -337,8 +621,16 @@ async function processBatch(
   try {
     if (signal.aborted) return false;
     let prepared = segment.preparedV3 as { cleanSource: string; scoutDone?: boolean } | undefined;
+    const isDeepSeekApi = job.executionMode === 'api' && (job.aiProvider === 'deepseek' || job.provider === 'deepseek');
 
     // === LƯỢT 1: TRINH SÁT, KIỂM TRA ĐỨT TRANG & ĐỊNH VỊ RÁC ===
+    if (!prepared?.scoutDone) {
+      if (isDeepSeekApi) {
+        await executeClusterScout(host, job, segment.index, signal, services);
+        prepared = segment.preparedV3 as { cleanSource: string; scoutDone?: boolean } | undefined;
+      }
+    }
+
     if (!prepared?.scoutDone) {
       const chapters = splitChapters(segment.sourceText).map((c) => ({
         ...c,
@@ -621,6 +913,7 @@ async function processBatch(
         bible,
         genreProfile,
         sceneState: 'normal',
+        executionMode: job.executionMode === 'api' ? 'api' : 'web',
         customPrompt: job.customPrompt || job.resolvedPrompt,
         skipEntityExtraction: true, // KHÔNG BẮT AI TRẢ VỀ <THUC_THE_MOI> Ở LƯỢT 2!
       });
@@ -658,53 +951,74 @@ async function processBatch(
 
         // === ƯU TIÊN 1: SỬA CỤC BỘ CÁC CÂU SÓT CHỮ HÁN (LOCALIZED REPAIR) ===
         if (!validation.valid && isLocalizedHanOnly(validation)) {
-          const targets = localizedHanTargets(translated, validation, segment.id);
-          if (targets && targets.length > 0 && targets.length <= 15) {
-            let localAttempt = 0;
-            const maxLocalAttempts = 3;
-            while (localAttempt < maxLocalAttempts && !validation.valid && isLocalizedHanOnly(validation)) {
-              if (signal.aborted) return false;
-              localAttempt++;
+          if (isDeepSeekApi) {
+            // Cơ chế DeepSeek: Gom các câu sót chữ Hán về sửa tập trung 2 lần/bộ truyện (50% và 100%)
+            const targets = localizedHanTargets(translated, validation, segment.id);
+            if (targets && targets.length > 0) {
+              state.pendingHanRepairs ??= [];
+              state.pendingHanRepairs.push({
+                segmentIndex: segment.index,
+                segmentId: segment.id,
+                targets,
+                cleanSource: prepared.cleanSource,
+              });
               host.logActivity(
                 job,
-                `V3 · Phát hiện ${targets.length} câu sót chữ Hán: AI dịch sửa cục bộ câu lỗi theo ngữ cảnh (lần ${localAttempt}/${maxLocalAttempts})...`,
+                `V3 · Tạm ghi nhận ${targets.length} câu sót chữ Hán vào hàng đợi sửa định kỳ (giữa/cuối truyện để tối ưu chi phí).`,
                 'info',
                 segment,
               );
-              await host.checkpoint(job);
-
-              const repairPrompt = buildLocalizedHanRepairPrompt({
-                basePrompt: `[TDT_V3_TRANSLATION]\n${job.customPrompt || job.resolvedPrompt}`,
-                targets: targets.map((t) => ({ targetId: t.targetId, sentence: t.text })),
-                attempt: localAttempt,
-                hanSample: validation.issues.find((i) => i.code === 'han_remaining')?.sample || '',
-                includeBasePrompt: true,
-              });
-
-              try {
-                const repairResponse = await send(host, job, repairPrompt, signal, false);
-                const parsed = localizedRepairBatchResponseError(repairResponse, targets);
-                if (!parsed.error && parsed.replacements && parsed.replacements.size > 0) {
-                  translated = replaceLocalizedTargets(translated, targets, parsed.replacements);
-                  validation = validateTranslation(prepared.cleanSource, translated, job.settings.validation);
-                  if (validation.valid) {
-                    host.logActivity(
-                      job,
-                      `V3 · Đã sửa sạch chữ Hán thành công qua cơ chế sửa câu cục bộ (${targets.length} câu).`,
-                      'info',
-                      segment,
-                    );
-                    break;
-                  }
-                }
-              } catch (repairErr) {
+              validation = { ...validation, valid: true, issues: [], hanCharacters: [] };
+            }
+          } else {
+            const targets = localizedHanTargets(translated, validation, segment.id);
+            if (targets && targets.length > 0 && targets.length <= 15) {
+              let localAttempt = 0;
+              const maxLocalAttempts = 3;
+              while (localAttempt < maxLocalAttempts && !validation.valid && isLocalizedHanOnly(validation)) {
                 if (signal.aborted) return false;
+                localAttempt++;
                 host.logActivity(
                   job,
-                  `V3 · Lần sửa cục bộ ${localAttempt} chưa đạt: ${String(repairErr)}`,
-                  'warning',
+                  `V3 · Phát hiện ${targets.length} câu sót chữ Hán: AI dịch sửa cục bộ câu lỗi theo ngữ cảnh (lần ${localAttempt}/${maxLocalAttempts})...`,
+                  'info',
                   segment,
                 );
+                await host.checkpoint(job);
+
+                const repairPrompt = buildLocalizedHanRepairPrompt({
+                  basePrompt: `[TDT_V3_TRANSLATION]\n${job.customPrompt || job.resolvedPrompt}`,
+                  targets: targets.map((t) => ({ targetId: t.targetId, sentence: t.text })),
+                  attempt: localAttempt,
+                  hanSample: validation.issues.find((i) => i.code === 'han_remaining')?.sample || '',
+                  includeBasePrompt: true,
+                });
+
+                try {
+                  const repairResponse = await send(host, job, repairPrompt, signal, false);
+                  const parsed = localizedRepairBatchResponseError(repairResponse, targets);
+                  if (!parsed.error && parsed.replacements && parsed.replacements.size > 0) {
+                    translated = replaceLocalizedTargets(translated, targets, parsed.replacements);
+                    validation = validateTranslation(prepared.cleanSource, translated, job.settings.validation);
+                    if (validation.valid) {
+                      host.logActivity(
+                        job,
+                        `V3 · Đã sửa sạch chữ Hán thành công qua cơ chế sửa câu cục bộ (${targets.length} câu).`,
+                        'info',
+                        segment,
+                      );
+                      break;
+                    }
+                  }
+                } catch (repairErr) {
+                  if (signal.aborted) return false;
+                  host.logActivity(
+                    job,
+                    `V3 · Lần sửa cục bộ ${localAttempt} chưa đạt: ${String(repairErr)}`,
+                    'warning',
+                    segment,
+                  );
+                }
               }
             }
           }
@@ -718,6 +1032,16 @@ async function processBatch(
         segment.validation = validation;
         segment.error = undefined;
         state.stage = 'completed-batch';
+
+        // Kích hoạt sửa lỗi tiếng Trung định kỳ cho DeepSeek API (Mốc 1: giữa truyện 50%; Mốc 2: cuối truyện 100%)
+        if (isDeepSeekApi && state.pendingHanRepairs && state.pendingHanRepairs.length > 0) {
+          const isMidpoint = segment.index === Math.floor(job.segments.length / 2);
+          const isFinal = segment.index === job.segments.length - 1;
+          if (isMidpoint || isFinal) {
+            await flushPendingHanRepairs(host, job, signal, isFinal ? 'cuối truyện' : 'giữa truyện');
+          }
+        }
+
         return await host.completeSegment(job, segment, signal);
       } catch (error) {
         if (signal.aborted) return false;
@@ -751,7 +1075,26 @@ export function installTranslationPipelineV3(target: unknown, services: Pipeline
     originalSync = host.autoSyncStoryMemoryFromSegments;
   let starting: Host | undefined;
   host.chunker = function (source: string, options: unknown) {
-    return starting ? groupChapterChunks(source, starting.batchChaptersCount ?? 2) : originalChunker(source, options);
+    if (starting) {
+      const batchCount = starting.batchChaptersCount;
+      const mode = starting.executionMode || 'web';
+      const isDeepSeekApi = mode === 'api' && (starting.aiProvider === 'deepseek' || starting.provider === 'deepseek');
+      if (isDeepSeekApi) {
+        return groupAdaptiveChapterChunks(source, {
+          executionMode: 'api',
+          aiProvider: 'deepseek',
+          maxBatchChars: 3500,
+        });
+      }
+      if (batchCount === 1 || batchCount === 2 || batchCount === 3) {
+        return groupChapterChunks(source, batchCount);
+      }
+      return groupAdaptiveChapterChunks(source, {
+        executionMode: mode,
+        aiProvider: starting.aiProvider,
+      });
+    }
+    return originalChunker(source, options);
   };
   host.start = async function (request: Host) {
     if (starting) throw Error('Đang khởi tạo một tác vụ khác.');
@@ -765,7 +1108,7 @@ export function installTranslationPipelineV3(target: unknown, services: Pipeline
   host.launch = function (job: Host) {
     if (starting && !job.pipelineV3) {
       const batch = starting.batchChaptersCount ?? 2;
-      if (batch !== 2 && batch !== 3) throw Error('Số chương mỗi mẻ phải là 2 hoặc 3.');
+      if (batch !== 0 && (batch < 1 || batch > 3)) throw Error('Số chương mỗi mẻ phải từ 1 đến 3.');
       job.pipelineV3 = {
         version: 3,
         batchChapters: batch,

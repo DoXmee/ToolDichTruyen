@@ -1,5 +1,5 @@
 import { describe,expect,it } from 'vitest';
-import { applyAnalysis,collectTranslationRows,decodeTranslation,emptyRegistry,encodeBatch,groupChapterChunks,isGenericNameForm,paragraphsFor,parseAnalysis,parseProtocolJson,analysisPrompt,removeVerifiedGarbage,resolvedResolutions,translationPrompt,verifyEvidence,type AnalysisResult } from '../../src/core/translationPipelineV3';
+import { applyAnalysis,collectTranslationRows,decodeTranslation,emptyRegistry,encodeBatch,groupChapterChunks,groupAdaptiveChapterChunks,isGenericNameForm,paragraphsFor,parseAnalysis,parseProtocolJson,analysisPrompt,removeVerifiedGarbage,resolvedResolutions,translationPrompt,verifyEvidence,type AnalysisResult } from '../../src/core/translationPipelineV3';
 const paragraphs=paragraphsFor([{id:'CH1',number:1,title:'Chương 1',text:'Chương 1\n柳如煙走來。如煙說：「小柳就是我。」\n柳如煙看著小柳。'}]);
 const evidence=[{paragraphId:'CH1-P0002',quote:'柳如煙走來。如煙說：「小柳就是我。」'}];
 const result=():AnalysisResult=>({integrity:[{chapterId:'CH1',status:'ok',reason:''}],garbage:[],newCharacters:[{ref:'N1',source:'柳如煙',vi:'Liễu Như Yên',kind:'person',gender:'female',role:'',evidence}],aliasUpdates:[{targetId:'N1',source:'如煙',vi:'Như Yên',kind:'short',evidence},{targetId:'N1',source:'小柳',vi:'cháu Liễu',kind:'address',evidence}],relations:[],uncertain:[],resolutions:[]});
@@ -28,7 +28,15 @@ describe('V3 identity and output contracts',()=>{
  it('preserves the good parts of a draft while listing every literal name to recode on retry',()=>{const b=encodeBatch(paragraphs,registry(),[]);const p=b.paragraphs[1]!;const prompt=translationPrompt({...b,paragraphs:[p],repairs:[{id:p.id,text:'Liễu Như Yên đến chợ.',issue:'Mã tên bị thiếu'}]},'- **Tên riêng:** Phiên âm Hán Việt chuẩn.');expect(prompt).not.toContain('Phiên âm Hán Việt chuẩn');expect(prompt).toContain('copyExactly');expect(prompt).toContain(b.tokens[0]!.token);expect(prompt).toContain('Liễu Như Yên đến chợ.');});
  it('anchors a missing repeated name to its own comparison clause instead of shifting the next code',()=>{const b=encodeBatch([{id:'CH17-P0046',chapterId:'CH17',text:'柳如煙沒有小柳白，臉要比如煙方正一些，柳如煙的眉毛很濃。'}],registry(),[]);const p=b.paragraphs[0]!,missing=b.tokens[2]!;const prompt=translationPrompt({...b,repairs:[{id:p.id,text:b.tokens.filter(t=>t!==missing).map(t=>t.token).join(' ')+' đi đến chợ.',issue:'Mã thiếu'}]},'');const rows=JSON.parse(prompt.split('BẢN NHÁP CẦN SỬA VÀ DANH SÁCH MÃ BẮT BUỘC:\n')[1]!.split('\nĐOẠN_NGUỒN_ĐÃ_MÃ_HÓA:')[0]!);expect(rows[0].missingTokens).toEqual([missing.token]);expect(rows[0].copyExactly[2].sourceClause).toBe('臉要比'+missing.token+'方正一些');expect(prompt).toContain('không đổi mã ở vế kế tiếp');expect(prompt).toContain('QUAN HỆ VÀ CẢNH');expect(prompt).toContain('KHÔNG KHÓA CỨNG');});
  it('does not keep a relation if the cited excerpt only identifies one participant',()=>{const a=result();a.newCharacters.push({...a.newCharacters[0]!,ref:'N2',source:'柳青'});a.relations=[{fromId:'N1',toId:'N2',fact:'Liễu Như Yên là mẹ của Liễu Thanh',evidence,samples:[]}];const warnings:string[]=[];const r=applyAnalysis(emptyRegistry(),a,m=>warnings.push(m));expect(r.relations).toEqual([]);expect(warnings.join(' ')).toContain('không nhận diện đủ hai đầu');});
- it('groups both modes into selected two/three whole chapters',()=>{const source=Array.from({length:20},(_,i)=>`Chương ${i+1}\n${'柳如煙走來。'.repeat(20)}`).join('\n\n');expect(groupChapterChunks(source,2)).toHaveLength(10);expect(groupChapterChunks(source,3)).toHaveLength(7);expect(()=>groupChapterChunks(source,1)).toThrow();});
+ it('groups both modes into selected one/two/three whole chapters and adaptively batches without cutting chapters',()=>{const source=Array.from({length:20},(_,i)=>`Chương ${i+1}\n${'柳如煙走來。'.repeat(20)}`).join('\n\n');expect(groupChapterChunks(source,1)).toHaveLength(20);expect(groupChapterChunks(source,2)).toHaveLength(10);expect(groupChapterChunks(source,3)).toHaveLength(7);expect(()=>groupChapterChunks(source,0)).toThrow();expect(()=>groupChapterChunks(source,4)).toThrow();
+  // Test adaptive batching (whole chapters only)
+  const adaptiveChunks = groupAdaptiveChapterChunks(source, { executionMode: 'web', maxBatchChars: 500 });
+  for (const chunk of adaptiveChunks) {
+    expect(chunk.text).toMatch(/^Chương \d+/u);
+    expect(chunk.chapterCount).toBeGreaterThanOrEqual(1);
+    expect(chunk.chapterCount).toBeLessThanOrEqual(3);
+  }
+});
   it('robustly parses unclosed fences, conversational preambles, and repaired JSON', () => {
     // Unclosed code fence
     expect(parseProtocolJson('```json\n{"integrity": []}\n')).toEqual({ integrity: [] });

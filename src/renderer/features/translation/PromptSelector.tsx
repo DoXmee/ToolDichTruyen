@@ -21,12 +21,14 @@ interface PromptSelectorProps {
   loading?: boolean;
   allowedAiProviders: AiProvider[];
   providerSelectionLocked?: boolean;
+  batchChaptersCount?: number;
   onModeChange: (mode: PromptMode) => void;
   onCustomPromptChange: (value: string) => void;
   onOutputChapterStartChange: (value: number | undefined) => void;
   onOmitOutputChapterTitlesChange?: (value: boolean) => void;
   onExportCombinedSourceChaptersChange?: (value: boolean) => void;
   onToggleAiProvider: (provider: AiProvider) => void;
+  onBatchChaptersCountChange?: (count: number) => void;
 }
 
 interface PromptCardProps {
@@ -65,12 +67,14 @@ export function PromptSelector({
   loading = false,
   allowedAiProviders,
   providerSelectionLocked = false,
+  batchChaptersCount,
   onModeChange,
   onCustomPromptChange,
   onOutputChapterStartChange,
   onOmitOutputChapterTitlesChange,
   onExportCombinedSourceChaptersChange,
   onToggleAiProvider,
+  onBatchChaptersCountChange,
 }: PromptSelectorProps) {
   const canRenumberLinkChapters = typeof suggestedChapterStart === 'number';
 
@@ -167,15 +171,49 @@ export function PromptSelector({
         </label>
       </section>
 
-      <div className={`custom-prompt${mode === 'custom' ? ' custom-prompt--active' : ''}`}>
-        <label htmlFor="custom-prompt">Prompt tùy chỉnh</label>
+      <section className="chapter-numbering-control" aria-labelledby="batch-chapters-heading" style={{ marginTop: '0.75rem' }}>
+        <div className="chapter-numbering-control__heading">
+          <div>
+            <span className="eyebrow">Cơ chế mẻ chương</span>
+            <strong id="batch-chapters-heading">Số chương dịch mỗi mẻ (Luôn giữ nguyên chương, không cắt dở)</strong>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+          {[
+            { value: 0, label: 'Tự động thích ứng (1–3 chương)' },
+            { value: 1, label: '1 chương / mẻ (An toàn cho Web AI)' },
+            { value: 2, label: '2 chương / mẻ (Chuẩn)' },
+            { value: 3, label: '3 chương / mẻ' },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              className={`button button--sm${(batchChaptersCount ?? 0) === opt.value ? ' button--primary' : ' button--secondary'}`}
+              onClick={() => onBatchChaptersCountChange?.(opt.value)}
+              style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem' }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <div className={`custom-prompt${mode === 'custom' ? ' custom-prompt--active' : ''}`} style={{ marginTop: '1rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+          <label htmlFor="custom-prompt" style={{ fontWeight: 600 }}>Chỉ đạo văn phong & xưng hô tùy chỉnh</label>
+          <span style={{ fontSize: '0.8rem', color: customPrompt.length > 7500 ? '#e63946' : 'var(--text-muted, #888)' }}>
+            {customPrompt.length.toLocaleString('vi-VN')} / 8.000 ký tự
+          </span>
+        </div>
         <textarea
           id="custom-prompt"
+          aria-label="Prompt tùy chỉnh"
+          maxLength={8000}
           value={customPrompt}
-          onChange={(event) => onCustomPromptChange(event.target.value)}
+          onChange={(event) => onCustomPromptChange(event.target.value.slice(0, 8000))}
           onFocus={() => onModeChange('custom')}
-          placeholder="Nhập yêu cầu dịch riêng (hoặc để trống để Tool tự động áp dụng phong cách Đa thể loại mượt mà cho mọi loại truyện)..."
-          rows={5}
+          placeholder="Nhập phong cách dịch, giọng văn hoặc chỉ đạo xưng hô riêng của bạn tại đây (sẽ thay thế phong cách mặc định, trong khi khung sườn kỹ thuật bất biến như khóa tên ⟦...⟧, số chương và dịch 100% tiếng Việt vẫn được bảo toàn tự động)..."
+          rows={6}
         />
       </div>
     </section>

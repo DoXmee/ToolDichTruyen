@@ -99,6 +99,30 @@ describe('promptCompilerV2 module', () => {
 
     expect(compiled.fullPrompt).toContain('CHỈ ĐẠO VĂN PHONG RIÊNG TỪ NGƯỜI DÙNG (ƯU TIÊN TUÂN THỦ CAO NHẤT)');
     expect(compiled.fullPrompt).toContain(userPrompt);
+    expect(compiled.fullPrompt).toContain('⟦...⟧ BẮT BUỘC PHẢI GIỮ NGUYÊN');
+    expect(compiled.fullPrompt).toContain('<BAN_DICH id="segment-1">');
+    expect(compiled.fullPrompt).not.toContain('Tần Phụ');
+  });
+
+  it('supports custom prompts up to 8000 characters and replaces default rules cleanly', () => {
+    const bible = createEmptyStoryBible('custom');
+    const longPrompt = 'Xưng hô mày tao theo giọng kiếm hiệp cổ trang.'.repeat(150); // ~6750 chars
+
+    const compiled = compileStoryBiblePrompt({
+      segmentId: 'segment-long',
+      segmentIndex: 0,
+      totalSegments: 1,
+      sourceText: '今天天气很好。',
+      bible,
+      genreProfile: PERIOD_GENRE_PROFILE,
+      customPrompt: longPrompt,
+      maxCharacters: 25_000,
+    });
+
+    expect(compiled.fullPrompt).toContain('CHỈ ĐẠO VĂN PHONG RIÊNG TỪ NGƯỜI DÙNG (ƯU TIÊN TUÂN THỦ CAO NHẤT)');
+    expect(compiled.fullPrompt).toContain(longPrompt.slice(0, 8000));
+    expect(compiled.fullPrompt).toContain('### KHỐI A: QUY TẮC KỸ THUẬT BẮT BUỘC');
+    expect(compiled.fullPrompt).toContain('<BAN_DICH id="segment-long">');
   });
 
   it('keeps prompt strictly within character budget and avoids combinatorial explosion in Khối E', () => {

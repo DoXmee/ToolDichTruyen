@@ -14,6 +14,8 @@ import {
 import type { AiProviderManager } from "./ai/AiProviderManager.js";
 import { exportTextFile } from "./exportText.js";
 import type { GeminiTitleService } from "./gemini/GeminiTitleService.js";
+import { GeminiApiAdapter } from "./gemini/GeminiApiAdapter.js";
+import { DeepSeekApiAdapter } from "./deepseek/DeepSeekApiAdapter.js";
 import type { PersistenceService } from "./persistence/PersistenceService.js";
 import { normalizePromptMode, type PromptLoader } from "./prompts.js";
 import type { StorySourceServiceApi } from "./storySources/index.js";
@@ -32,6 +34,8 @@ export interface IpcDependencies {
   translator: TranslationJobRunner;
   storySources: StorySourceServiceApi;
   gemini: GeminiTitleService;
+  geminiApi?: GeminiApiAdapter;
+  deepseekApi?: DeepSeekApiAdapter;
   /** Test seam; production falls back to Electron's shell implementation. */
   showItemInFolder?: (fullPath: string) => void;
   /**
@@ -580,6 +584,70 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     });
     const model = stringField(payload, "model", { max: 100 });
     return dependencies.gemini.generateTitles({ chapters, ...(model ? { model } : {}) });
+  });
+
+  handle(IPC_CHANNELS.geminiApiGetConfig, async () => {
+    return dependencies.persistence.getGeminiApiConfiguration();
+  });
+  handle(IPC_CHANNELS.geminiApiSetConfig, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, "Cấu hình Gemini API");
+    const updated = await dependencies.persistence.updateGeminiApiConfiguration({
+      apiKeys: Array.isArray(payload.apiKeys) ? payload.apiKeys : undefined,
+      model: typeof payload.model === "string" ? payload.model : undefined,
+      batchChaptersCount: typeof payload.batchChaptersCount === "number" ? payload.batchChaptersCount : undefined,
+      executionMode: payload.executionMode === "api" || payload.executionMode === "web" ? payload.executionMode : undefined,
+    });
+    if (dependencies.geminiApi) {
+      if (updated.apiKeys) dependencies.geminiApi.setKeys(updated.apiKeys);
+      if (updated.model) dependencies.geminiApi.setModel(updated.model);
+      if (updated.batchChaptersCount) dependencies.geminiApi.setBatchChaptersCount(updated.batchChaptersCount);
+    }
+    return updated;
+  });
+  handle(IPC_CHANNELS.geminiApiTestKey, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, "Kiểm tra Gemini API Key");
+    const apiKey = stringField(payload, "apiKey", { required: true })!;
+    const model = stringField(payload, "model");
+    if (dependencies.geminiApi) {
+      return dependencies.geminiApi.testKey(apiKey, model);
+    }
+    const tempAdapter = new GeminiApiAdapter();
+    return tempAdapter.testKey(apiKey, model);
+  });
+
+  handle(IPC_CHANNELS.deepseekApiGetConfig, async () => {
+    return dependencies.persistence.getDeepSeekApiConfiguration();
+  });
+  handle(IPC_CHANNELS.deepseekApiSetConfig, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, "Cấu hình DeepSeek API");
+    const updated = await dependencies.persistence.updateDeepSeekApiConfiguration({
+      apiKeys: Array.isArray(payload.apiKeys) ? payload.apiKeys : undefined,
+      model: typeof payload.model === "string" ? payload.model : undefined,
+      executionMode: payload.executionMode === "api" || payload.executionMode === "web" ? payload.executionMode : undefined,
+    });
+    if (dependencies.deepseekApi) {
+      if (updated.apiKeys) dependencies.deepseekApi.setKeys(updated.apiKeys);
+      if (updated.model) dependencies.deepseekApi.setModel(updated.model);
+    }
+    return updated;
+  });
+  handle(IPC_CHANNELS.deepseekApiTestKey, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, "Kiểm tra DeepSeek API Key");
+    const apiKey = stringField(payload, "apiKey", { required: true })!;
+    if (dependencies.deepseekApi) {
+      return dependencies.deepseekApi.testKey(apiKey);
+    }
+    const tempAdapter = new DeepSeekApiAdapter();
+    return tempAdapter.testKey(apiKey);
+  });
+  handle(IPC_CHANNELS.deepseekApiCheckBalance, async (_event, rawPayload) => {
+    const payload = objectPayload(rawPayload, "Kiểm tra số dư DeepSeek");
+    const apiKey = stringField(payload, "apiKey", { required: true })!;
+    if (dependencies.deepseekApi) {
+      return dependencies.deepseekApi.fetchBalance(apiKey);
+    }
+    const tempAdapter = new DeepSeekApiAdapter();
+    return tempAdapter.fetchBalance(apiKey);
   });
 
   const accountSnapshot = async () => ({

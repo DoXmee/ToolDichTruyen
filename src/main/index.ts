@@ -9,6 +9,8 @@ import path from "node:path";
 import { AiProviderManager } from "./ai/AiProviderManager.js";
 import { ChatGptWebAdapter } from "./chatgpt/ChatGptWebAdapter.js";
 import { GeminiTitleService } from "./gemini/GeminiTitleService.js";
+import { GeminiApiAdapter } from "./gemini/GeminiApiAdapter.js";
+import { DeepSeekApiAdapter } from "./deepseek/DeepSeekApiAdapter.js";
 import { AccountRegistry } from "./accounts/AccountRegistry.js";
 import { registerIpcHandlers } from "./ipc.js";
 import { PersistenceService } from "./persistence/PersistenceService.js";
@@ -109,7 +111,18 @@ async function bootstrap(): Promise<void> {
   ] as const) {
     await chatGpt.adoptProfile(provider, label).catch(() => undefined);
   }
-  translator = new TranslationJobRunner({ chatGpt, persistence });
+  const geminiApiConfig = await persistence.getGeminiApiConfiguration().catch(() => undefined);
+  const geminiApi = new GeminiApiAdapter({
+    apiKeys: geminiApiConfig?.apiKeys,
+    model: geminiApiConfig?.model,
+    batchChaptersCount: geminiApiConfig?.batchChaptersCount,
+  });
+  const deepseekApiConfig = await persistence.getDeepSeekApiConfiguration().catch(() => undefined);
+  const deepseekApi = new DeepSeekApiAdapter({
+    apiKeys: deepseekApiConfig?.apiKeys,
+    model: deepseekApiConfig?.model,
+  });
+  translator = new TranslationJobRunner({ chatGpt, geminiApi, deepseekApi, persistence });
   // Restoring years of large checkpoints must not delay the first window.
   // Start it in parallel; the runner coalesces any renderer discovery call
   // with this same promise and full checkpoints remain available on demand.
@@ -141,6 +154,8 @@ async function bootstrap(): Promise<void> {
         translator: translator!,
         storySources: storySources!,
         gemini,
+        geminiApi,
+        deepseekApi,
       });
     },
   });

@@ -12,6 +12,9 @@ interface PersistedSettings {
   geminiModel?: string;
   geminiApiKeyEncrypted?: string;
   geminiApiKeysPlain?: string[];
+  deepseekApiModel?: string;
+  deepseekApiKeyEncrypted?: string;
+  deepseekApiKeysPlain?: string[];
   batchChaptersCount?: number;
   executionMode?: 'web' | 'api';
 }
@@ -336,6 +339,49 @@ export class PersistenceService {
     }
     await this.settingsStore.write(settings);
     return this.getGeminiApiConfiguration();
+  }
+
+  public async getDeepSeekApiConfiguration(): Promise<{
+    apiKeys: string[];
+    model: string;
+    executionMode: 'web' | 'api';
+  }> {
+    const settings = await this.settingsStore.read(EMPTY_SETTINGS);
+    let keys = (settings.deepseekApiKeysPlain || []).map((k) => k.trim()).filter((k) => k.length > 5);
+    if (keys.length === 0 && settings.deepseekApiKeyEncrypted && this.safeStorage.isEncryptionAvailable()) {
+      try {
+        const decrypted = this.safeStorage.decryptString(Buffer.from(settings.deepseekApiKeyEncrypted, 'base64')).trim();
+        if (decrypted.length > 5) keys = [decrypted];
+      } catch {}
+    }
+    return {
+      apiKeys: keys,
+      model: settings.deepseekApiModel || 'deepseek-chat',
+      executionMode: settings.executionMode || 'web',
+    };
+  }
+
+  public async updateDeepSeekApiConfiguration(input: {
+    apiKeys?: string[];
+    model?: string;
+    executionMode?: 'web' | 'api';
+  }): Promise<{
+    apiKeys: string[];
+    model: string;
+    executionMode: 'web' | 'api';
+  }> {
+    const settings = { ...(await this.settingsStore.read(EMPTY_SETTINGS)) };
+    if (Array.isArray(input.apiKeys)) {
+      settings.deepseekApiKeysPlain = input.apiKeys.map((k) => k.trim()).filter((k) => k.length > 5);
+    }
+    if (typeof input.model === 'string' && input.model.trim()) {
+      settings.deepseekApiModel = input.model.trim();
+    }
+    if (input.executionMode === 'api' || input.executionMode === 'web') {
+      settings.executionMode = input.executionMode;
+    }
+    await this.settingsStore.write(settings);
+    return this.getDeepSeekApiConfiguration();
   }
 
   public async flush(): Promise<void> {

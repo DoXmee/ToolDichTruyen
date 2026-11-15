@@ -246,6 +246,14 @@ export interface TranslationRunnerDependencies {
   > & Partial<Pick<ChatGptWebAdapter, "restartForRecovery" | "reloadForRecovery" | "setReasoning">> & {
     selectProvider?: (provider: AiProvider) => Promise<void>;
   };
+  geminiApi?: {
+    ensureReady: () => Promise<void>;
+    sendAndWait: (message: string, options?: any) => Promise<string>;
+  };
+  deepseekApi?: {
+    ensureReady: () => Promise<void>;
+    sendAndWait: (message: string, options?: any) => Promise<string>;
+  };
   persistence: Pick<PersistenceService, "saveJob" | "loadJob"> &
     Partial<Pick<PersistenceService, "listJobs" | "listJobSummaries" | "removeJob">>;
   chunker?: typeof chunkSourceText;
@@ -965,6 +973,18 @@ export class TranslationJobRunner {
       dependencies.continuationRetryPromptBuilder ?? buildContinuationRetryPrompt;
     this.localizedRepairPromptBuilder =
       dependencies.localizedRepairPromptBuilder ?? buildLocalizedHanRepairPrompt;
+  }
+
+  public getAiAdapter(job?: { executionMode?: string; aiProvider?: AiProvider }): any {
+    if (job?.executionMode === "api") {
+      if (job.aiProvider === "deepseek" && this.dependencies.deepseekApi) {
+        return this.dependencies.deepseekApi;
+      }
+      if (this.dependencies.geminiApi) {
+        return this.dependencies.geminiApi;
+      }
+    }
+    return this.dependencies.chatGpt;
   }
 
   private validateSegment(

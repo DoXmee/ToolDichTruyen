@@ -469,7 +469,7 @@ export default function App() {
   const [autoExportRetryTick, setAutoExportRetryTick] = useState(0);
   const [promptMode, setPromptMode] = useState<PromptMode>('period');
   const [customPrompt, setCustomPrompt] = useState('');
-  const [batchChaptersCount, setBatchChaptersCount] = useState(2);
+  const [batchChaptersCount, setBatchChaptersCount] = useState(0); // 0 = Tự động thích ứng (1-3 chương nguyên vẹn)
   const [prompts, setPrompts] = useState(DEFAULT_PROMPTS);
   const [splitConfig, setSplitConfig] = useState<SplitConfig>(DEFAULT_SPLIT_CONFIG);
   const [connection, setConnection] = useState<ConnectionState>('disconnected');
@@ -1630,7 +1630,7 @@ export default function App() {
         promptMode,
         ...(aiProvider === 'chatgpt' ? {} : { aiProvider }),
         allowedAiProviders: [...allowedAiProviders],
-        customPrompt: promptMode === 'custom' && customPrompt.trim().length > 0 ? customPrompt.trim() : undefined,
+        customPrompt: customPrompt.trim().length > 0 ? customPrompt.trim().slice(0, 8000) : undefined,
         ...(storyMemory ? { memory: storyMemory } : {}),
         // Link imports preserve an ordinary source chapter in one request;
         // only unusually long chapters are split by the runner.
@@ -2753,7 +2753,7 @@ export default function App() {
             {isAccountsOpen && (
               <div className="account-panel" role="dialog" aria-label="Tài khoản đã lưu">
                 <div className="account-panel__head">
-                  <strong>Tài khoản {providerLabel}</strong>
+                  <strong>Tài khoản</strong>
                   <span className="account-panel__count">{providerAccounts.length} tài khoản</span>
                   <span className="account-panel__hint">
                     Xoay vòng theo thứ tự, không quay lại tài khoản đã lỗi
@@ -2990,12 +2990,14 @@ export default function App() {
             customPrompt={customPrompt}
             loading={promptsLoading}
             mode={promptMode}
+            batchChaptersCount={batchChaptersCount}
             omitOutputChapterTitles={omitOutputChapterTitles}
             exportCombinedSourceChapters={exportCombinedSourceChapters}
             outputChapterStart={outputChapterStart}
             prompts={prompts}
             suggestedChapterStart={sourceMode === 'link' ? suggestedOutputChapterStart : undefined}
             providerSelectionLocked={Boolean(activeJobId) && ['running', 'paused', 'error', 'cancelling'].includes(translationState)}
+            onBatchChaptersCountChange={setBatchChaptersCount}
             onCustomPromptChange={(value) => {
               setCustomPrompt(value);
               if (value.length > 0) setPromptMode('custom');

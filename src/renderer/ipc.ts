@@ -123,6 +123,52 @@ export interface StoryToolApi {
     apiKey?: string | null;
     model?: string;
   }): Promise<{ hasApiKey: boolean; model: string }>;
+  getGeminiApiConfig?(): Promise<{
+    apiKeys: string[];
+    model: string;
+    batchChaptersCount: number;
+    executionMode: 'web' | 'api';
+  }>;
+  configureGeminiApi?(request: {
+    apiKeys?: string[];
+    model?: string;
+    batchChaptersCount?: number;
+    executionMode?: 'web' | 'api';
+  }): Promise<{
+    apiKeys: string[];
+    model: string;
+    batchChaptersCount: number;
+    executionMode: 'web' | 'api';
+  }>;
+  testGeminiApiKey?(request: {
+    apiKey: string;
+    model?: string;
+  }): Promise<any>;
+  getDeepSeekApiConfig?(): Promise<{
+    apiKeys: string[];
+    model: string;
+    executionMode: 'web' | 'api';
+  }>;
+  configureDeepSeekApi?(request: {
+    apiKeys?: string[];
+    model?: string;
+    executionMode?: 'web' | 'api';
+  }): Promise<{
+    apiKeys: string[];
+    model: string;
+    executionMode: 'web' | 'api';
+  }>;
+  testDeepSeekApiKey?(request: {
+    apiKey: string;
+  }): Promise<{
+    ok: boolean;
+    status: string;
+    message: string;
+    balance?: string;
+  }>;
+  checkDeepSeekBalance?(request: {
+    apiKey: string;
+  }): Promise<string>;
   listAccounts?(): Promise<AccountsSnapshot>;
   selectAccount?(id: string): Promise<AccountsSnapshot>;
   addAccount?(request: { provider: AiProvider; label?: string }): Promise<AccountsSnapshot>;
