@@ -763,10 +763,32 @@ async function processBatch(
     }
 
     if (!prepared?.scoutDone) {
-      const chapters = splitChapters(segment.sourceText).map((c) => ({
-        ...c,
-        urls: state.sourceChapters.find((s) => s.id === c.id)?.urls,
-      }));
+      // Phân giải danh sách chương từ segment.id và state.sourceChapters;
+      // tuyệt đối không gọi splitChapters trên segment.sourceText vì segment có thể là sub-part (-P)
+      const chapterRangeMatch = segment.id.match(/^V3-CH(\d+)(?:-P\d+)?(?:-CH(\d+)(?:-P\d+)?)?$/u);
+      let chapterIds: string[] = [];
+      if (chapterRangeMatch) {
+        const startNum = Number(chapterRangeMatch[1]);
+        const endNum = chapterRangeMatch[2] ? Number(chapterRangeMatch[2]) : startNum;
+        for (let n = Math.min(startNum, endNum); n <= Math.max(startNum, endNum); n++) {
+          chapterIds.push(`CH${n}`);
+        }
+      } else {
+        const matches = [...segment.id.matchAll(/CH(\d+)/gu)];
+        chapterIds = matches.length > 0 ? [...new Set(matches.map((m) => `CH${m[1]}`))] : ['CH1'];
+      }
+
+      const chapters = chapterIds.map((cid) => {
+        const num = Number(cid.replace(/^CH/u, '')) || 1;
+        const found = state.sourceChapters.find((s) => s.id === cid);
+        return {
+          id: cid,
+          number: num,
+          title: found?.title || `Chương ${num}`,
+          text: segment.sourceText,
+          urls: found?.urls,
+        };
+      });
       let refetches = 0;
 
       for (;;) {

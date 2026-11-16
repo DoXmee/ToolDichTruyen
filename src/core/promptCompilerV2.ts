@@ -470,7 +470,7 @@ CÁC NHIỆM VỤ CỤ THỂ:
 1. KIỂM TRA TÍNH TOÀN VẸN (integrity):
    - Đánh giá xem chương có bị ngắt ngang giữa câu, thiếu trang, mất đoạn hay không (status: "truncated").
    - Chương có bị lẫn truyện khác, hoặc toàn bộ là quảng cáo/lỗi không (status: "corrupted").
-   - Nếu chương hoàn chỉnh bình thường: status: "ok".
+   - Nếu chương hoàn chỉnh bình thường (kể cả kết thúc bằng lời thoại, dấu ba chấm hay bỏ lửng theo văn phong tác giả): status: "ok".
 2. ĐỊNH VỊ RÁC / QUẢNG CÁO (garbage):
    - KHÔNG chép lại truyện. CHỈ trích xuất chuỗi rác nguyên văn (text) để Tool tự động cắt bỏ.
    - Các loại rác cần xóa: Lời nhắn tác giả xin hoa/vé, quảng cáo website, liên kết điều hướng, mã game.
@@ -548,7 +548,7 @@ CÁC NHIỆM VỤ CỤ THỂ:
 1. ĐÁNH GIÁ TÍNH TOÀN VẸN (integrity) CHO TỪNG PHÂN ĐOẠN BẮT BUỘC:
    - "segmentId": Khớp chính xác ID phân đoạn (ví dụ: "${segments[0]?.segmentId || 'V3-CH1'}").
    - "integrity.status":
-       * "ok": Phân đoạn nguyên vẹn, câu chữ đầy đủ, không bị cụt hay mất trang.
+       * "ok": Phân đoạn nguyên vẹn, câu chữ đầy đủ, không bị cụt hay mất trang (Lưu ý: Nếu phân đoạn kết thúc tự nhiên theo văn phong của chương, kể cả kết thúc bằng lời thoại, dấu gạch nối, dấu ba chấm hay bỏ lửng theo dụng ý của tác giả, vẫn đánh giá là "ok"; chỉ đánh dấu "truncated" khi văn bản thực sự bị đứt trang, cụt giữa câu do crawl thiếu nguồn).
        * "truncated": Bị ngắt ngang giữa câu, cụt đuôi, thiếu nửa chương hoặc mất trang.
        * "corrupted": Bị lỗi encode, lẫn truyện khác hoàn toàn hoặc toàn bộ là rác/quảng cáo.
        * "uncertain": Nghi ngờ thiếu đoạn hoặc bất thường nghiêm trọng.

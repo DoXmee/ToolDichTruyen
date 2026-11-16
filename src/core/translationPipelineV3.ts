@@ -159,10 +159,32 @@ export function parseProtocolJson(text: string): Record<string, unknown> {
 export function splitChapters(source: string): ChapterInput[] {
   const headers = [...source.matchAll(/(?:^|\n)[ \t]*Chương[ \t]+(\d+)[^\n]*/giu)];
   if (!headers.length) return [{ id: 'CH1', number: 1, title: 'Chương 1', text: source }];
-  if (source.slice(0, headers[0]!.index).trim()) throw new Error('Có nội dung trước tiêu đề chương; cần xác nhận nguồn trước khi chia mẻ.');
+
+  const results: ChapterInput[] = [];
+  const prologue = source.slice(0, headers[0]!.index).trim();
+  if (prologue) {
+    results.push({
+      id: 'CH0',
+      number: 0,
+      title: 'Văn án / Lời mở đầu',
+      text: prologue,
+    });
+  }
+
   const seen = new Set<number>();
-  return headers.map((h,i) => { const number = Number(h[1]); if(seen.has(number)) throw new Error('Nguồn trùng số chương '+number);seen.add(number);
-    return { id: 'CH'+number, number, title: h[0].trim(), text: source.slice(h.index, headers[i+1]?.index ?? source.length).trim() }; });
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i]!;
+    const number = Number(h[1]);
+    if (seen.has(number)) throw new Error('Nguồn trùng số chương ' + number);
+    seen.add(number);
+    results.push({
+      id: 'CH' + number,
+      number,
+      title: h[0].trim(),
+      text: source.slice(h.index, headers[i + 1]?.index ?? source.length).trim(),
+    });
+  }
+  return results;
 }
 export function groupChapterChunks(source: string, count: number): Array<{ id: string; index: number; start: number; end: number; text: string }> {
   if (count < 1 || count > 3) throw new Error('Chỉ chọn 1, 2 hoặc 3 chương mỗi mẻ.');
@@ -339,11 +361,19 @@ export function groupAdaptiveChapterChunks(
   let i = 0;
   let offset = 0;
   while (i < chapters.length) {
-    const batch = [chapters[i]!];
-    let currentLength = chapters[i]!.text.length;
+    const current = chapters[i]!;
+    const batch = [current];
+    let currentLength = current.text.length;
 
-    while (batch.length < maxChapters && (i + batch.length) < chapters.length) {
+    // NGUYÊN TẮC CỐT LÕI:
+    // Nếu chương hiện tại là một phần bị cắt nhỏ của chương dài (sub-part có hậu tố -P, ví dụ CH5-P1, CH5-P2),
+    // TUYỆT ĐỐI KHÔNG được gộp chung với bất kỳ chương khác nào! Mỗi sub-part phải là 1 mẻ độc lập.
+    const isCurrentSubPart = current.id.includes('-P');
+
+    while (!isCurrentSubPart && batch.length < maxChapters && (i + batch.length) < chapters.length) {
       const next = chapters[i + batch.length]!;
+      // Không được gộp nếu chương tiếp theo là một sub-part (-P)
+      if (next.id.includes('-P')) break;
       if (currentLength + 2 + next.text.length <= maxBatchChars) {
         batch.push(next);
         currentLength += 2 + next.text.length;

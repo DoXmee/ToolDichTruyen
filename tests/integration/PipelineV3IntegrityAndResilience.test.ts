@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { TranslationJobRunner } from '../../src/main/translation/TranslationJobRunner';
 import { installTranslationPipelineV3 } from '../../src/main/translation/TranslationPipelineV3';
 import { getProviderLimits } from '../../src/core/aiProviderLimits';
-import { groupAdaptiveChapterChunks } from '../../src/core/translationPipelineV3';
+import { groupAdaptiveChapterChunks, splitChapters } from '../../src/core/translationPipelineV3';
 
 describe('Pipeline V3 Integrity & Han Repair Queue Resilience', () => {
   beforeAll(() => {
@@ -211,5 +211,39 @@ describe('Pipeline V3 Integrity & Han Repair Queue Resilience', () => {
     expect(j).toBeDefined();
     // The first target was replaced in translatedText
     expect(j.segments[0].translatedText).toContain('Cô ấy nhìn hắn rồi khẽ ừ một tiếng.');
+  });
+
+  it('splitChapters handles prologue/preamble before Chapter 1 as CH0 without throwing', () => {
+    const sourceWithPrologue = 'Văn án giới thiệu truyện hay tuyệt đỉnh.\nNữ chính xuyên không.\n\nChương 1: Bắt đầu\nNội dung chương 1.';
+    const chapters = splitChapters(sourceWithPrologue);
+    expect(chapters).toHaveLength(2);
+    expect(chapters[0]!.id).toBe('CH0');
+    expect(chapters[0]!.number).toBe(0);
+    expect(chapters[0]!.title).toBe('Văn án / Lời mở đầu');
+    expect(chapters[0]!.text).toContain('Văn án giới thiệu truyện');
+    expect(chapters[1]!.id).toBe('CH1');
+    expect(chapters[1]!.number).toBe(1);
+    expect(chapters[1]!.title).toBe('Chương 1: Bắt đầu');
+  });
+
+  it('groupAdaptiveChapterChunks never groups sub-parts of oversized chapters with other chapters', () => {
+    // Chapter 1 is long (exceeds maxBatchChars), Chapter 2 is short
+    const longChapter1 = `Chương 1: Dài\n${'Nội dung dài dằng dặc của chương 1. '.repeat(100)}`;
+    const shortChapter2 = 'Chương 2: Ngắn\nNội dung ngắn của chương 2.';
+    const source = `${longChapter1}\n\n${shortChapter2}`;
+
+    const chunks = groupAdaptiveChapterChunks(source, {
+      executionMode: 'web',
+      aiProvider: 'chatgpt',
+      maxBatchChars: 500,
+    });
+
+    // Every chunk with a sub-part (-P) must be isolated, never grouped with Chapter 2
+    for (const chunk of chunks) {
+      if (chunk.id.includes('-P')) {
+        expect(chunk.id).not.toMatch(/-P\d+-CH\d+/); // e.g. V3-CH1-P2-CH2 is FORBIDDEN
+        expect(chunk.chapterCount).toBe(1);
+      }
+    }
   });
 });
