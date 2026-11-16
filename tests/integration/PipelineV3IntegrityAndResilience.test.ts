@@ -246,4 +246,105 @@ describe('Pipeline V3 Integrity & Han Repair Queue Resilience', () => {
       }
     }
   });
+
+  it('sub-parts (-P1, -P2) with truncated status are automatically treated as ok without triggering refetch', async () => {
+    const values = new Map<string, any>();
+    let refetchCalled = false;
+    let scoutCalled = false;
+    let translateCalled = false;
+
+    const adapter = {
+      async ensureReady() {},
+      async startNewConversation() {},
+      async cancelGeneration() {},
+      async sendAndWait(prompt: string) {
+        if (prompt.includes('[TDT_CLUSTER_SCOUT]')) {
+          scoutCalled = true;
+          // AI flags truncated because it's a sub-part ending mid-sentence
+          return JSON.stringify({
+            segments: [
+              {
+                segmentId: 'V3-CH1-P1',
+                integrity: { status: 'truncated', reason: 'Nội dung kết thúc giữa câu' },
+                garbage: [],
+                newCharacters: [],
+              },
+              {
+                segmentId: 'V3-CH1-P2',
+                integrity: { status: 'truncated', reason: 'Nội dung kết thúc giữa câu' },
+                garbage: [],
+                newCharacters: [],
+              },
+            ],
+            garbage: [],
+            newCharacters: [],
+          });
+        }
+        if (prompt.includes('[TDT_SCOUT]')) {
+          scoutCalled = true;
+          return JSON.stringify({
+            integrity: { status: 'truncated', reason: 'Nội dung kết thúc giữa câu' },
+            garbage: [],
+            newCharacters: [],
+          });
+        }
+        if (prompt.includes('<BAN_DICH')) {
+          translateCalled = true;
+          const match = prompt.match(/<NGUYEN_BAN id="([^"]+)">/);
+          const segId = match ? match[1] : 'unknown';
+          const longViet = Array.from({ length: 60 }, (_, i) => `Câu thứ ${i + 1} của phân đoạn kể về sự việc diễn ra vô cùng hấp dẫn và chi tiết.`).join('\n');
+          return `<BAN_DICH id="${segId}">\nChương 1\n${longViet}\n</BAN_DICH>`;
+        }
+        return '{}';
+      },
+    };
+
+    const runner = new TranslationJobRunner({
+      chatGpt: adapter as any,
+      persistence: {
+        async saveJob(j: any) {
+          values.set(j.id, structuredClone(j));
+        },
+        async loadJob(id: string) {
+          return values.get(id) || null;
+        },
+      },
+    });
+
+    (runner as any).storySourceService = {
+      refetchRaw: async () => {
+        refetchCalled = true;
+        return 'refetched text';
+      },
+    };
+
+    installTranslationPipelineV3(runner);
+
+    // Provide a long chapter that forces sub-part splitting (-P1, -P2)
+    const longChapter = `Chương 1: Tiêu đề dài\n${'Nội dung câu chuyện dài dằng dặc. '.repeat(120)}`;
+    const { jobId } = await runner.start({
+      source: longChapter,
+      promptMode: 'ancient',
+      resolvedPrompt: 'Dịch thuần Việt.',
+      batchChaptersCount: 1,
+      settings: { maxRetries: 0 },
+    });
+
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const j = values.get(jobId);
+      if (j?.status === 'completed' || j?.status === 'failed') break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    const j = values.get(jobId);
+    await runner.shutdown();
+
+    expect(j?.status).toBe('completed');
+    expect(refetchCalled).toBe(false);
+    expect(scoutCalled).toBe(true);
+    expect(translateCalled).toBe(true);
+    expect(j.segments[0].id).toContain('-P1');
+    expect(j.segments[0].status).toBe('completed');
+  });
 });

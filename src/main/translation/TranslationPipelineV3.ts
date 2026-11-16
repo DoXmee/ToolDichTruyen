@@ -504,7 +504,13 @@ async function executeClusterScout(
     }
 
     const integrity = (segRes.integrity || globalIntegrity) as { status?: string; reason?: string };
-    const integrityStatus = (integrity.status || 'uncertain').toLowerCase().trim();
+    let integrityStatus = (integrity.status || 'uncertain').toLowerCase().trim();
+
+    // Phân đoạn con (-P1, -P2, ...) của một chương dài đương nhiên kết thúc giữa chừng, không coi là truncated/uncertain
+    const isSubPart = s.id.includes('-P');
+    if (isSubPart && (integrityStatus === 'truncated' || integrityStatus === 'uncertain')) {
+      integrityStatus = 'ok';
+    }
 
     // Nếu phát hiện chương bị cụt (truncated), lẫn truyện/quảng cáo (corrupted) hoặc chưa rõ (uncertain):
     // TUYỆT ĐỐI KHÔNG đánh dấu scoutDone = true!
@@ -869,7 +875,17 @@ async function processBatch(
             integrity = matched.integrity;
           }
         }
-        const integrityStatus = (integrity.status || 'ok').toLowerCase().trim();
+        let integrityStatus = (integrity.status || 'ok').toLowerCase().trim();
+        const isSubPart = segment.id.includes('-P');
+        if (isSubPart && (integrityStatus === 'truncated' || integrityStatus === 'uncertain')) {
+          host.logActivity(
+            job,
+            `V3 · Phân đoạn ${segment.id} là phần cắt nhỏ của chương dài (sub-part), tự động xác nhận toàn vẹn để dịch tiếp.`,
+            'info',
+            segment,
+          );
+          integrityStatus = 'ok';
+        }
         if (['truncated', 'corrupted', 'refetch', 'uncertain'].includes(integrityStatus)) {
           host.logActivity(
             job,
@@ -877,7 +893,7 @@ async function processBatch(
             'warning',
             segment,
           );
-          if (refetches < 2 && chapters[0]?.urls?.length && services.refetchRaw) {
+          if (!isSubPart && refetches < 2 && chapters[0]?.urls?.length && services.refetchRaw) {
             state.stage = 'refetch';
             host.logActivity(job, `V3 · Tự động tải lại nguồn ${chapters[0].id}...`, 'warning', segment);
             chapters[0].text = await services.refetchRaw(chapters[0], signal);
