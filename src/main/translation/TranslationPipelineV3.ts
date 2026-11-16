@@ -760,6 +760,9 @@ async function processBatch(
   try {
     if (signal.aborted) return false;
     let prepared = segment.preparedV3 as { cleanSource: string; scoutDone?: boolean } | undefined;
+    if (prepared?.cleanSource && segment.sourceText && prepared.cleanSource !== segment.sourceText) {
+      prepared.cleanSource = segment.sourceText;
+    }
     const isDeepSeekApi = job.executionMode === 'api' && (job.aiProvider === 'deepseek' || job.provider === 'deepseek');
 
     // === LƯỢT 1: TRINH SÁT, KIỂM TRA ĐỨT TRANG & ĐỊNH VỊ RÁC ===
@@ -1086,11 +1089,12 @@ async function processBatch(
       };
 
       const genreProfile = getGenreProfile(job.promptMode ?? 'period');
+      const cleanSource = prepared?.cleanSource || segment.sourceText;
       const compiled = compileStoryBiblePrompt({
         segmentId: segment.id,
         segmentIndex: segment.index,
         totalSegments: job.segments.length,
-        sourceText: prepared.cleanSource,
+        sourceText: cleanSource,
         bible,
         genreProfile,
         sceneState: 'normal',
@@ -1123,13 +1127,13 @@ async function processBatch(
         state.stage = 'validation';
 
         // Lấy bản dịch sạch trong thẻ <BAN_DICH> và gỡ ngoặc ⟦ ⟧ tên riêng
-        let translated = sanitizeTranslationResponse(prepared.cleanSource, response);
+        let translated = sanitizeTranslationResponse(cleanSource, response);
         // Ép sửa nếu AI tự ý đổi họ nhân vật đã khóa (ví dụ Quách Quốc Xương -> Tống Quốc Xương) hoặc trôi tên tiếng Anh
         translated = enforceLockedEntities(translated, compiled.presentEntities, state.registry.characters);
         translated = unlockNamesInTranslation(translated);
         translated = normalizeVietnamesePunctuation(translated);
 
-        let validation = validateTranslation(prepared.cleanSource, translated, job.settings.validation);
+        let validation = validateTranslation(cleanSource, translated, job.settings.validation);
 
         // === ƯU TIÊN 1: SỬA CỤC BỘ CÁC CÂU SÓT CHỮ HÁN (LOCALIZED REPAIR) ===
         if (!validation.valid && isLocalizedHanOnly(validation)) {
@@ -1142,7 +1146,7 @@ async function processBatch(
                 segmentIndex: segment.index,
                 segmentId: segment.id,
                 targets,
-                cleanSource: prepared.cleanSource,
+                cleanSource,
               });
               host.logActivity(
                 job,
@@ -1181,7 +1185,7 @@ async function processBatch(
                   const parsed = localizedRepairBatchResponseError(repairResponse, targets);
                   if (!parsed.error && parsed.replacements && parsed.replacements.size > 0) {
                     translated = replaceLocalizedTargets(translated, targets, parsed.replacements);
-                    validation = validateTranslation(prepared.cleanSource, translated, job.settings.validation);
+                    validation = validateTranslation(cleanSource, translated, job.settings.validation);
                     if (validation.valid) {
                       host.logActivity(
                         job,
