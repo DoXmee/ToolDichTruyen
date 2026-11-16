@@ -16,10 +16,7 @@ main=replace(main,'geminiApiTestKey: "story-tool:gemini-api:test-key",','geminiA
 // 2. PERSISTENCE METHODS
 main=replace(main,'async getGeminiApiConfiguration() {',`async getDeepSeekApiConfiguration() {
     const settings = await this.settingsStore.read(EMPTY_SETTINGS);
-    let keys = (settings.deepseekApiKeysPlain || []).map((k) => k.trim()).filter((k) => k.length > 5);
-    if (keys.length === 0) {
-      keys = ["sk-258aacbab8244aa4a7825e528a1aca4f"];
-    }
+    const keys = (settings.deepseekApiKeysPlain || []).map((k) => k.trim()).filter((k) => k.length > 5);
     return {
       apiKeys: keys,
       model: settings.deepseekApiModel || "deepseek-chat",
@@ -82,7 +79,7 @@ main=replace(main,'handle(IPC_CHANNELS.geminiApiTestKey,',`handle(IPC_CHANNELS.d
 // 4. RUNNER BOOTSTRAP
 main=replace(main,'translator = new TranslationJobRunner({ chatGpt, geminiApi, persistence });',`const deepseekApiConfig = await persistence.getDeepSeekApiConfiguration().catch(() => void 0);
   const deepseekApi = new pipelineV3.DeepSeekApiAdapter({
-    apiKeys: deepseekApiConfig?.apiKeys || ["sk-258aacbab8244aa4a7825e528a1aca4f"],
+    apiKeys: deepseekApiConfig?.apiKeys || [],
     model: deepseekApiConfig?.model || "deepseek-chat"
   });
   translator = new TranslationJobRunner({ chatGpt, geminiApi, deepseekApi, persistence });`);
@@ -460,8 +457,8 @@ renderer = replace(
   renderer,
   'const [isApiKeyPanelOpen, setIsApiKeyPanelOpen] = reactExports.useState(false);',
   `const [isApiKeyPanelOpen, setIsApiKeyPanelOpen] = reactExports.useState(false);
-  const [deepseekApiKeys, setDeepseekApiKeys] = reactExports.useState(["sk-258aacbab8244aa4a7825e528a1aca4f"]);
-  const [deepseekBalances, setDeepseekBalances] = reactExports.useState({ "sk-258aacbab8244aa4a7825e528a1aca4f": "0.08 USD" });
+  const [deepseekApiKeys, setDeepseekApiKeys] = reactExports.useState([]);
+  const [deepseekBalances, setDeepseekBalances] = reactExports.useState({});
   const [apiAccountTab, setApiAccountTab] = reactExports.useState("deepseek");
   const [newDeepseekKeyInput, setNewDeepseekKeyInput] = reactExports.useState("");`
 );
@@ -585,7 +582,7 @@ renderer = replace(
               executionMode === "api" && apiAccountTab === "deepseek" ? (
                 deepseekApiKeys.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "account-panel__empty", children: "Chưa có DeepSeek API key nào. Vui lòng nhập key ở bên dưới." }) : deepseekApiKeys.map((key) => {
                   const masked = key.length > 12 ? \`\${key.slice(0, 8)}...\${key.slice(-5)}\` : key;
-                  const bal = deepseekBalances[key] || "0.08 USD";
+                  const bal = deepseekBalances[key] || "Đang đọc số dư...";
                   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "account-row is-active", children: [
                     /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "account-row__radio is-on", "aria-hidden": "true" }),
                     /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "account-row__who", children: [
@@ -744,7 +741,7 @@ renderer = replace(
   `/* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "account-panel__rows api-key-panel__rows", children: geminiApiModel === "deepseek-chat" ? (
               deepseekApiKeys.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "account-panel__empty", children: "Chưa có DeepSeek API key nào. Vui lòng nhập key ở bên dưới." }) : deepseekApiKeys.map((key) => {
                 const masked = key.length > 12 ? \`\${key.slice(0, 8)}...\${key.slice(-5)}\` : key;
-                const bal = deepseekBalances[key] || "0.08 USD";
+                const bal = deepseekBalances[key] || "Đang đọc số dư...";
                 return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "account-row is-active", children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "account-row__radio is-on", "aria-hidden": "true" }),
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "account-row__who", children: [
