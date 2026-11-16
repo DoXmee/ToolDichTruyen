@@ -399,6 +399,12 @@ renderer = replace(
   '/* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "Tài khoản" }),'
 );
 
+renderer = replace(
+  renderer,
+  '/* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "account-panel__count", children: [\n                providerAccounts.length,\n                " tài khoản"\n              ] }),',
+  '/* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "account-panel__count", children: [\n                executionMode === "api" ? (apiAccountTab === "deepseek" ? deepseekApiKeys.length : geminiApiKeys.length) : providerAccounts.length,\n                executionMode === "api" ? " key" : " tài khoản"\n              ] }),'
+);
+
 // 2. Account Header: Add toggle button in head
 renderer = replace(
   renderer,
@@ -648,6 +654,12 @@ renderer = replace(
               executionMode === "api" ? null :`
 );
 
+renderer = replace(
+  renderer,
+  'providerAccounts.map((account) => {',
+  'executionMode === "api" ? null : providerAccounts.map((account) => {'
+);
+
 // 12. Account Panel Foot when executionMode === "api"
 renderer = replace(
   renderer,
@@ -697,6 +709,18 @@ renderer = replace(
                 }, "gemini-test-all-btn")
               ] : null,
               executionMode === "api" ? null :`
+);
+
+renderer = replace(
+  renderer,
+  '/* @__PURE__ */ jsxRuntimeExports.jsxs(\n                "button",\n                {\n                  className: "button button--secondary",\n                  disabled: accountsBusy || connection === "connecting",\n                  onClick: () => void connectAi(),',
+  'executionMode === "api" ? null : /* @__PURE__ */ jsxRuntimeExports.jsxs(\n                "button",\n                {\n                  className: "button button--secondary",\n                  disabled: accountsBusy || connection === "connecting",\n                  onClick: () => void connectAi(),'
+);
+
+renderer = replace(
+  renderer,
+  '/* @__PURE__ */ jsxRuntimeExports.jsxs(\n                "button",\n                {\n                  className: "button button--secondary",\n                  disabled: accountsBusy || translationState === "running" || translationState === "cancelling",\n                  onClick: () => void cleanupJunk(),',
+  'executionMode === "api" ? null : /* @__PURE__ */ jsxRuntimeExports.jsxs(\n                "button",\n                {\n                  className: "button button--secondary",\n                  disabled: accountsBusy || translationState === "running" || translationState === "cancelling",\n                  onClick: () => void cleanupJunk(),'
 );
 
 // 13. Popover api-key-panel head, rows, foot for DeepSeek V3
