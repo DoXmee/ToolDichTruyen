@@ -30,7 +30,7 @@ const NOVEL543_HOSTS = new Set(["novel543.com", "www.novel543.com"]);
 const TIMOTXT_HOSTS = new Set(["timotxt.com", "www.timotxt.com"]);
 const XSZJ_BOOK_PATH = /^\/b\/(\d+)\/?$/u;
 const XSZJ_CATALOG_PATH = /^\/b\/(\d+)\/cs\/(\d+)\/?$/u;
-const XSZJ_CHAPTER_PATH = /^\/b\/(\d+)\/c\/(\d+)\/?$/u;
+const XSZJ_CHAPTER_PATH = /^\/b\/(\d+)\/c\/(\d+)(?:\.html)?\/?$/u;
 const IXDZS_BOOK_PATH = /^\/read\/(\d+)\/?$/u;
 const IXDZS_CHAPTER_PATH = /^\/read\/(\d+)\/p(\d+)\.html\/?$/u;
 

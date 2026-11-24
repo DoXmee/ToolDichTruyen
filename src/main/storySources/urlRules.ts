@@ -246,7 +246,7 @@ export function parseStoryUrl(raw: string): ParsedStoryUrl {
   if (site === "xszj") {
     const xszjBook = /^\/b\/(\d+)\/?$/u.exec(path);
     const xszjCatalog = /^\/b\/(\d+)\/cs\/(\d+)\/?$/u.exec(path);
-    const xszjChapter = /^\/b\/(\d+)\/c\/(\d+)\/?$/u.exec(path);
+    const xszjChapter = /^\/b\/(\d+)\/c\/(\d+)(?:\.html)?\/?$/u.exec(path);
     const ixdzsBook = /^\/read\/(\d+)\/?$/u.exec(path);
     const ixdzsChapter = /^\/read\/(\d+)\/p(\d+)\.html\/?$/u.exec(path);
     const bookId = xszjBook?.[1] ?? xszjCatalog?.[1] ?? xszjChapter?.[1] ?? ixdzsBook?.[1] ?? ixdzsChapter?.[1];

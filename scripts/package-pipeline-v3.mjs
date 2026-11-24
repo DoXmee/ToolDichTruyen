@@ -130,6 +130,132 @@ main=replace(main,'return dependencies.translator.start({','return dependencies.
 main=replace(main,'const keys = (settings.geminiApiKeysPlain || []).filter((k) => !k.startsWith("AQ.Ab8"));','let keys = (settings.geminiApiKeysPlain || []).map((k) => k.trim()).filter((k) => k.length > 5);\n    if (keys.length === 0 && settings.geminiApiKeyEncrypted && this.safeStorage.isEncryptionAvailable()) {\n      try {\n        const decrypted = this.safeStorage.decryptString(Buffer.from(settings.geminiApiKeyEncrypted, "base64")).trim();\n        if (decrypted.length > 5) keys = [decrypted];\n      } catch {}\n    }');
 main=replace(main,'const terminalPunctuationPattern = /[.!?。！？…»”"’\'」』)\\]}⟧:：—–~～]\\s*$/u;','const terminalPunctuationPattern = /[.!?。！？…»”"’\'」』)\\]}⟧】〗〕》〉）］｝›>＞:：—–~～]\\s*$/u;');
 main=replace(main,'/^[“"「『（(]$/u.test(sourceTrimmed.slice(-1)) && /^[“"「『（(]$/u.test(trimmedTranslation.slice(-1)))','/^[“"「『（(]$/u.test(sourceTrimmed.slice(-1)) && /^[“"「『（(]$/u.test(trimmedTranslation.slice(-1)) || /^[】〗〕》〉）］｝\\])}⟧]$/u.test(sourceTrimmed.slice(-1)) && /^[】〗〕》〉）］｝\\])}⟧]$/u.test(trimmedTranslation.slice(-1)))');
+
+// 6b. ChatGPT Safety Refusal & User-Turn DOM Isolation (do not scan prompt/user bubble)
+main=replace(
+  main,
+  'class ChatGptNonRetryableSafetyError extends Error {',
+  `class ChatGptSafetyRefusalError extends Error {
+  isSafetyRefusal = true;
+  constructor(message, options) {
+    super(message, options);
+    this.name = "ChatGptSafetyRefusalError";
+  }
+}
+class ChatGptNonRetryableSafetyError extends Error {`
+);
+main=replace(
+  main,
+  `  async checkChatGptContextLimit(page) {
+    if (this.provider !== "chatgpt") return null;
+    return await page.evaluate(() => {
+      const elements = document.querySelectorAll(
+        '[role="alert"], [role="alertdialog"], [data-testid*="error"], .text-red-500, div[class*="toast"], div[class*="banner"], [data-testid*="banner"]'
+      );
+      const limitPattern = /(?:cửa sổ ngữ cảnh (?:này )?đã đầy|ngữ cảnh đã đầy|context window is full|cuộc trò chuyện (?:này )?quá dài|conversation is too long|this conversation is too long|đã đạt giới hạn cuộc trò chuyện|reached the (?:message|conversation) limit|please start a new chat|bắt đầu một cuộc trò chuyện mới để tiếp tục)/iu;
+      for (const el of elements) {
+        if (el.closest('nav, [data-testid*="sidebar"], [aria-label*="sidebar" i], header')) continue;
+        const text = el.textContent?.trim() || "";
+        if (limitPattern.test(text)) {
+          return text;
+        }
+      }
+      return null;
+    }).catch(() => null);
+  }`,
+  `  async checkChatGptContextLimit(page) {
+    if (this.provider !== "chatgpt") return null;
+    return await page.evaluate(() => {
+      const extractNonUserText = (root) => {
+        const clone = root.cloneNode(true);
+        for (const node of clone.querySelectorAll('[data-message-author-role="user"], #prompt-textarea, [contenteditable="true"], textarea')) {
+          node.remove();
+        }
+        return (clone.textContent?.trim() || "").replace(/^(?:Bạn đã nói:|You said:)\\s*(?:Bạn\\b)?\\s*/iu, "").trim();
+      };
+      const elements = document.querySelectorAll(
+        '[role="alert"], [role="alertdialog"], [data-testid*="error"], .text-red-500, div[class*="toast"], div[class*="banner"], [data-testid*="banner"]'
+      );
+      const limitPattern = /(?:cửa sổ ngữ cảnh (?:này )?đã đầy|ngữ cảnh đã đầy|context window is full|cuộc trò chuyện (?:này )?quá dài|conversation is too long|this conversation is too long|đã đạt giới hạn cuộc trò chuyện|reached the (?:message|conversation) limit|please start a new chat|bắt đầu một cuộc trò chuyện mới để tiếp tục)/iu;
+      for (const el of elements) {
+        if (el.closest('nav, [data-testid*="sidebar"], [aria-label*="sidebar" i], header, [data-message-author-role="user"], #prompt-textarea, [contenteditable="true"]')) continue;
+        const text = extractNonUserText(el);
+        if (text && limitPattern.test(text)) {
+          return text;
+        }
+      }
+      return null;
+    }).catch(() => null);
+  }
+  async checkChatGptSafetyRefusal(page) {
+    if (this.provider !== "chatgpt") return null;
+    return await page.evaluate(() => {
+      const extractRefusalText = (root, pattern) => {
+        const clone = root.cloneNode(true);
+        for (const node of clone.querySelectorAll('[data-message-author-role="user"], #prompt-textarea, [contenteditable="true"], textarea')) {
+          node.remove();
+        }
+        const clean = (value) => value.replace(/^(?:Bạn đã nói:|You said:)\\s*(?:Bạn\\b)?\\s*/iu, "").trim();
+        const fullText = clean(clone.textContent || "");
+        if (!fullText || !pattern.test(fullText)) return null;
+        let bestMatch = fullText;
+        for (const child of clone.querySelectorAll("*")) {
+          const childText = clean(child.textContent || "");
+          if (childText && childText.length < bestMatch.length && pattern.test(childText)) {
+            bestMatch = childText;
+          }
+        }
+        return bestMatch;
+      };
+      const elements = document.querySelectorAll(
+        '[role="alert"], [role="alertdialog"], [data-testid*="error"], .text-red-500, div[class*="toast"], div[class*="banner"], [data-testid*="banner"], div[class*="bg-red"], div[class*="border-red"]'
+      );
+      const safetyPattern = /(?:lý do an toàn|cuộc trò chuyện nhạy cảm|cuộc hội thoại nhạy cảm|safety reasons|sensitive conversations|violate our usage policies|content policy|không thể hiển thị nội dung này)/iu;
+      for (const el of elements) {
+        if (el.closest('nav, [data-testid*="sidebar"], [aria-label*="sidebar" i], header, [data-message-author-role="user"], #prompt-textarea, [contenteditable="true"]')) continue;
+        const matched = extractRefusalText(el, safetyPattern);
+        if (matched) return matched;
+      }
+      return null;
+    }).catch(() => null);
+  }`
+);
+main=replace(
+  main,
+  `          const contextLimit = await this.checkChatGptContextLimit(responsePage);
+          if (contextLimit) {
+            throw new ChatGptFreshChatRecoveryError(
+              \`ChatGPT hiển thị thông báo: "\${contextLimit.slice(0, 200)}"\`
+            );
+          }`,
+  `          const contextLimit = await this.checkChatGptContextLimit(responsePage);
+          if (contextLimit) {
+            throw new ChatGptFreshChatRecoveryError(
+              \`ChatGPT hiển thị thông báo: "\${contextLimit.slice(0, 200)}"\`
+            );
+          }
+          const safetyRefusal = await this.checkChatGptSafetyRefusal(responsePage);
+          if (safetyRefusal) {
+            throw new ChatGptSafetyRefusalError(
+              \`ChatGPT từ chối vì lý do an toàn: "\${safetyRefusal.slice(0, 200)}"\`
+            );
+          }`
+);
+main=replace(
+  main,
+  `        if (hasExplicitGenerationError && (!responseLocator || (await responseLocator.innerText().catch(() => "")).trim().length === 0)) {
+          throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
+        }`,
+  `        if (hasExplicitGenerationError && (!responseLocator || (await responseLocator.innerText().catch(() => "")).trim().length === 0)) {
+          const safetyRefusal = await this.checkChatGptSafetyRefusal(responsePage);
+          if (safetyRefusal) {
+            throw new ChatGptSafetyRefusalError(
+              \`ChatGPT từ chối vì lý do an toàn: "\${safetyRefusal.slice(0, 200)}"\`
+            );
+          }
+          throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
+        }`
+);
 main=main.replace(
   /async expandIxdzsCatalog\(page, requestedUrl, signal\) \{[\s\S]*?\n  \}/u,
   `async expandIxdzsCatalog(page, requestedUrl, signal) {
@@ -381,10 +507,10 @@ await fs.writeFile(preloadFile, preload);
 
 // Patch renderer
 const list=asar.listPackage(baseline),rendererKey=list.find(n=>/out[\\/]renderer[\\/]assets[\\/]index-[^\\/]+\.js$/u.test(n)).replace(/^[\\/]/u,''),rendererFile=path.join(stage,rendererKey);let renderer=await fs.readFile(rendererFile,'utf8');
-renderer=replace(renderer,'const [geminiBatchChapters, setGeminiBatchChapters] = reactExports.useState(2);','const [geminiBatchChapters, setGeminiBatchChapters] = reactExports.useState(2);\n  const v3SourceRefs = reactExports.useRef({ source: "", chapters: [] });');
-renderer=replace(renderer,'setGeminiBatchChapters(cfg.batchChaptersCount);','setGeminiBatchChapters(cfg.batchChaptersCount === 3 ? 3 : 2);');
+renderer=replace(renderer,'const [geminiBatchChapters, setGeminiBatchChapters] = reactExports.useState(2);','const [geminiBatchChapters, setGeminiBatchChapters] = reactExports.useState(0);\n  const v3SourceRefs = reactExports.useRef({ source: "", chapters: [] });');
+renderer=replace(renderer,'setGeminiBatchChapters(cfg.batchChaptersCount);','setGeminiBatchChapters(0);');
 renderer=replace(renderer,'Đã cấu hình gộp ${count} chương / 1 lần gọi API.','Đã cấu hình gộp ${count} chương / 1 lần dịch.');
-renderer=replace(renderer,'const result = await getStoryTool().startTranslation({','const result = await getStoryTool().startTranslation({\n        batchChaptersCount: geminiBatchChapters,\n        sourceChapters: v3SourceRefs.current.source === sourceText ? v3SourceRefs.current.chapters : [],');
+renderer=replace(renderer,'const result = await getStoryTool().startTranslation({','const result = await getStoryTool().startTranslation({\n        batchChaptersCount: 0,\n        sourceChapters: v3SourceRefs.current.source === sourceText ? v3SourceRefs.current.chapters : [],');
 renderer=replace(renderer,'customPrompt: promptMode === "custom" && customPrompt.trim().length > 0 ? customPrompt.trim() : void 0,','customPrompt: customPrompt.trim().length > 0 ? customPrompt.trim().slice(0, 8000) : void 0,');
 renderer=replace(renderer,'onChange: (event) => onCustomPromptChange(event.target.value),','onChange: (event) => onCustomPromptChange(event.target.value.slice(0, 8000)), maxLength: 8000,');
 renderer=replace(renderer,'setSource(fetched.combinedSource);','v3SourceRefs.current = { source: fetched.combinedSource, chapters: fetched.chapters.map((c,i) => {const headers = [...fetched.combinedSource.matchAll(/(?:^|\\n)Chương\\s+(\\d+)/gu)];const number=Number(headers[i]?.[1] ?? i+1);return {id:"CH"+number,number,title:c.title,text:"",urls:c.sourceUrls};}) };\n      setSource(fetched.combinedSource);');
@@ -803,9 +929,12 @@ renderer = replace(
 );
 
 parse(renderer);await fs.writeFile(rendererFile,renderer);
+const cssKey=list.find(n=>/out[\\/]renderer[\\/]assets[\\/].*\.css$/u.test(n)).replace(/^[\\/]/u,''),cssFile=path.join(stage,cssKey);let css=await fs.readFile(cssFile,'utf8');
+css=replace(css,'.chapter-numbering-control__field input {\n  width: 78px;','.chapter-numbering-control__field input {\n  width: 100px;');
+await fs.writeFile(cssFile,css);
 await fs.cp('resources/huli-browser-helper',path.join(stage,'resources/huli-browser-helper'),{recursive:true});
 const output=path.join(root,'app-v3.asar');await asar.createPackageWithOptions(stage,output,{unpack:'**/node_modules/playwright-core/**/*'});
 const changed=[],added=[];for(const file of asar.listPackage(output)){const key=file.replace(/^[\\/]/u,''),stat=asar.statFile(output,key);if(stat.files||stat.link)continue;if(!list.includes(file))added.push(file);else if(!asar.extractFile(baseline,key).equals(asar.extractFile(output,key)))changed.push(file);}
-const allow=[/out[\\/]main[\\/](?:index\.js|story-source-step1\.cjs)$/u,/out[\\/]preload[\\/]index\.cjs$/u,/out[\\/]renderer[\\/]assets[\\/]index-[^\\/]+\.js$/u,/resources[\\/]huli-browser-helper[\\/]/u];
+const allow=[/out[\\/]main[\\/](?:index\.js|story-source-step1\.cjs)$/u,/out[\\/]preload[\\/]index\.cjs$/u,/out[\\/]renderer[\\/]assets[\\/](?:index-[^\\/]+\.js|.*\.css)$/u,/resources[\\/]huli-browser-helper[\\/]/u];
 if(changed.some(p=>!allow.some(re=>re.test(p)))||added.some(p=>! /out[\\/]main[\\/]translation-v3\.cjs$/u.test(p)&&!/resources[\\/]huli-browser-helper[\\/]/u.test(p)))throw Error('Unexpected package changes: '+JSON.stringify({changed,added}));
 const report={builtAt:new Date().toISOString(),baselineHash:info.archiveHash,archiveHash:hash(await fs.readFile(output)),changed,added,apiUiAndAdaptersPreserved:true,legacyJobsRemainLegacy:true};await fs.writeFile(path.join(root,'package-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));

@@ -54,9 +54,13 @@ import {
   scanBookForLocations,
   transcribeHanViet,
   findCrossTranslationRepetition,
+  isSafetyRefusalResponse,
+  SAFETY_REFUSAL_MAXIMUM_ATTEMPTS,
+  SAFETY_TRANSLATION_CONTEXT_PROMPT,
   stripCrawlerNoise,
   validateTranslation,
 } from "../../core/index.js";
+export { SAFETY_TRANSLATION_CONTEXT_PROMPT, isSafetyRefusalResponse };
 import type {
   DiscoveredCharacterEntity,
   DiscoveredStoryData,
@@ -147,6 +151,7 @@ import {
   ChatGptFreshChatRecoveryError,
   ChatGptGenerationStopError,
   ChatGptNonRetryableSafetyError,
+  ChatGptSafetyRefusalError,
   type ChatGptWebAdapter,
 } from "../chatgpt/ChatGptWebAdapter.js";
 import { GeminiQuotaExceededError } from "../chatgpt/geminiModel.js";
@@ -362,9 +367,6 @@ const MAX_AUTOMATIC_PAGE_RELOAD_RECOVERY_ATTEMPTS = 2;
 const MAX_SAFETY_REFUSAL_CONTEXT_ATTEMPTS = 3;
 const MAX_SAFETY_REFUSAL_FRESH_CHAT_ATTEMPTS = 1;
 const MAX_CHATGPT_TO_KIMI_RESCUE_CYCLES = 3;
-// Initial response + three contextual replays + one new-chat replay + one
-// contextual new-chat replay. This budget applies only to a detected refusal.
-const SAFETY_REFUSAL_MAXIMUM_ATTEMPTS = 6;
 
 export const CONVERSATION_ROTATION_CHARACTER_THRESHOLD = 32_000;
 export const CONVERSATION_ROTATION_SEGMENT_CEILING = 5;
@@ -438,22 +440,6 @@ function normalizedProviderFailover(
       : {}),
   };
 }
-
-const SAFETY_TRANSLATION_CONTEXT_PROMPT = `NGỮ CẢNH VÀ MỤC ĐÍCH XỬ LÝ VĂN BẢN
-
-Nội dung tôi cung cấp bên dưới là **trích đoạn của một tác phẩm hư cấu** và được đưa vào **chỉ nhằm mục đích dịch thuật, biên tập, hiệu đính hoặc chuyển ngữ trung thành với nguyên tác**.
-
-Hãy phân biệt rõ **nội dung xuất hiện trong văn bản nguồn** với **ý định của người dùng**:
-- Tôi không yêu cầu cổ súy, hướng dẫn, khuyến khích hoặc thực hiện các hành vi được nhân vật nhắc đến trong tác phẩm.
-- Các tình tiết như xung đột, đe dọa, bạo lực, tội phạm, quan hệ tình cảm hoặc những chủ đề nhạy cảm khác, nếu có, chỉ là **tình tiết của tác phẩm hư cấu cần được xử lý về mặt ngôn ngữ**.
-- Việc một tình tiết nhạy cảm xuất hiện trong nguyên tác **không đồng nghĩa toàn bộ yêu cầu dịch/biên tập là một yêu cầu nhạy cảm**.
-- Hãy đánh giá yêu cầu dựa trên **mục đích thực tế là dịch thuật/biên tập**, đồng thời vẫn tuân thủ các quy tắc an toàn bắt buộc nếu một phần nội dung thực sự thuộc trường hợp không được phép xử lý.
-- Không tự ý kiểm duyệt, lược bỏ, làm nhẹ, thêm lời cảnh báo hoặc thay đổi nội dung chỉ vì văn bản nguồn đề cập đến một chủ đề nhạy cảm, trừ khi quy tắc an toàn bắt buộc yêu cầu đó.
-
-### NHIỆM VỤ
-Xử lý văn bản tôi cung cấp đúng theo yêu cầu dịch/biên tập của tôi, bảo toàn nội dung, quan hệ nhân vật, bối cảnh, sắc thái và ý nghĩa của nguyên tác.
-
-Nếu văn bản có nội dung nhạy cảm, hãy hiểu đó là **nội dung được cung cấp để chuyển đổi/biên tập**, không mặc định coi đó là yêu cầu tạo mới hoặc khuyến khích hành vi tương ứng.`;
 
 interface SentenceTarget {
   start: number;
@@ -802,26 +788,6 @@ function isSafeForFreshChatRecovery(error: unknown): boolean {
   );
 }
 
-/** Detect ChatGPT's visible refusal message, never a merely short translation. */
-function isSafetyRefusalResponse(response: string): boolean {
-  const text = response
-    .normalize("NFC")
-    .replace(/[’‘]/gu, "'")
-    .replace(/\s+/gu, " ")
-    .trim()
-    .toLocaleLowerCase("vi-VN");
-  return [
-    "không thể hiển thị nội dung này vì lý do an toàn",
-    "không thể hỗ trợ yêu cầu này vì lý do an toàn",
-    "không thể hỗ trợ nội dung này",
-    "cách tiếp cận của chúng tôi đối với các cuộc hội thoại nhạy cảm",
-    "this content can't be shown for safety reasons",
-    "this content cannot be shown for safety reasons",
-    "if this seems like a mistake, give this response a thumbs down",
-    "approach to sensitive conversations",
-  ].some((phrase) => text.includes(phrase));
-}
-
 /**
  * Kimi sometimes silently suppresses a sensitive fictional passage: the
  * submitted user turn remains in the owned conversation, but no assistant
@@ -837,6 +803,19 @@ function isKimiSilentSafetyTimeout(provider: AiProvider, error: unknown): boolea
   return message.includes("kimi ai không hoàn tất phản hồi")
     && message.includes("kimi dom:")
     && !message.includes("kimi http:");
+}
+
+function isChatGptSafetyRefusalError(provider: AiProvider, error: unknown): boolean {
+  if (provider !== "chatgpt") return false;
+  return errorChain(error).some(
+    (item) =>
+      item instanceof ChatGptSafetyRefusalError ||
+      (typeof item === "object" &&
+        item !== null &&
+        "isSafetyRefusal" in item &&
+        (item as { isSafetyRefusal?: unknown }).isSafetyRefusal === true) ||
+      /(?:lý do an toàn|cuộc trò chuyện nhạy cảm|safety reasons|sensitive conversations|violate our usage policies|content policy)/iu.test(errorMessage(item)),
+  );
 }
 
 /**
@@ -2152,7 +2131,8 @@ export class TranslationJobRunner {
           segment.attempts = Math.max(0, segment.attempts - 1);
         }
         this.logActivity(job, `Lỗi khi chờ ${aiProviderLabel(job.aiProvider)}: ${segment.error}`, "warning", segment);
-        safetyRefusalDetected = isKimiSilentSafetyTimeout(job.aiProvider, error);
+        safetyRefusalDetected = isKimiSilentSafetyTimeout(job.aiProvider, error)
+          || isChatGptSafetyRefusalError(job.aiProvider, error);
         freshChatRecoveryRequested = isSafeForFreshChatRecovery(error);
         if (
           !freshChatRecoveryRequested &&

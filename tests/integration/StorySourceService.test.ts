@@ -1836,6 +1836,32 @@ describe("StorySourceService integration", () => {
     expect(result.chapters[0]?.sourceText).toBe("第一段正文，承接人物和事件，也交代了故事开始时的重要背景。\n\n第二段正文，必须紧接第一段，并继续描写人物之间的矛盾发展。\n\n第三段正文，完整收束本章，同时留下自然的后续情节线索。");
   });
 
+  it("collects XSZJ catalog even when modern HTML layout lacks the legacy #list ID", async () => {
+    const pages = new Map<string, StoryPageSnapshot>([
+      [XSZJ_BOOK_URL, page(XSZJ_BOOK_URL, {
+        title: "小保姆和大领导全文免费阅读",
+        elements: { h1: ["小保姆和大领导"] },
+      })],
+      [XSZJ_CATALOG_URL, page(XSZJ_CATALOG_URL, {
+        elements: { h1: ["小保姆和大领导"] },
+        links: [
+          link(XSZJ_CHAPTER_URL, "第1章 早饭", [".border-b", ".grid"]),
+          link("https://xszj.org/b/485734/c/856452", "第2章 生活费", [".border-b", ".grid"]),
+        ],
+      })],
+      [XSZJ_CHAPTER_URL, page(XSZJ_CHAPTER_URL, {
+        title: "第1章 早饭",
+        elements: { h1: ["第1章 早饭 （1/1）"], "#content": ["Nội dung chương một."] },
+      })],
+    ]);
+    const source = service(new FakeClient(pages));
+    const analysis = await source.analyzeUrl(XSZJ_BOOK_URL);
+    expect(analysis).toMatchObject({ site: "xszj", bookId: "485734" });
+    expect(analysis.chapters).toHaveLength(2);
+    expect(analysis.chapters[0]?.title).toBe("早饭");
+    expect(analysis.chapters[1]?.title).toBe("生活费");
+  });
+
   it("fails closed if XSZJ declares more chapter pages but omits the exact next-page link", async () => {
     const pages = new Map<string, StoryPageSnapshot>([
       [XSZJ_BOOK_URL, page(XSZJ_BOOK_URL, { elements: { h1: ["Sách XSZJ"] } })],

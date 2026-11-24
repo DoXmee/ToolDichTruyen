@@ -45,3 +45,13 @@ Trước khi đụng vào bất kỳ file code nào, Agent BẮT BUỘC phải t
 ## 3. TIÊU CHUẨN TÍNH LÀ HOÀN TẤT
 - Chỉ được tính là "cập nhật sửa chữa / nâng cấp hoàn tất" khi Tool trên máy người dùng ĐÃ THỰC SỰ CÓ BẢN MỚI HOÀN TOÀN và sẵn sàng khởi chạy không có lỗi.
 - Tuyệt đối KHÔNG chỉ sửa code trong file nguồn rồi báo hoàn tất khi app thực tế trên máy vẫn đang chạy bản cũ.
+
+---
+
+## 4. QUY TẮC BẮT BUỘC KHI QUẢN LÝ & DỌN DẸP FILE TRUYỆN SAU KHI SỬA LỖI
+- **Nguyên tắc tinh gọn tuyệt đối:** Khi người dùng yêu cầu sửa lỗi / chuẩn hóa truyện dịch, sau khi hoàn tất sửa lỗi BẮT BUỘC phải dọn dẹp sạch sẽ toàn bộ các file cũ, file backup trung gian, thư mục bản dịch cũ, file nháp hoặc thư mục chương gốc chưa chia.
+- **Cấu trúc lưu trữ chuẩn duy nhất:** CHỈ ĐƯỢC PHÉP ĐỂ LẠI DUY NHẤT MỘT THƯ MỤC TRUYỆN MỚI ĐÃ SỬA LỖI. Bên trong thư mục này chỉ chứa:
+  1. Toàn bộ các file chương lẻ đầy đủ đã sửa lỗi (`Chương 1.txt` ... `Chương N.txt`).
+  2. Một file tổng hợp toàn văn duy nhất đã sửa lỗi (`Tổng hợp từ chương 1-N.txt`).
+  3. Các file cấu hình hệ thống cần thiết (`.tool-dich-truyen-book.json`, `.tool-dich-truyen-memory.json`).
+- Tuyệt đối không để sót bất kỳ thư mục backup, bản nháp, file tạm hay thư mục cũ nào trong thư mục của người dùng.

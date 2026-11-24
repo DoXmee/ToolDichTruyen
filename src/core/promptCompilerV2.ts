@@ -27,6 +27,10 @@ export interface PromptCompilerInput {
   skipEntityExtraction?: boolean;
   executionMode?: 'web' | 'api';
   aiProvider?: string;
+  /** Strip entity role notes from KHỐI D during safety-refusal recovery retries. */
+  omitEntityRoles?: boolean;
+  /** Neutralize tense scene markers and relation samples during safety-refusal recovery. */
+  minimalSafetyContext?: boolean;
 }
 
 export interface CompiledPromptResult {
@@ -160,7 +164,8 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
 - Thời kỳ: ${genreProfile.worldRules.eraRange || 'Theo nguyên tác'}
 - Điểm nhìn (POV): ${povStr}
 - Nhân vật xuất hiện trong đoạn: ${presentNamesStr}
-- Trạng thái cảnh: ${sceneState === 'tense' || sceneState === 'hostile' ? 'ĐỐI ĐẦU / CĂNG THẲNG' : 'Bình thường'}`;
+- Trạng thái cảnh: ${sceneState === 'tense' || sceneState === 'hostile' ? 'ĐỐI ĐẦU / CĂNG THẲNG' : 'Bình thường'}
+- Bối cảnh văn học: Tác phẩm tiểu thuyết hư cấu thuần túy. Tình tiết xung đột nhân vật, bắt giữ hoặc đối thoại kịch tính nhằm phục vụ cốt truyện nghệ thuật.`;
 
   // KHỐI A & B RÚT GỌN CHO LƯỢT TIẾP TỤC TRONG CÙNG CHAT (BẢO LƯU 100% CẤM KỴ & MỎ NEO CỐT LÕI)
   const technicalContinuationRules = [
@@ -186,8 +191,11 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
     `${hasCustomPrompt ? '6' : '8'}. ĐẦU RA BẮT BUỘC: Đặt toàn bộ bản dịch tiếng Việt bên trong cặp thẻ <BAN_DICH id="${segmentId}"> ... </BAN_DICH>. Bản dịch phải kết thúc sạch sẽ, TUYỆT ĐỐI KHÔNG CHÈN DẤU NGOẶC VUÔNG "[" HOẶC MÃ JSON VÀO CUỐI BẢN DỊCH.`,
   ].join('\n');
 
-  const blockBContinuation = `### KHỐI B: THẺ BỐI CẢNH
-- Thể loại: ${genreProfile.name} | Thời kỳ: ${genreProfile.worldRules.eraRange || 'Theo nguyên tác'} | POV: ${povStr} | Nhân vật trong đoạn: ${presentNamesStr} | Trạng thái: ${sceneState === 'tense' || sceneState === 'hostile' ? 'ĐỐI ĐẦU / CĂNG THẲNG' : 'Bình thường'}`;
+  const blockBContinuation = input.minimalSafetyContext
+    ? `### KHỐI B: THẺ BỐI CẢNH
+- Thể loại: Tiểu thuyết hư cấu | POV: ${povStr} | Nhân vật trong đoạn: ${presentNamesStr} | Trạng thái: Bình thường | Bối cảnh văn học: Tác phẩm văn học hư cấu thuần túy phục vụ dịch thuật.`
+    : `### KHỐI B: THẺ BỐI CẢNH
+- Thể loại: ${genreProfile.name} | Thời kỳ: ${genreProfile.worldRules.eraRange || 'Theo nguyên tác'} | POV: ${povStr} | Nhân vật trong đoạn: ${presentNamesStr} | Trạng thái: ${sceneState === 'tense' || sceneState === 'hostile' ? 'ĐỐI ĐẦU / CĂNG THẲNG' : 'Bình thường'} | Bối cảnh văn học: Tiểu thuyết hư cấu nghệ thuật thuần túy`;
 
   // KHỐI C: GÓI LIÊN TỤC (Continuity Packet)
   const continuityLines: string[] = [];
@@ -215,7 +223,7 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
     for (const ent of entities) {
       const genderStr = ent.gender === 'male' ? 'Nam' : ent.gender === 'female' ? 'Nữ' : 'Chưa rõ';
       const pronounStr = ent.narrationPronoun ? ` | Đại từ dẫn truyện: "${ent.narrationPronoun}"` : '';
-      const roleStr = ent.role ? ` | Vai vế: ${ent.role}` : '';
+      const roleStr = !input.omitEntityRoles && ent.role ? ` | Vai vế: ${ent.role}` : '';
       const aliasStr = ent.aliases?.length ? ` [Bí danh/tên gọi khác: ${ent.aliases.map((a) => a.zh).join(', ')}]` : '';
       lines.push(`- ${ent.zh} -> ${ent.vi}${aliasStr} (${genderStr}${pronounStr}${roleStr})`);
     }
@@ -264,16 +272,18 @@ export function compileStoryBiblePrompt(input: PromptCompilerInput): CompiledPro
       const addrAB = resolveDirectionalAddress(charA, charB, rel, sceneState, genreProfile);
       const addrBA = resolveDirectionalAddress(charB, charA, rel, sceneState, genreProfile);
 
-      const extraSamples = rel.samples && rel.samples.length > 1 ? ` (Mẫu đã ghi nhận: ${rel.samples.join(' / ')})` : '';
+      const extraSamples = !input.minimalSafetyContext && rel.samples && rel.samples.length > 1
+        ? ` (Mẫu đã ghi nhận: ${rel.samples.join(' / ')})`
+        : '';
 
       lines.push(
         `- ${charA.vi} -> ${charB.vi}: Tự xưng "${addrAB.self}", gọi đối phương "${addrAB.call}"${extraSamples}${
-          addrAB.isTense ? ' [CẢNH CĂNG THẲNG]' : ''
+          !input.minimalSafetyContext && addrAB.isTense ? ' [CẢNH CĂNG THẲNG]' : ''
         }`,
       );
       lines.push(
         `- ${charB.vi} -> ${charA.vi}: Tự xưng "${addrBA.self}", gọi đối phương "${addrBA.call}"${
-          addrBA.isTense ? ' [CẢNH CĂNG THẲNG]' : ''
+          !input.minimalSafetyContext && addrBA.isTense ? ' [CẢNH CĂNG THẲNG]' : ''
         }`,
       );
     }

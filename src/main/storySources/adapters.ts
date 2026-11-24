@@ -92,22 +92,33 @@ function catalogReferences(
   parsedInput: ParsedStoryUrl,
   scopes: string[],
 ): StoryChapterReference[] {
-  const candidates: Array<{ parsed: ParsedStoryUrl; label: string; url: string }> = [];
-  for (const link of snapshot.links) {
-    if (!linkInScope(link, scopes) || !link.text.trim()) continue;
-    let parsed: ParsedStoryUrl;
-    try {
-      parsed = parseStoryUrl(link.href);
-    } catch {
-      continue;
+  const collectCandidates = (activeScopes: string[]): Array<{ parsed: ParsedStoryUrl; label: string; url: string }> => {
+    const list: Array<{ parsed: ParsedStoryUrl; label: string; url: string }> = [];
+    for (const link of snapshot.links) {
+      if (!linkInScope(link, activeScopes) || !link.text.trim()) continue;
+      let parsed: ParsedStoryUrl;
+      try {
+        parsed = parseStoryUrl(link.href);
+      } catch {
+        continue;
+      }
+      if (parsed.site !== parsedInput.site || parsed.kind !== "chapter") continue;
+      // UAA002 chapter links contain an internal chapter id and intentionally
+      // omit the parent novel id. They are accepted only from the already
+      // verified book page; fetch still enforces the same host.
+      if (parsedInput.site !== "uaa002" && parsed.bookId !== parsedInput.bookId) continue;
+      if (parsedInput.site === "c6k6" && /^\s*立即阅读\s*$/u.test(link.text)) continue;
+      list.push({ parsed, label: link.text, url: canonicalChapterUrl(parsed) });
     }
-    if (parsed.site !== parsedInput.site || parsed.kind !== "chapter") continue;
-    // UAA002 chapter links contain an internal chapter id and intentionally
-    // omit the parent novel id. They are accepted only from the already
-    // verified book page; fetch still enforces the same host.
-    if (parsedInput.site !== "uaa002" && parsed.bookId !== parsedInput.bookId) continue;
-    if (parsedInput.site === "c6k6" && /^\s*立即阅读\s*$/u.test(link.text)) continue;
-    candidates.push({ parsed, label: link.text, url: canonicalChapterUrl(parsed) });
+    return list;
+  };
+
+  let candidates = collectCandidates(scopes);
+  if (candidates.length === 0 && scopes.length > 0 && parsedInput.site === "xszj") {
+    // If the specified selector scope (e.g. #list or .u-chapter) is absent due to
+    // layout changes, but the page contains legitimate chapter links of the exact
+    // same novel, fallback to collecting them without scope restriction.
+    candidates = collectCandidates([]);
   }
 
   const seen = new Set<string>();
@@ -1143,6 +1154,7 @@ class XbanxiaAdapter implements Adapter {
 
 const XSZJ_PAGE_COUNTER = /[（(]\s*(\d+)\s*\/\s*(\d+)\s*[）)]/u;
 const XSZJ_READER_EDGE_NOISE = /^(?:没有了|目[录錄]|上一[页頁章]|下一[页頁章]|报错|手机上看|分享)$/u;
+const XSZJ_WATERMARK_LINE = /^(?:小说之家为广大书友们提供.*|如果您觉得.*(?:精彩|网址|分享).*|[（(]\s*本书网址\s*[:：].*?[)）])$/iu;
 
 function isXszjNative(parsed: ParsedStoryUrl): boolean {
   return new URL(parsed.normalizedUrl).hostname === "xszj.org";
@@ -1176,7 +1188,9 @@ function cleanXszjText(raw: string, heading: string): string {
     text = removeRepeatedHeading(text, embedded[0].trim());
     if (embedded[2]) text = removeRepeatedHeading(text, embedded[2].trim());
   }
-  const lines = text.split("\n").filter((line) => !XSZJ_READER_EDGE_NOISE.test(line.trim()));
+  const lines = text
+    .split("\n")
+    .filter((line) => !XSZJ_READER_EDGE_NOISE.test(line.trim()) && !XSZJ_WATERMARK_LINE.test(line.trim()));
   return lines.join("\n").trim();
 }
 
@@ -1195,6 +1209,15 @@ class XszjAdapter implements Adapter {
         nextPath: (candidate) => candidate.kind === "catalog",
       })
       : await collectCatalog(input.catalogUrl, input, runtime, { scopes: [".u-chapter"] });
+    if (!catalog.chapters.length) {
+      const bookChapters = catalogReferences(book, input, []);
+      if (bookChapters.length) {
+        catalog = {
+          snapshots: [book],
+          chapters: bookChapters,
+        };
+      }
+    }
     // The native book page intentionally exposes only its newest slice.  A
     // catalog that is empty is therefore a layout change, never a silent
     // partial import.

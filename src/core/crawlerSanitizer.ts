@@ -22,6 +22,7 @@ export function stripCrawlerNoise(text: string): string {
 
   // 2. Trailing or standalone crawler watermark lines (with optional parentheses)
   cleaned = cleaned.replace(/^[ \t]*[（(]?(?:本章完|本章未完[，,、]?请点击下一页继续阅读|未完待续)[)）]?[ \t]*$/gmu, '');
+  cleaned = cleaned.replace(/^[ \t]*(?:小说之家为广大书友们提供.*|如果您觉得.*(?:精彩|网址|分享).*|[（(]\s*本书网址\s*[:：].*?[)）])[ \t]*$/gmu, '');
 
   // 3. Standalone author note lines, mojibake double question marks (??), and common author memo prefixes
   // Safety rule: NEVER filter lines starting with a single '?' to protect valid dialogue questions

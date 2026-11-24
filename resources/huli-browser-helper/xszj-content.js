@@ -37,7 +37,7 @@ function normalizeUrl(rawUrl) {
   if (isXszjHost) {
     const book = /^\/b\/(\d+)\/?$/u.exec(path);
     const catalog = /^\/b\/(\d+)\/cs\/(\d+)\/?$/u.exec(path);
-    const chapter = /^\/b\/(\d+)\/c\/(\d+)\/?$/u.exec(path);
+    const chapter = /^\/b\/(\d+)\/c\/(\d+)(?:\.html)?\/?$/u.exec(path);
     const origin = XSZJ_HOSTS.has(host) ? "https://xszj.org" : `https://${host}`;
     if (book?.[1]) return `${origin}/b/${book[1]}`;
     if (catalog?.[1] && catalog[2]) return `${origin}/b/${catalog[1]}/cs/${catalog[2]}`;

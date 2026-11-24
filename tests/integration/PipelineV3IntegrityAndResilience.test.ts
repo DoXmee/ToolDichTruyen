@@ -347,4 +347,107 @@ describe('Pipeline V3 Integrity & Han Repair Queue Resilience', () => {
     expect(j.segments[0].id).toContain('-P1');
     expect(j.segments[0].status).toBe('completed');
   });
+
+  it('self-recovers and continues translation when refetchRaw throws and chapter length is sufficient', async () => {
+    const values = new Map<string, any>();
+    let translateCalled = false;
+    let refetchAttempted = false;
+
+    const adapter = {
+      async ensureReady() {},
+      async startNewConversation() {},
+      async cancelGeneration() {},
+      async sendAndWait(prompt: string) {
+        if (prompt.includes('[TDT_CLUSTER_SCOUT]')) {
+          return JSON.stringify({
+            segments: [
+              {
+                segmentId: 'V3-CH1',
+                integrity: {
+                  status: 'uncertain',
+                  reason: 'Nghi vấn nguồn cần xác minh lại',
+                },
+                garbage: [],
+              },
+            ],
+            newCharacters: [],
+            locations: [],
+            relations: [],
+          });
+        }
+        if (prompt.includes('[TDT_SCOUT]')) {
+          return JSON.stringify({
+            integrity: {
+              status: 'truncated',
+              reason: 'Văn bản kết thúc giữa câu thoại của nhân vật, tại dấu phẩy',
+            },
+            garbage: [],
+            newCharacters: [],
+            locations: [],
+            relations: [],
+          });
+        }
+        if (prompt.includes('<BAN_DICH')) {
+          translateCalled = true;
+          const vietText = Array.from({ length: 15 }, (_, i) => `Câu dịch thứ ${i + 1} của chương truyện diễn ra trôi chảy và đầy đủ.`).join(' ');
+          return `<BAN_DICH id="V3-CH1">\nChương 1\n${vietText}\n</BAN_DICH>`;
+        }
+        return '{}';
+      },
+    };
+
+    const runner = new TranslationJobRunner({
+      chatGpt: adapter as any,
+      persistence: {
+        async saveJob(j: any) {
+          values.set(j.id, structuredClone(j));
+        },
+        async loadJob(id: string) {
+          return values.get(id) || null;
+        },
+      },
+    });
+
+    installTranslationPipelineV3(runner, {
+      refetchRaw: async () => {
+        refetchAttempted = true;
+        throw new Error('Novel543 chỉ được đọc bằng trình duyệt mặc định và hồ sơ bạn dùng hằng ngày.');
+      },
+    });
+
+    // Provide a substantial chapter (>= 300 chars) ending with trailing comma
+    // Provide a chapter between 300 and 700 chars ending with trailing comma to trigger L1 scout
+    const chapterSource = `Chương 1: Tiêu đề\n${'Nội dung chính của câu chuyện diễn ra bình thường. '.repeat(10)}“Tôi lo rằng,”`;
+    const { jobId } = await runner.start({
+      source: chapterSource,
+      promptMode: 'ancient',
+      resolvedPrompt: 'Dịch thuần Việt.',
+      batchChaptersCount: 1,
+      sourceChapters: [
+        {
+          id: 'CH1',
+          number: 1,
+          title: 'Tiêu đề',
+          text: '',
+          urls: ['https://www.novel543.com/0826613087/8095_1.html'],
+        },
+      ],
+      settings: { maxRetries: 0 },
+    });
+
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const j = values.get(jobId);
+      if (j?.status === 'completed' || j?.status === 'failed') break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    const j = values.get(jobId);
+    await runner.shutdown();
+
+    expect(refetchAttempted).toBe(true);
+    expect(translateCalled).toBe(true);
+    expect(j?.status).toBe('completed');
+    expect(j.segments[0].status).toBe('completed');
+  });
 });

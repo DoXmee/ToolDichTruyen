@@ -1705,7 +1705,7 @@ main {
 }
 
 .chapter-numbering-control__field input {
-  width: 78px;
+  width: 100px;
   height: 28px;
   padding: 4px 7px;
   color: var(--ink);

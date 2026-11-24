@@ -122,4 +122,35 @@ describe('V3 identity and output contracts',()=>{
     // Heavy custom prompt should force more chunks to protect web DOM length
     expect(heavyPromptChunks.length).toBeGreaterThanOrEqual(normalChunks.length);
   });
+
+  it('treats maxChapters <= 0 as unbounded adaptive grouping across Web, Gemini API, and DeepSeek API', () => {
+    const shortChapters = Array.from({ length: 30 }, (_, i) => `Chương ${i + 1}: Ngắn\nNội dung ngắn ${i + 1}.`).join('\n\n');
+    for (const cfg of [
+      { executionMode: 'web' as const, aiProvider: 'chatgpt' as const },
+      { executionMode: 'api' as const, aiProvider: 'gemini' as const },
+      { executionMode: 'api' as const, aiProvider: 'deepseek' as const },
+    ]) {
+      const chunks = groupAdaptiveChapterChunks(shortChapters, {
+        ...cfg,
+        maxChapters: 0,
+      });
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]!.chapterCount).toBe(30);
+    }
+
+    const oversized = `Chương 1: Quá dài\n\n` + Array.from({ length: 80 }, (_, i) => `Đoạn ${i + 1}: ` + '汉字内容'.repeat(25)).join('\n\n');
+    for (const cfg of [
+      { executionMode: 'web' as const, aiProvider: 'chatgpt' as const },
+      { executionMode: 'api' as const, aiProvider: 'gemini' as const },
+      { executionMode: 'api' as const, aiProvider: 'deepseek' as const },
+    ]) {
+      const chunks = groupAdaptiveChapterChunks(oversized, {
+        ...cfg,
+        maxChapters: 0,
+      });
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks[0]!.id).toBe('V3-CH1-P1');
+      expect(chunks[1]!.id).toBe('V3-CH1-P2');
+    }
+  });
 });

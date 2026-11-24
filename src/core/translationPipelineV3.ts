@@ -342,8 +342,8 @@ export function groupAdaptiveChapterChunks(
   }
 
   const maxBatchChars = options?.maxBatchChars ?? baseMaxChars;
-  // Không giới hạn số lượng chương gộp (Infinity) - chỉ giới hạn theo dung lượng ký tự đầu vào!
-  const maxChapters = options?.maxChapters ?? Infinity;
+  // Không giới hạn số lượng chương gộp (Infinity) khi không chỉ định hoặc <= 0 - chỉ giới hạn theo dung lượng ký tự đầu vào!
+  const maxChapters = options?.maxChapters && options.maxChapters > 0 ? options.maxChapters : Infinity;
 
   // 1. Phân rã trước các chương siêu dài thành các phần nhỏ (parts) nếu vượt quá maxBatchChars
   const rawChapters = splitChapters(source);

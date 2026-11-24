@@ -4,6 +4,8 @@ import { access, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BrowserContext, Locator, Page, Response } from "playwright-core";
 import type { AiProvider } from "../../shared/types.js";
+import { ChatGptSafetyRefusalError } from "../../core/safetyRefusal.js";
+export { ChatGptSafetyRefusalError };
 import {
   FileConversationStateStore,
   VolatileConversationStateStore,
@@ -1829,15 +1831,82 @@ export class ChatGptWebAdapter {
     if (this.provider !== "chatgpt") return null;
     return await page
       .evaluate(() => {
+        const extractNonUserText = (root: Element): string => {
+          const clone = root.cloneNode(true) as Element;
+          for (const node of clone.querySelectorAll(
+            '[data-message-author-role="user"], #prompt-textarea, [contenteditable="true"], textarea',
+          )) {
+            node.remove();
+          }
+          return (clone.textContent?.trim() || "")
+            .replace(/^(?:Bạn đã nói:|You said:)\s*(?:Bạn\b)?\s*/iu, "")
+            .trim();
+        };
         const elements = document.querySelectorAll(
           '[role="alert"], [role="alertdialog"], [data-testid*="error"], .text-red-500, div[class*="toast"], div[class*="banner"], [data-testid*="banner"]',
         );
         const limitPattern = /(?:cửa sổ ngữ cảnh (?:này )?đã đầy|ngữ cảnh đã đầy|context window is full|cuộc trò chuyện (?:này )?quá dài|conversation is too long|this conversation is too long|đã đạt giới hạn cuộc trò chuyện|reached the (?:message|conversation) limit|please start a new chat|bắt đầu một cuộc trò chuyện mới để tiếp tục)/iu;
         for (const el of elements) {
-          if (el.closest('nav, [data-testid*="sidebar"], [aria-label*="sidebar" i], header')) continue;
-          const text = el.textContent?.trim() || "";
-          if (limitPattern.test(text)) {
+          if (
+            el.closest(
+              'nav, [data-testid*="sidebar"], [aria-label*="sidebar" i], header, [data-message-author-role="user"], #prompt-textarea, [contenteditable="true"]',
+            )
+          ) {
+            continue;
+          }
+          const text = extractNonUserText(el);
+          if (text && limitPattern.test(text)) {
             return text;
+          }
+        }
+        return null;
+      })
+      .catch(() => null);
+  }
+
+  private async checkChatGptSafetyRefusal(page: Page): Promise<string | null> {
+    if (this.provider !== "chatgpt") return null;
+    return await page
+      .evaluate(() => {
+        const extractRefusalText = (root: Element, pattern: RegExp): string | null => {
+          const clone = root.cloneNode(true) as Element;
+          for (const node of clone.querySelectorAll(
+            '[data-message-author-role="user"], #prompt-textarea, [contenteditable="true"], textarea',
+          )) {
+            node.remove();
+          }
+          const clean = (value: string): string =>
+            value
+              .replace(/^(?:Bạn đã nói:|You said:)\s*(?:Bạn\b)?\s*/iu, "")
+              .trim();
+          const fullText = clean(clone.textContent || "");
+          if (!fullText || !pattern.test(fullText)) return null;
+          // Prefer the tightest matching descendant so an outer turn wrapper
+          // does not obscure the actual safety notice with surrounding UI text.
+          let bestMatch = fullText;
+          for (const child of clone.querySelectorAll("*")) {
+            const childText = clean(child.textContent || "");
+            if (childText && childText.length < bestMatch.length && pattern.test(childText)) {
+              bestMatch = childText;
+            }
+          }
+          return bestMatch;
+        };
+        const elements = document.querySelectorAll(
+          '[role="alert"], [role="alertdialog"], [data-testid*="error"], .text-red-500, div[class*="toast"], div[class*="banner"], [data-testid*="banner"], div[class*="bg-red"], div[class*="border-red"]',
+        );
+        const safetyPattern = /(?:lý do an toàn|cuộc trò chuyện nhạy cảm|cuộc hội thoại nhạy cảm|safety reasons|sensitive conversations|violate our usage policies|content policy|không thể hiển thị nội dung này)/iu;
+        for (const el of elements) {
+          if (
+            el.closest(
+              'nav, [data-testid*="sidebar"], [aria-label*="sidebar" i], header, [data-message-author-role="user"], #prompt-textarea, [contenteditable="true"]',
+            )
+          ) {
+            continue;
+          }
+          const matched = extractRefusalText(el, safetyPattern);
+          if (matched) {
+            return matched;
           }
         }
         return null;
@@ -3400,6 +3469,12 @@ export class ChatGptWebAdapter {
               `ChatGPT hiển thị thông báo: "${contextLimit.slice(0, 200)}"`,
             );
           }
+          const safetyRefusal = await this.checkChatGptSafetyRefusal(responsePage);
+          if (safetyRefusal) {
+            throw new ChatGptSafetyRefusalError(
+              `ChatGPT từ chối vì lý do an toàn: "${safetyRefusal.slice(0, 200)}"`,
+            );
+          }
         }
 
         const hasExplicitGenerationError = !isActivelyGenerating && await responsePage
@@ -3419,6 +3494,12 @@ export class ChatGptWebAdapter {
           .catch(() => false);
 
         if (hasExplicitGenerationError && (!responseLocator || (await responseLocator.innerText().catch(() => "")).trim().length === 0)) {
+          const safetyRefusal = await this.checkChatGptSafetyRefusal(responsePage);
+          if (safetyRefusal) {
+            throw new ChatGptSafetyRefusalError(
+              `ChatGPT từ chối vì lý do an toàn: "${safetyRefusal.slice(0, 200)}"`,
+            );
+          }
           throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
         }
 

@@ -37,7 +37,7 @@ import {
   compileStoryBiblePrompt,
 } from '../../core/promptCompilerV2.js';
 import { getProviderLimits } from '../../core/aiProviderLimits.js';
-import { removeGarbageSnippets, type GarbageSnippet } from '../../core/crawlerSanitizer.js';
+import { removeGarbageSnippets, stripCrawlerNoise, type GarbageSnippet } from '../../core/crawlerSanitizer.js';
 import { unlockNamesInTranslation, enforceLockedEntities } from '../../core/nameLocker.js';
 import { sanitizeTranslationResponse } from '../../core/assistantResponse.js';
 import { getGenreProfile } from '../../core/genreProfile.js';
@@ -55,6 +55,14 @@ import {
   replaceLocalizedTargets,
   type LocalizedHanTarget,
 } from '../../core/localizedHanRepair.js';
+import {
+  ChatGptSafetyRefusalError,
+  isSafetyRefusalError,
+  isSafetyRefusalResponse,
+  SAFETY_REFUSAL_MAXIMUM_ATTEMPTS,
+  SAFETY_TRANSLATION_CONTEXT_PROMPT,
+  splitSourceIntoBalancedHalves,
+} from '../../core/safetyRefusal.js';
 import { buildLocalizedHanRepairPrompt } from '../../core/promptBuilder.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -105,7 +113,7 @@ export function readPipelineOptions(payload: Record<string, unknown>): {
   sourceChapters: ChapterInput[];
 } {
   const rawCount = payload.batchChaptersCount;
-  const count = typeof rawCount === 'number' ? rawCount : 2;
+  const count = typeof rawCount === 'number' ? rawCount : 0;
   if (count !== 0 && (count < 1 || count > 3)) throw Error('Số chương mỗi mẻ phải từ 1 đến 3 (hoặc 0 để tự động thích ứng).');
   const refs = payload.sourceChapters ?? [];
   if (!Array.isArray(refs) || refs.length > 10000) throw Error('Danh sách nguồn chương không hợp lệ.');
@@ -428,18 +436,28 @@ async function executeClusterScout(
   let scoutData: Record<string, unknown> | null = null;
   let scoutAttempts = 0;
   const maxScoutAttempts = 2;
+  let clusterSafetyRefused = false;
 
   while (scoutAttempts < maxScoutAttempts) {
     scoutAttempts++;
     try {
-      const currentPrompt = scoutAttempts > 1
-        ? `${scoutPrompt}\n\nLƯU Ý BẮT BUỘC: Lần trước định dạng trả lời không phải JSON. BẮT BUỘC chỉ trả về duy nhất 1 khối JSON chuẩn, tuyệt đối không dịch văn bản hay thêm bất kỳ lời dẫn nào!`
+      const baseScout = clusterSafetyRefused
+        ? `${SAFETY_TRANSLATION_CONTEXT_PROMPT}\n\n---\n${scoutPrompt}`
         : scoutPrompt;
+      const currentPrompt = scoutAttempts > 1 && !clusterSafetyRefused
+        ? `${baseScout}\n\nLƯU Ý BẮT BUỘC: Lần trước định dạng trả lời không phải JSON. BẮT BUỘC chỉ trả về duy nhất 1 khối JSON chuẩn, tuyệt đối không dịch văn bản hay thêm bất kỳ lời dẫn nào!`
+        : baseScout;
       const scoutResponse = await send(host, job, currentPrompt, signal, true);
+      if (isSafetyRefusalResponse(scoutResponse)) {
+        throw new ChatGptSafetyRefusalError(`AI từ chối trinh sát chùm vì lý do an toàn: "${scoutResponse.slice(0, 160)}"`);
+      }
       scoutData = parseProtocolJson(scoutResponse);
       break;
     } catch (scoutErr) {
       if (signal.aborted) throw signal.reason;
+      if (isSafetyRefusalError(scoutErr)) {
+        clusterSafetyRefused = true;
+      }
       host.logActivity(
         job,
         `V3 · Trinh sát chùm chưa nhận được JSON hợp lệ (thử lần ${scoutAttempts}/${maxScoutAttempts}): ${String(scoutErr)}`,
@@ -512,6 +530,32 @@ async function executeClusterScout(
       integrityStatus = 'ok';
     }
 
+    // Phân đoạn hoàn chỉnh (status === "ok") hoặc có thể tự phục hồi: lọc rác cục bộ của đúng phân đoạn đó
+    const segGarbage = (Array.isArray(segRes.garbage) ? segRes.garbage : globalGarbage) as GarbageSnippet[];
+    let cleanSource = stripCrawlerNoise(s.sourceText);
+    if (segGarbage.length > 0) {
+      const beforeLen = cleanSource.length;
+      cleanSource = removeGarbageSnippets(cleanSource, segGarbage);
+      totalGarbageChars += (beforeLen - cleanSource.length);
+    }
+    if (/[，,]([”"』」\s]*)$/u.test(cleanSource.trimEnd())) {
+      cleanSource = cleanSource.trimEnd().replace(/[，,]([”"』」\s]*)$/u, '。$1');
+    }
+
+    const reasonStr = (integrity.reason || '').toLowerCase();
+    const isMainBodyCoherent = /liền mạch|nội dung chính|quảng cáo|loại bỏ|không lẫn truyện/i.test(reasonStr);
+    const isTrailingPunctuationOrDialogue = /(?:câu|lời)\s*thoại|(?:dấu|kết thúc|bỏ)\s*(?:phẩy|lửng|chấm lửng)|cắt ngang giữa/i.test(reasonStr);
+    const isPureAdOrWatermark = cleanSource.trim().length === 0
+      || /không chứa nội dung truyện|chỉ có lời quảng cáo|chỉ có quảng cáo|quảng cáo chia sẻ|đường dẫn website|toàn bộ là quảng cáo/i.test(reasonStr)
+      || /^(?:小说之家|如果您觉得|（\s*本书网址|https?:\/\/|www\.)/i.test(cleanSource.trim());
+
+    if (isPureAdOrWatermark) {
+      integrityStatus = 'ok';
+      cleanSource = '';
+    } else if (cleanSource.length >= 300 && (isMainBodyCoherent || segGarbage.length > 0 || isTrailingPunctuationOrDialogue || cleanSource.length >= 800)) {
+      integrityStatus = 'ok';
+    }
+
     // Nếu phát hiện chương bị cụt (truncated), lẫn truyện/quảng cáo (corrupted) hoặc chưa rõ (uncertain):
     // TUYỆT ĐỐI KHÔNG đánh dấu scoutDone = true!
     if (['truncated', 'corrupted', 'refetch', 'uncertain'].includes(integrityStatus)) {
@@ -526,15 +570,6 @@ async function executeClusterScout(
         scoutDone: false,
       };
       continue;
-    }
-
-    // Phân đoạn hoàn chỉnh (status === "ok"): lọc rác cục bộ của đúng phân đoạn đó
-    const segGarbage = (Array.isArray(segRes.garbage) ? segRes.garbage : globalGarbage) as GarbageSnippet[];
-    let cleanSource = s.sourceText;
-    if (segGarbage.length > 0) {
-      const beforeLen = cleanSource.length;
-      cleanSource = removeGarbageSnippets(cleanSource, segGarbage);
-      totalGarbageChars += (beforeLen - cleanSource.length);
     }
 
     s.preparedV3 = {
@@ -803,9 +838,12 @@ async function processBatch(
       for (;;) {
         state.stage = 'analysis';
         segment.status = 'sending';
+        const chapterLabel = chapters.length > 5
+          ? `${chapters[0]!.number}..${chapters[chapters.length - 1]!.number} (${chapters.length} chương)`
+          : chapters.map((c) => c.number).join(', ');
         host.logActivity(
           job,
-          `V3 · Lượt 1/2: Trinh sát nguồn ${chapters.map((c) => c.number).join(', ')}; kiểm tra rác, đứt trang, nhân vật và xưng hô.`,
+          `V3 · Lượt 1/2: Trinh sát nguồn ${chapterLabel}; kiểm tra rác, đứt trang, nhân vật và xưng hô.`,
           'info',
           segment,
         );
@@ -829,18 +867,28 @@ async function processBatch(
         let scoutData: Record<string, unknown> | null = null;
         let scoutAttempts = 0;
         const maxScoutAttempts = 2;
+        let scoutSafetyRefused = false;
 
         while (scoutAttempts < maxScoutAttempts) {
           scoutAttempts++;
           try {
-            const currentScoutPrompt = scoutAttempts > 1
-              ? `${scoutPrompt}\n\nLƯU Ý BẮT BUỘC: Lần trước định dạng trả lời không phải JSON. BẮT BUỘC chỉ trả về duy nhất 1 khối JSON chuẩn, tuyệt đối không dịch văn bản hay thêm bất kỳ lời dẫn nào!`
+            const baseScout = scoutSafetyRefused
+              ? `${SAFETY_TRANSLATION_CONTEXT_PROMPT}\n\n---\n${scoutPrompt}`
               : scoutPrompt;
+            const currentScoutPrompt = scoutAttempts > 1 && !scoutSafetyRefused
+              ? `${baseScout}\n\nLƯU Ý BẮT BUỘC: Lần trước định dạng trả lời không phải JSON. BẮT BUỘC chỉ trả về duy nhất 1 khối JSON chuẩn, tuyệt đối không dịch văn bản hay thêm bất kỳ lời dẫn nào!`
+              : baseScout;
             const scoutResponse = await send(host, job, currentScoutPrompt, signal, true);
+            if (isSafetyRefusalResponse(scoutResponse)) {
+              throw new ChatGptSafetyRefusalError(`AI từ chối trinh sát vì lý do an toàn: "${scoutResponse.slice(0, 160)}"`);
+            }
             scoutData = parseProtocolJson(scoutResponse);
             break;
           } catch (scoutErr) {
             if (signal.aborted) throw signal.reason;
+            if (isSafetyRefusalError(scoutErr)) {
+              scoutSafetyRefused = true;
+            }
             host.logActivity(
               job,
               `V3 · Lượt 1 (Trinh sát) chưa nhận được JSON hợp lệ (thử lần ${scoutAttempts}/${maxScoutAttempts}): ${String(scoutErr)}`,
@@ -889,29 +937,8 @@ async function processBatch(
           );
           integrityStatus = 'ok';
         }
-        if (['truncated', 'corrupted', 'refetch', 'uncertain'].includes(integrityStatus)) {
-          host.logActivity(
-            job,
-            `V3 · Phát hiện nguồn ${segment.id} bất thường (${integrityStatus}): ${integrity.reason || 'cần kiểm tra'}`,
-            'warning',
-            segment,
-          );
-          if (!isSubPart && refetches < 2 && chapters[0]?.urls?.length && services.refetchRaw) {
-            state.stage = 'refetch';
-            host.logActivity(job, `V3 · Tự động tải lại nguồn ${chapters[0].id}...`, 'warning', segment);
-            chapters[0].text = await services.refetchRaw(chapters[0], signal);
-            segment.sourceText = chapters.map((c) => c.text).join('\n\n');
-            refetches++;
-            await host.checkpoint(job);
-            continue;
-          }
-          // NGUYÊN TẮC BẢO VỆ TÍNH TOÀN VẸN:
-          // Nếu nguồn bị cụt hoặc lỗi mà không refetch được, TUYỆT ĐỐI KHÔNG chuyển sang dịch!
-          throw new Error(`Phân đoạn ${segment.id} không toàn vẹn (${integrityStatus}): ${integrity.reason || 'Bị cắt cụt/mất trang'}. Vui lòng kiểm tra lại nguồn.`);
-        }
-
-        // 2. Tool tự động cắt rác theo vị trí/chuỗi do AI chỉ ra
-        let cleanSource = segment.sourceText;
+        // 2. Tool tự động cắt rác trước theo vị trí/chuỗi do AI chỉ ra
+        let cleanSource = stripCrawlerNoise(segment.sourceText);
         const garbage = (Array.isArray(scoutData.garbage) ? scoutData.garbage : []) as GarbageSnippet[];
         if (garbage.length > 0) {
           const beforeLen = cleanSource.length;
@@ -924,6 +951,81 @@ async function processBatch(
               'info',
               segment,
             );
+          }
+        }
+        if (/[，,]([”"』」\s]*)$/u.test(cleanSource.trimEnd())) {
+          cleanSource = cleanSource.trimEnd().replace(/[，,]([”"』」\s]*)$/u, '。$1');
+        }
+
+        // 3. Đánh giá tính toàn vẹn (integrity)
+        if (['truncated', 'corrupted', 'refetch', 'uncertain'].includes(integrityStatus)) {
+          host.logActivity(
+            job,
+            `V3 · Phát hiện nguồn ${segment.id} bất thường (${integrityStatus}): ${integrity.reason || 'cần kiểm tra'}`,
+            'warning',
+            segment,
+          );
+          if (!isSubPart && refetches < 2 && chapters[0]?.urls?.length && services.refetchRaw) {
+            state.stage = 'refetch';
+            host.logActivity(job, `V3 · Tự động tải lại nguồn ${chapters[0].id}...`, 'warning', segment);
+            try {
+              chapters[0].text = await services.refetchRaw(chapters[0], signal);
+              segment.sourceText = chapters.map((c) => c.text).join('\n\n');
+              refetches++;
+              await host.checkpoint(job);
+              continue;
+            } catch (refetchError) {
+              const msg = refetchError instanceof Error ? refetchError.message : String(refetchError);
+              host.logActivity(
+                job,
+                `V3 · Không thể tải lại nguồn ${chapters[0].id}: ${msg}. Tự động chuyển sang cơ chế bảo toàn và phục hồi nội dung hiện có.`,
+                'warning',
+                segment,
+              );
+              refetches = 2; // Đánh dấu đã dùng hết lượt refetch để chuyển sang phục hồi
+            }
+          }
+
+          // CƠ CHẾ TỰ PHỤC HỒI CHO NGUỒN NGOẠI TUYẾN HOẶC ĐÃ THỬ TẢI LẠI HẾT LƯỢT / RÁC ĐÃ ĐƯỢC LỌC:
+          // Nếu không có URL để refetch HOẶC đã tải lại 2 lần mà nội dung nguồn web vẫn dính rác/câu kết phẩy:
+          // Nếu nội dung truyện chính đã đủ dài (>= 300 ký tự) và AI xác nhận nội dung chính vẫn liền mạch hoặc đã lọc sạch rác ở đuôi:
+          const reasonStr = (integrity.reason || '').toLowerCase();
+          const isMainBodyCoherent = /liền mạch|nội dung chính|quảng cáo|loại bỏ|không lẫn truyện/i.test(reasonStr);
+          const isTrailingPunctuationOrDialogue = /(?:câu|lời)\s*thoại|(?:dấu|kết thúc|bỏ)\s*(?:phẩy|lửng|chấm lửng)|cắt ngang giữa/i.test(reasonStr);
+          const isPureAdOrWatermark = cleanSource.trim().length === 0
+            || /không chứa nội dung truyện|chỉ có lời quảng cáo|chỉ có quảng cáo|quảng cáo chia sẻ|đường dẫn website|toàn bộ là quảng cáo/i.test(reasonStr)
+            || /^(?:小说之家|如果您觉得|（\s*本书网址|https?:\/\/|www\.)/i.test(cleanSource.trim());
+          const refetchesExhausted = !chapters[0]?.urls?.length || refetches >= 2;
+
+          if (isPureAdOrWatermark) {
+            host.logActivity(
+              job,
+              `V3 · Phân đoạn ${segment.id} chỉ chứa rác quảng cáo/watermark nguồn (${cleanSource.length} ký tự). Tự động bỏ qua an toàn để tiếp tục dịch truyện.`,
+              'info',
+              segment,
+            );
+            segment.translation = '';
+            segment.status = 'completed';
+            state.stage = 'completed';
+            await host.checkpoint(job);
+            continue;
+          }
+
+          if (refetchesExhausted && cleanSource.length >= 300 && (isMainBodyCoherent || garbage.length > 0 || isTrailingPunctuationOrDialogue || cleanSource.length >= 500)) {
+            if (/[，,]\s*$/u.test(cleanSource.trimEnd())) {
+              cleanSource = cleanSource.trimEnd().replace(/[，,]\s*$/u, '。');
+            }
+            host.logActivity(
+              job,
+              `V3 · Phân đoạn ${segment.id} có cảnh báo (${integrityStatus}), nhưng nội dung chính dài ${cleanSource.length} ký tự vẫn liền mạch và đã được dọn rác/chuẩn hóa. Cho phép dịch tiếp an toàn.`,
+              'info',
+              segment,
+            );
+            integrityStatus = 'ok';
+          } else {
+            // NGUYÊN TẮC BẢO VỆ TÍNH TOÀN VẸN:
+            // Nếu nguồn bị cụt hoặc lỗi mà không refetch được, TUYỆT ĐỐI KHÔNG chuyển sang dịch!
+            throw new Error(`Phân đoạn ${segment.id} không toàn vẹn (${integrityStatus}): ${integrity.reason || 'Bị cắt cụt/mất trang'}. Vui lòng kiểm tra lại nguồn.`);
           }
         }
 
@@ -1014,9 +1116,19 @@ async function processBatch(
       }
     }
 
+    if (!prepared.cleanSource || prepared.cleanSource.trim().length === 0) {
+      segment.translation = '';
+      segment.status = 'completed';
+      await host.checkpoint(job);
+      return true;
+    }
+
     // === LƯỢT 2: DỊCH THUẬT VĂN HỌC CHUYÊN SÂU ===
-    const maximum = (job.settings.maxRetries ?? 3) + 1;
+    const normalMaximum = (job.settings.maxRetries ?? 3) + 1;
+    let maximum = normalMaximum;
     let previousError = '';
+    let lastFailureWasSafetyRefusal = false;
+    let safetyRefusalCount = 0;
 
     while (segment.attempts < maximum) {
       if (signal.aborted) return false;
@@ -1090,6 +1202,11 @@ async function processBatch(
 
       const genreProfile = getGenreProfile(job.promptMode ?? 'period');
       const cleanSource = prepared?.cleanSource || segment.sourceText;
+      const useSafetyContext = safetyRefusalCount >= 1;
+      const omitEntityRoles = safetyRefusalCount >= 1;
+      const minimalSafetyContext = safetyRefusalCount >= 2;
+      const halvesForSafety = safetyRefusalCount >= 3 ? splitSourceIntoBalancedHalves(cleanSource) : null;
+
       const compiled = compileStoryBiblePrompt({
         segmentId: segment.id,
         segmentIndex: segment.index,
@@ -1102,32 +1219,75 @@ async function processBatch(
         aiProvider: job.aiProvider || job.provider || 'chatgpt',
         customPrompt: job.customPrompt || job.resolvedPrompt,
         skipEntityExtraction: true, // KHÔNG BẮT AI TRẢ VỀ <THUC_THE_MOI> Ở LƯỢT 2!
+        omitEntityRoles,
+        minimalSafetyContext,
       });
 
       let promptToSend = compiled.fullPrompt;
-      if (segment.attempts > 1 && previousError) {
+      if (segment.attempts > 1 && previousError && !lastFailureWasSafetyRefusal) {
         const warningBlock = `[CẢNH BÁO QUAN TRỌNG KHI DỊCH LẠI - LẦN THỬ ${segment.attempts}/${maximum}]:\nLần dịch trước của bạn chưa hợp lệ do lỗi: ${previousError}.\nYÊU CẦU BẮT BUỘC:\n- Dịch 100% sang tiếng Việt tự nhiên thuần Việt, tuyệt đối KHÔNG để sót bất kỳ chữ Hán nào.\n- Giữ đúng cấu trúc các thẻ <BAN_DICH> và tiêu đề chương, tuyệt đối không lặp lại lỗi trên!\n`;
         promptToSend = compiled.fullPrompt.replace(/### KHỐI A:/u, `${warningBlock}\n### KHỐI A:`);
         if (promptToSend === compiled.fullPrompt) {
           promptToSend = `${warningBlock}\n\n${compiled.fullPrompt}`;
         }
       }
+      if (useSafetyContext) {
+        promptToSend = `${SAFETY_TRANSLATION_CONTEXT_PROMPT}\n\n---\n${promptToSend}`;
+      }
 
       host.logActivity(
         job,
-        `V3 · Lượt 2/2: Dịch ${segment.index + 1}/${job.segments.length} (đã khóa ${compiled.presentEntities.length} tên trong khung, xưng hô gợi ý linh hoạt); lần ${segment.attempts}/${maximum}.`,
+        halvesForSafety
+          ? `V3 · Lượt 2/2 (Phục hồi an toàn mức 3 - tách đôi đoạn ${segment.index + 1}/${job.segments.length}): lần ${segment.attempts}/${maximum}.`
+          : useSafetyContext
+            ? `V3 · Lượt 2/2 (Phục hồi an toàn mức ${minimalSafetyContext ? 2 : 1}): Dịch ${segment.index + 1}/${job.segments.length} (đã khóa ${compiled.presentEntities.length} tên trong khung); lần ${segment.attempts}/${maximum}.`
+            : `V3 · Lượt 2/2: Dịch ${segment.index + 1}/${job.segments.length} (đã khóa ${compiled.presentEntities.length} tên trong khung, xưng hô gợi ý linh hoạt); lần ${segment.attempts}/${maximum}.`,
         'info',
         segment,
       );
       await host.checkpoint(job);
 
       try {
-        const response = await send(host, job, promptToSend, signal, false);
+        let translated = '';
+        if (halvesForSafety) {
+          const translatedHalves: string[] = [];
+          for (let partIdx = 0; partIdx < halvesForSafety.length; partIdx += 1) {
+            if (signal.aborted) return false;
+            const partSource = halvesForSafety[partIdx]!;
+            const partCompiled = compileStoryBiblePrompt({
+              segmentId: `${segment.id}-S${partIdx + 1}`,
+              segmentIndex: segment.index,
+              totalSegments: job.segments.length,
+              sourceText: partSource,
+              bible,
+              genreProfile,
+              sceneState: 'normal',
+              executionMode: job.executionMode === 'api' ? 'api' : 'web',
+              aiProvider: job.aiProvider || job.provider || 'chatgpt',
+              customPrompt: job.customPrompt || job.resolvedPrompt,
+              skipEntityExtraction: true,
+              omitEntityRoles: true,
+              minimalSafetyContext: true,
+            });
+            const partPrompt = `${SAFETY_TRANSLATION_CONTEXT_PROMPT}\n\n---\n${partCompiled.fullPrompt}`;
+            const partResponse = await send(host, job, partPrompt, signal, false);
+            if (isSafetyRefusalResponse(partResponse)) {
+              throw new ChatGptSafetyRefusalError(`ChatGPT từ chối vì lý do an toàn: "${partResponse.slice(0, 200)}"`);
+            }
+            translatedHalves.push(sanitizeTranslationResponse(partSource, partResponse).trim());
+          }
+          translated = translatedHalves.filter(Boolean).join('\n\n');
+        } else {
+          const response = await send(host, job, promptToSend, signal, false);
+          if (isSafetyRefusalResponse(response)) {
+            throw new ChatGptSafetyRefusalError(`ChatGPT từ chối vì lý do an toàn: "${response.slice(0, 200)}"`);
+          }
+          // Lấy bản dịch sạch trong thẻ <BAN_DICH> và gỡ ngoặc ⟦ ⟧ tên riêng
+          translated = sanitizeTranslationResponse(cleanSource, response);
+        }
         segment.status = 'validating';
         state.stage = 'validation';
 
-        // Lấy bản dịch sạch trong thẻ <BAN_DICH> và gỡ ngoặc ⟦ ⟧ tên riêng
-        let translated = sanitizeTranslationResponse(cleanSource, response);
         // Ép sửa nếu AI tự ý đổi họ nhân vật đã khóa (ví dụ Quách Quốc Xương -> Tống Quốc Xương) hoặc trôi tên tiếng Anh
         translated = enforceLockedEntities(translated, compiled.presentEntities, state.registry.characters);
         translated = unlockNamesInTranslation(translated);
@@ -1161,6 +1321,7 @@ async function processBatch(
             if (targets && targets.length > 0 && targets.length <= 15) {
               let localAttempt = 0;
               const maxLocalAttempts = 3;
+              let localSafetyRefused = useSafetyContext;
               while (localAttempt < maxLocalAttempts && !validation.valid && isLocalizedHanOnly(validation)) {
                 if (signal.aborted) return false;
                 localAttempt++;
@@ -1172,16 +1333,22 @@ async function processBatch(
                 );
                 await host.checkpoint(job);
 
-                const repairPrompt = buildLocalizedHanRepairPrompt({
+                const rawRepairPrompt = buildLocalizedHanRepairPrompt({
                   basePrompt: `[TDT_V3_TRANSLATION]\n${job.customPrompt || job.resolvedPrompt}`,
                   targets: targets.map((t) => ({ targetId: t.targetId, sentence: t.text })),
                   attempt: localAttempt,
                   hanSample: validation.issues.find((i) => i.code === 'han_remaining')?.sample || '',
                   includeBasePrompt: true,
                 });
+                const repairPrompt = localSafetyRefused
+                  ? `${SAFETY_TRANSLATION_CONTEXT_PROMPT}\n\n---\n${rawRepairPrompt}`
+                  : rawRepairPrompt;
 
                 try {
                   const repairResponse = await send(host, job, repairPrompt, signal, false);
+                  if (isSafetyRefusalResponse(repairResponse)) {
+                    throw new ChatGptSafetyRefusalError(`AI từ chối sửa chữ Hán vì lý do an toàn: "${repairResponse.slice(0, 160)}"`);
+                  }
                   const parsed = localizedRepairBatchResponseError(repairResponse, targets);
                   if (!parsed.error && parsed.replacements && parsed.replacements.size > 0) {
                     translated = replaceLocalizedTargets(translated, targets, parsed.replacements);
@@ -1198,6 +1365,9 @@ async function processBatch(
                   }
                 } catch (repairErr) {
                   if (signal.aborted) return false;
+                  if (isSafetyRefusalError(repairErr)) {
+                    localSafetyRefused = true;
+                  }
                   host.logActivity(
                     job,
                     `V3 · Lần sửa cục bộ ${localAttempt} chưa đạt: ${String(repairErr)}`,
@@ -1253,6 +1423,24 @@ async function processBatch(
         return await host.completeSegment(job, segment, signal);
       } catch (error) {
         if (signal.aborted) return false;
+        const errMsg = error instanceof Error ? error.message : String(error);
+        if (isSafetyRefusalError(error)) {
+          safetyRefusalCount++;
+          lastFailureWasSafetyRefusal = true;
+          maximum = Math.max(maximum, SAFETY_REFUSAL_MAXIMUM_ATTEMPTS);
+          previousError = errMsg;
+          segment.error = errMsg;
+          segment.status = 'retrying';
+          host.logActivity(
+            job,
+            `V3 · ChatGPT trả thông báo an toàn (lần ${safetyRefusalCount}): kích hoạt lớp bảo vệ ngữ cảnh & thử lại trong chat mới (${segment.attempts}/${maximum}).`,
+            'warning',
+            segment,
+          );
+          await host.checkpoint(job);
+          continue;
+        }
+        lastFailureWasSafetyRefusal = false;
         previousError = String(error);
         segment.error = String(error);
         segment.status = 'retrying';
@@ -1291,7 +1479,7 @@ export function installTranslationPipelineV3(target: unknown, services: Pipeline
         executionMode: mode,
         aiProvider: provider,
         customPrompt: typeof customPrompt === 'string' ? customPrompt : '',
-        maxChapters: starting.batchChaptersCount,
+        maxChapters: starting.batchChaptersCount && starting.batchChaptersCount > 0 ? starting.batchChaptersCount : Infinity,
       });
     }
     return originalChunker(source, options);
@@ -1313,7 +1501,7 @@ export function installTranslationPipelineV3(target: unknown, services: Pipeline
       if (starting.aiProvider) {
         job.aiProvider = starting.aiProvider;
       }
-      const batch = starting.batchChaptersCount ?? 2;
+      const batch = starting.batchChaptersCount ?? 0;
       if (batch !== 0 && (batch < 1 || batch > 3)) throw Error('Số chương mỗi mẻ phải từ 1 đến 3.');
       job.pipelineV3 = {
         version: 3,
