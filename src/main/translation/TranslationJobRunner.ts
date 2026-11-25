@@ -272,7 +272,7 @@ export interface TranslationRunnerDependencies {
   chatGpt: Pick<
     ChatGptWebAdapter,
     "ensureReady" | "startNewConversation" | "sendAndWait" | "cancelGeneration"
-  > & Partial<Pick<ChatGptWebAdapter, "restartForRecovery" | "reloadForRecovery" | "setReasoning">> & {
+  > & Partial<Pick<ChatGptWebAdapter, "restartForRecovery" | "reloadForRecovery" | "setReasoning" | "close">> & {
     selectProvider?: (provider: AiProvider) => Promise<void>;
   };
   geminiApi?: {
@@ -1052,6 +1052,9 @@ export class TranslationJobRunner {
       throw new TypeError("Prompt dịch không hợp lệ.");
     }
     this.assertNoOtherActiveJob();
+    if (request.executionMode === "api" && typeof this.dependencies.chatGpt.close === "function") {
+      await this.dependencies.chatGpt.close().catch(() => undefined);
+    }
 
     const settings = normalizedSettings(request.settings);
     const sourceText = request.source.normalize("NFC").trim();

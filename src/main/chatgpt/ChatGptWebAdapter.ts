@@ -5,6 +5,14 @@ import path from "node:path";
 import type { BrowserContext, Locator, Page, Response } from "playwright-core";
 import type { AiProvider } from "../../shared/types.js";
 import { ChatGptSafetyRefusalError } from "../../core/safetyRefusal.js";
+import {
+  buildEdgeManualLoginArgs,
+  closeSurplusContextPages,
+  configureOptimizedBrowserContext,
+  normalizeEdgeProfilePreferences,
+  OPTIMIZED_EDGE_AI_WEB_ARGS,
+  type OptimizedBrowserContext,
+} from "../browserOptimization.js";
 export { ChatGptSafetyRefusalError };
 import {
   FileConversationStateStore,
@@ -392,6 +400,7 @@ export async function findSystemBrowserExecutable(): Promise<string | undefined>
 
 async function defaultBrowserFactory(options: BrowserFactoryOptions): Promise<BrowserContext> {
   const { chromium } = await import("playwright-core");
+  await normalizeEdgeProfilePreferences(options.profileDirectory);
   const commonOptions = {
     headless: options.headless,
     acceptDownloads: false,
@@ -400,40 +409,31 @@ async function defaultBrowserFactory(options: BrowserFactoryOptions): Promise<Br
     // automation flag. Manual sign-in uses a normal Edge process below; this
     // also keeps the controlled phase from advertising navigator.webdriver.
     ignoreDefaultArgs: ["--enable-automation", "--no-sandbox", "--disable-setuid-sandbox"],
-    args: [
-      "--disable-blink-features=AutomationControlled",
-      "--disable-default-apps",
-      "--disable-sync",
-      "--disable-save-password-bubble",
-      "--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,EdgeShopping,EdgeEntityExtraction,EdgeWallet,Translate,OptimizationHints,MediaRouter",
-      "--no-default-browser-check",
-      "--no-first-run",
-      "--disable-extensions",
-      "--disable-component-update",
-      "--disable-background-networking",
-      "--disable-breakpad",
-      "--disk-cache-size=104857600",
-      "--disable-background-timer-throttling",
-      "--memory-model=low",
-      "--enable-features=MemorySaver",
-    ],
+    args: [...OPTIMIZED_EDGE_AI_WEB_ARGS],
+  };
+
+  const launchAndConfigure = async (
+    overrides: { executablePath: string } | { channel: "msedge" },
+  ): Promise<BrowserContext> => {
+    const context = await chromium.launchPersistentContext(options.profileDirectory, {
+      ...commonOptions,
+      ...overrides,
+    });
+    await configureOptimizedBrowserContext(context as OptimizedBrowserContext, {
+      blockHeavyAiAssets: true,
+    });
+    return context;
   };
 
   if (options.executablePath) {
-    return chromium.launchPersistentContext(options.profileDirectory, {
-      ...commonOptions,
-      executablePath: options.executablePath,
-    });
+    return launchAndConfigure({ executablePath: options.executablePath });
   }
 
   // Playwright's system channel is the most stable way to find the Edge that
   // ships with Windows. No Playwright-managed browser is downloaded/bundled.
   const openBrowser = async (): Promise<BrowserContext> => {
     try {
-      return await chromium.launchPersistentContext(options.profileDirectory, {
-        ...commonOptions,
-        channel: "msedge",
-      });
+      return await launchAndConfigure({ channel: "msedge" });
     } catch (edgeError) {
       const executablePath = await findSystemBrowserExecutable();
       if (!executablePath) {
@@ -443,10 +443,7 @@ async function defaultBrowserFactory(options: BrowserFactoryOptions): Promise<Br
         );
       }
       try {
-        return await chromium.launchPersistentContext(options.profileDirectory, {
-          ...commonOptions,
-          executablePath,
-        });
+        return await launchAndConfigure({ executablePath });
       } catch (fallbackError) {
         throw new Error(
           `Không thể mở trình duyệt hệ thống tại ${executablePath}.`,
@@ -512,22 +509,10 @@ async function defaultManualLoginFactory(options: {
   if (!executablePath) {
     throw new Error("Không tìm thấy Microsoft Edge hoặc Google Chrome để mở đăng nhập bình thường.");
   }
+  await normalizeEdgeProfilePreferences(options.profileDirectory);
   const child = spawn(
     executablePath,
-    [
-      `--user-data-dir=${options.profileDirectory}`,
-      "--new-window",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-default-apps",
-      // Edge may otherwise keep the profile process alive after its last
-      // visible login window closes. The adapter used to mistake that
-      // background process for an unfinished login forever.
-      "--disable-background-mode",
-      "--disable-extensions",
-      "--disable-features=EdgeShopping,EdgeEntityExtraction,EdgeWallet,Translate,OptimizationHints",
-      options.url,
-    ],
+    buildEdgeManualLoginArgs(options.profileDirectory, options.url),
     {
       detached: false,
       stdio: "ignore",
@@ -2536,6 +2521,9 @@ export class ChatGptWebAdapter {
       ?? chatGptPages[0]
       ?? availablePages[0];
     const page = existing ?? (await this.context.newPage());
+    if (typeof (this.context as { route?: unknown }).route === "function") {
+      await closeSurplusContextPages(this.context as OptimizedBrowserContext, page);
+    }
     page.on("close", () => {
       if (this.page === page) this.page = undefined;
     });
@@ -3388,7 +3376,16 @@ export class ChatGptWebAdapter {
           && submittedOwnershipHash
           && Date.now() >= nextObserverRefreshAt
         ) {
-          observerPage ??= await page.context().newPage();
+          const optCtx = page.context() as OptimizedBrowserContext;
+          if (!observerPage) {
+            optCtx.__creatingObserverPage = true;
+            try {
+              observerPage = await page.context().newPage();
+              optCtx.__exemptObserverPage = observerPage;
+            } finally {
+              optCtx.__creatingObserverPage = false;
+            }
+          }
           await observerPage.goto(submittedConversation.url, {
             waitUntil: "domcontentloaded",
             timeout: 45_000,
@@ -3560,6 +3557,12 @@ export class ChatGptWebAdapter {
         await delay(500, signal);
       }
     } finally {
+      const optCtx = typeof page.context === "function"
+        ? (page.context() as OptimizedBrowserContext)
+        : undefined;
+      if (optCtx && optCtx.__exemptObserverPage === observerPage) {
+        optCtx.__exemptObserverPage = undefined;
+      }
       await observerPage?.close().catch(() => undefined);
     }
     const providerDiagnostic = this.provider === "kimi" || this.provider === "deepseek" || this.provider === "gemini"

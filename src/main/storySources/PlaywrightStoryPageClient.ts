@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import type { BrowserContext, Page } from "playwright-core";
 import {
+  configureOptimizedBrowserContext,
+  normalizeEdgeProfilePreferences,
+  OPTIMIZED_EDGE_STORY_CRAWL_ARGS,
+  type OptimizedBrowserContext,
+} from "../browserOptimization.js";
+import {
   StorySourceError,
   type StoryPageClient,
   type StoryPageClientFactory,
@@ -496,23 +502,17 @@ function isC6k6Url(url: string): boolean {
 
 export const createPlaywrightStoryPageClient: StoryPageClientFactory = async (options) => {
   const { chromium } = await import("playwright-core");
+  await normalizeEdgeProfilePreferences(options.profileDirectory);
   const launchOptions = {
     headless: options.headless,
     acceptDownloads: false,
     serviceWorkers: "block" as const,
     viewport: { width: 1280, height: 900 },
-    args: [
-      "--disable-extensions",
-      "--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,EdgeShopping,EdgeEntityExtraction,EdgeWallet,Translate,OptimizationHints,MediaRouter",
-      "--disable-component-update",
-      "--disable-background-networking",
-      "--disable-breakpad",
-      "--renderer-process-limit=4",
-      "--js-flags=--max-old-space-size=1024",
-    ],
+    args: [...OPTIMIZED_EDGE_STORY_CRAWL_ARGS],
     ...(options.executablePath ? { executablePath: options.executablePath } : { channel: "msedge" }),
   };
   const context = await chromium.launchPersistentContext(options.profileDirectory, launchOptions);
+  await configureOptimizedBrowserContext(context as OptimizedBrowserContext);
   const networkGuard = new StoryNetworkGuard();
   try {
     await installStoryNetworkRoutes(context, networkGuard);

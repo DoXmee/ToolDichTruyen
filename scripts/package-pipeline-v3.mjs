@@ -54,6 +54,9 @@ main=replace(main,'handle(IPC_CHANNELS.geminiApiTestKey,',`handle(IPC_CHANNELS.d
       if (updated.apiKeys) dependencies.deepseekApi.setKeys(updated.apiKeys);
       if (updated.model) dependencies.deepseekApi.setModel(updated.model);
     }
+    if (updated.executionMode === "api") {
+      await dependencies.chatGpt.close().catch(() => void 0);
+    }
     return updated;
   });
   handle(IPC_CHANNELS.deepseekApiTestKey, async (_event, rawPayload) => {
@@ -255,6 +258,385 @@ main=replace(
           }
           throw new Error("ChatGPT Web báo lỗi khi tạo phản hồi.");
         }`
+);
+
+// 6c. Edge Optimization (keep existing Edge logins + light GPU + single-tab + 512MB V8 heap + close idle Web AI browser on API mode)
+main=replace(
+  main,
+  `      if (updated.batchChaptersCount) dependencies.geminiApi.setBatchChaptersCount(updated.batchChaptersCount);
+    }
+    return updated;
+  });`,
+  `      if (updated.batchChaptersCount) dependencies.geminiApi.setBatchChaptersCount(updated.batchChaptersCount);
+    }
+    if (updated.executionMode === "api") {
+      await dependencies.chatGpt.close().catch(() => void 0);
+    }
+    return updated;
+  });`
+);
+main=replace(
+  main,
+  `    this.assertNoOtherActiveJob();
+    const settings = normalizedSettings(request.settings);
+    const executionMode = request.executionMode ?? "web";`,
+  `    this.assertNoOtherActiveJob();
+    const settings = normalizedSettings(request.settings);
+    const executionMode = request.executionMode ?? "web";
+    if (executionMode === "api" && typeof this.dependencies.chatGpt?.close === "function") {
+      await this.dependencies.chatGpt.close().catch(() => void 0);
+    }`
+);
+main=replace(
+  main,
+  `async function defaultBrowserFactory(options) {
+  const { chromium } = await import("playwright-core");
+  const commonOptions = {
+    headless: options.headless,
+    acceptDownloads: false,
+    viewport: null,
+    // Google rejects OAuth sign-in when Chromium exposes Playwright's default
+    // automation flag. Manual sign-in uses a normal Edge process below; this
+    // also keeps the controlled phase from advertising navigator.webdriver.
+    ignoreDefaultArgs: ["--enable-automation", "--no-sandbox", "--disable-setuid-sandbox"],
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--disable-save-password-bubble",
+      "--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,EdgeShopping,EdgeEntityExtraction,EdgeWallet,Translate,OptimizationHints,MediaRouter",
+      "--no-default-browser-check",
+      "--no-first-run",
+      "--disable-extensions",
+      "--disable-component-update",
+      "--disable-background-networking",
+      "--disable-breakpad",
+      "--disk-cache-size=104857600",
+      "--disable-background-timer-throttling",
+      "--memory-model=low",
+      "--enable-features=MemorySaver"
+    ]
+  };
+  if (options.executablePath) {
+    return chromium.launchPersistentContext(options.profileDirectory, {
+      ...commonOptions,
+      executablePath: options.executablePath
+    });
+  }
+  const openBrowser = async () => {
+    try {
+      return await chromium.launchPersistentContext(options.profileDirectory, {
+        ...commonOptions,
+        channel: "msedge"
+      });
+    } catch (edgeError) {
+      const executablePath = await findSystemBrowserExecutable();
+      if (!executablePath) {
+        throw new Error(
+          "Không tìm thấy Microsoft Edge hoặc Google Chrome. Hãy cài Edge, hoặc đặt CHATGPT_BROWSER_EXECUTABLE.",
+          { cause: edgeError }
+        );
+      }
+      try {
+        return await chromium.launchPersistentContext(options.profileDirectory, {
+          ...commonOptions,
+          executablePath
+        });
+      } catch (fallbackError) {
+        throw new Error(
+          \`Không thể mở trình duyệt hệ thống tại \${executablePath}.\`,
+          { cause: fallbackError }
+        );
+      }
+    }
+  };`,
+  `const EDGE_OPT_DISABLED_FEATURES = "PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,EdgeShopping,EdgeEntityExtraction,EdgeWallet,EdgeSidebar,EdgeWorkspaces,msEdgeAccountConsistency,Translate,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion";
+const EDGE_OPT_TELEMETRY_PATTERNS = [
+  /(?:^|\\.)sentry\\.io$/iu,
+  /(?:^|\\.)browser-intake-datadoghq\\.com$/iu,
+  /(?:^|\\.)statsigapi\\.net$/iu,
+  /(?:^|\\.)google-analytics\\.com$/iu,
+  /(?:^|\\.)googletagmanager\\.com$/iu,
+  /(?:^|\\.)doubleclick\\.net$/iu,
+  /(?:^|\\.)connect\\.facebook\\.net$/iu,
+  /(?:^|\\.)clarity\\.ms$/iu
+];
+async function normalizeEdgeProfilePreferences(profileDirectory) {
+  if (!profileDirectory) return;
+  const preferencesPath = path.join(profileDirectory, "Default", "Preferences");
+  try {
+    const raw = await readFile(preferencesPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    parsed.profile = { ...(parsed.profile || {}), exit_type: "Normal", exited_cleanly: true };
+    parsed.session = { ...(parsed.session || {}), restore_on_startup: 5 };
+    parsed.background_mode = { ...(parsed.background_mode || {}), enabled: false };
+    parsed.hardware_acceleration_mode = { ...(parsed.hardware_acceleration_mode || {}), enabled: true };
+    await writeFile(preferencesPath, JSON.stringify(parsed), "utf-8");
+  } catch {}
+}
+function shouldBlockAiWebResource(resourceType, rawUrl) {
+  if (resourceType === "media" || resourceType === "font" || resourceType === "ping" || resourceType === "cspviolationreport") return true;
+  try {
+    const hostname = new URL(rawUrl).hostname.toLowerCase();
+    return EDGE_OPT_TELEMETRY_PATTERNS.some((pattern) => pattern.test(hostname));
+  } catch {
+    return false;
+  }
+}
+async function closeSurplusContextPages(context, keepPage) {
+  const pages = context.pages().filter((candidate) => !candidate.isClosed());
+  if (pages.length <= 1) return;
+  const primary = keepPage && !keepPage.isClosed() ? keepPage : pages.find((candidate) => candidate.url() !== "about:blank" && !candidate.url().startsWith("edge://")) ?? pages[0];
+  for (const candidate of pages) {
+    if (candidate === primary || candidate === context.__exemptObserverPage) continue;
+    await candidate.close().catch(() => void 0);
+  }
+}
+async function configureOptimizedBrowserContext(context, options = {}) {
+  await closeSurplusContextPages(context);
+  if (typeof context.on === "function") {
+    context.on("page", (newPage) => {
+      if (context.__creatingObserverPage || newPage === context.__exemptObserverPage) return;
+      const openPages = context.pages().filter((candidate) => !candidate.isClosed() && candidate !== context.__exemptObserverPage);
+      if (openPages.length > 1) void newPage.close().catch(() => void 0);
+    });
+  }
+  if (options.blockHeavyAiAssets && typeof context.route === "function") {
+    await context.route("**/*", (route) => {
+      const req = route.request();
+      if (shouldBlockAiWebResource(req.resourceType(), req.url())) return route.abort().catch(() => void 0);
+      return route.continue().catch(() => void 0);
+    }).catch(() => void 0);
+  }
+}
+async function defaultBrowserFactory(options) {
+  const { chromium } = await import("playwright-core");
+  await normalizeEdgeProfilePreferences(options.profileDirectory);
+  const commonOptions = {
+    headless: options.headless,
+    acceptDownloads: false,
+    viewport: null,
+    ignoreDefaultArgs: ["--enable-automation", "--no-sandbox", "--disable-setuid-sandbox"],
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--disable-save-password-bubble",
+      \`--disable-features=\${EDGE_OPT_DISABLED_FEATURES}\`,
+      "--no-default-browser-check",
+      "--no-first-run",
+      "--disable-session-crashed-bubble",
+      "--hide-crash-restore-bubble",
+      "--disable-extensions",
+      "--disable-component-update",
+      "--disable-background-networking",
+      "--disable-background-mode",
+      "--disable-component-extensions-with-background-pages",
+      "--disable-breakpad",
+      "--disable-domain-reliability",
+      "--disable-client-side-phishing-detection",
+      "--disable-speech-api",
+      "--disable-notifications",
+      "--mute-audio",
+      "--no-pings",
+      "--disable-gpu-shader-disk-cache",
+      "--disk-cache-size=16777216",
+      "--media-cache-size=1",
+      "--renderer-process-limit=1",
+      "--process-per-site",
+      "--js-flags=--max-old-space-size=512",
+      "--disable-background-timer-throttling",
+      "--memory-model=low",
+      "--enable-features=MemorySaver"
+    ]
+  };
+  const launchAndConfigure = async (overrides) => {
+    const context = await chromium.launchPersistentContext(options.profileDirectory, {
+      ...commonOptions,
+      ...overrides
+    });
+    await configureOptimizedBrowserContext(context, { blockHeavyAiAssets: true });
+    return context;
+  };
+  if (options.executablePath) {
+    return launchAndConfigure({ executablePath: options.executablePath });
+  }
+  const openBrowser = async () => {
+    try {
+      return await launchAndConfigure({ channel: "msedge" });
+    } catch (edgeError) {
+      const executablePath = await findSystemBrowserExecutable();
+      if (!executablePath) {
+        throw new Error(
+          "Không tìm thấy Microsoft Edge hoặc Google Chrome. Hãy cài Edge, hoặc đặt CHATGPT_BROWSER_EXECUTABLE.",
+          { cause: edgeError }
+        );
+      }
+      try {
+        return await launchAndConfigure({ executablePath });
+      } catch (fallbackError) {
+        throw new Error(
+          \`Không thể mở trình duyệt hệ thống tại \${executablePath}.\`,
+          { cause: fallbackError }
+        );
+      }
+    }
+  };`
+);
+main=replace(
+  main,
+  `  const child = spawn(
+    executablePath,
+    [
+      \`--user-data-dir=\${options.profileDirectory}\`,
+      "--new-window",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-default-apps",
+      // Edge may otherwise keep the profile process alive after its last
+      // visible login window closes. The adapter used to mistake that
+      // background process for an unfinished login forever.
+      "--disable-background-mode",
+      "--disable-extensions",
+      "--disable-features=EdgeShopping,EdgeEntityExtraction,EdgeWallet,Translate,OptimizationHints",
+      options.url
+    ],`,
+  `  await normalizeEdgeProfilePreferences(options.profileDirectory);
+  const child = spawn(
+    executablePath,
+    [
+      \`--user-data-dir=\${options.profileDirectory}\`,
+      "--new-window",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-default-apps",
+      "--disable-session-crashed-bubble",
+      "--hide-crash-restore-bubble",
+      "--disable-background-mode",
+      "--disable-extensions",
+      "--disable-sync",
+      "--disable-component-update",
+      "--disable-background-networking",
+      "--disable-breakpad",
+      "--mute-audio",
+      "--no-pings",
+      "--disable-gpu-shader-disk-cache",
+      "--disk-cache-size=16777216",
+      "--media-cache-size=1",
+      "--js-flags=--max-old-space-size=512",
+      \`--disable-features=\${EDGE_OPT_DISABLED_FEATURES}\`,
+      options.url
+    ],`
+);
+main=replace(
+  main,
+  `    const page = existing ?? await this.context.newPage();
+    page.on("close", () => {
+      if (this.page === page) this.page = void 0;
+    });
+    return page;`,
+  `    const page = existing ?? await this.context.newPage();
+    if (typeof this.context.route === "function") {
+      await closeSurplusContextPages(this.context, page);
+    }
+    page.on("close", () => {
+      if (this.page === page) this.page = void 0;
+    });
+    return page;`
+);
+main=replace(
+  main,
+  `        if (this.provider === "kimi" && submittedConversation && submittedOwnershipHash && Date.now() >= nextObserverRefreshAt) {
+          observerPage ??= await page.context().newPage();`,
+  `        if (this.provider === "kimi" && submittedConversation && submittedOwnershipHash && Date.now() >= nextObserverRefreshAt) {
+          const optCtx = page.context();
+          if (!observerPage) {
+            optCtx.__creatingObserverPage = true;
+            try {
+              observerPage = await page.context().newPage();
+              optCtx.__exemptObserverPage = observerPage;
+            } finally {
+              optCtx.__creatingObserverPage = false;
+            }
+          }`
+);
+main=replace(
+  main,
+  `    } finally {
+      await observerPage?.close().catch(() => void 0);
+    }`,
+  `    } finally {
+      const optCtx = typeof page.context === "function" ? page.context() : void 0;
+      if (optCtx && optCtx.__exemptObserverPage === observerPage) optCtx.__exemptObserverPage = void 0;
+      await observerPage?.close().catch(() => void 0);
+    }`
+);
+main=replace(
+  main,
+  `createPlaywrightStoryPageClient = async (options) => {
+  const { chromium } = await import("playwright-core");
+  const launchOptions = {
+    headless: options.headless,
+    acceptDownloads: false,
+    serviceWorkers: "block",
+    viewport: { width: 1280, height: 900 },
+    args: [
+      "--disable-extensions",
+      "--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,EdgeShopping,EdgeEntityExtraction,EdgeWallet,Translate,OptimizationHints,MediaRouter",
+      "--disable-component-update",
+      "--disable-background-networking",
+      "--disable-breakpad",
+      "--renderer-process-limit=4",
+      "--js-flags=--max-old-space-size=1024"
+    ],
+    ...options.executablePath ? { executablePath: options.executablePath } : { channel: "msedge" }
+  };
+  const context = await chromium.launchPersistentContext(options.profileDirectory, launchOptions);
+  const networkGuard = new StoryNetworkGuard();`,
+  `createPlaywrightStoryPageClient = async (options) => {
+  const { chromium } = await import("playwright-core");
+  await normalizeEdgeProfilePreferences(options.profileDirectory);
+  const launchOptions = {
+    headless: options.headless,
+    acceptDownloads: false,
+    serviceWorkers: "block",
+    viewport: { width: 1280, height: 900 },
+    args: [
+      "--disable-default-apps",
+      "--disable-sync",
+      "--disable-save-password-bubble",
+      \`--disable-features=\${EDGE_OPT_DISABLED_FEATURES}\`,
+      "--no-default-browser-check",
+      "--no-first-run",
+      "--disable-session-crashed-bubble",
+      "--hide-crash-restore-bubble",
+      "--disable-extensions",
+      "--disable-component-update",
+      "--disable-background-networking",
+      "--disable-background-mode",
+      "--disable-component-extensions-with-background-pages",
+      "--disable-breakpad",
+      "--disable-domain-reliability",
+      "--disable-client-side-phishing-detection",
+      "--disable-speech-api",
+      "--disable-notifications",
+      "--mute-audio",
+      "--no-pings",
+      "--disable-gpu-shader-disk-cache",
+      "--disk-cache-size=16777216",
+      "--media-cache-size=1",
+      "--renderer-process-limit=2",
+      "--process-per-site",
+      "--js-flags=--max-old-space-size=512",
+      "--memory-model=low",
+      "--enable-features=MemorySaver"
+    ],
+    ...options.executablePath ? { executablePath: options.executablePath } : { channel: "msedge" }
+  };
+  const context = await chromium.launchPersistentContext(options.profileDirectory, launchOptions);
+  await configureOptimizedBrowserContext(context);
+  const networkGuard = new StoryNetworkGuard();`
 );
 main=main.replace(
   /async expandIxdzsCatalog\(page, requestedUrl, signal\) \{[\s\S]*?\n  \}/u,

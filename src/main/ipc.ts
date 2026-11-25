@@ -602,6 +602,9 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
       if (updated.model) dependencies.geminiApi.setModel(updated.model);
       if (updated.batchChaptersCount) dependencies.geminiApi.setBatchChaptersCount(updated.batchChaptersCount);
     }
+    if (updated.executionMode === "api") {
+      await dependencies.chatGpt.close().catch(() => undefined);
+    }
     return updated;
   });
   handle(IPC_CHANNELS.geminiApiTestKey, async (_event, rawPayload) => {
@@ -628,6 +631,9 @@ export function registerIpcHandlers(dependencies: IpcDependencies): () => void {
     if (dependencies.deepseekApi) {
       if (updated.apiKeys) dependencies.deepseekApi.setKeys(updated.apiKeys);
       if (updated.model) dependencies.deepseekApi.setModel(updated.model);
+    }
+    if (updated.executionMode === "api") {
+      await dependencies.chatGpt.close().catch(() => undefined);
     }
     return updated;
   });
