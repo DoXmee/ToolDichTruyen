@@ -3062,7 +3062,7 @@ describe('TranslationJobRunner', () => {
     expect(sendAndWait).toHaveBeenCalledTimes(11)
   }, 25_000)
 
-  it('tự động khởi động lại browser sạch khi xoay chat (mỗi 5 đoạn) để giải phóng 100% RAM tích lũy', async () => {
+  it('tự động khởi động lại browser sạch định kỳ sau mỗi 20 đoạn để giải phóng 100% RAM tích lũy', async () => {
     const persistence = createPersistence()
     const startNewConversation = vi.fn().mockResolvedValue(undefined)
     const restartForRecovery = vi.fn().mockResolvedValue(undefined)
@@ -3108,8 +3108,8 @@ describe('TranslationJobRunner', () => {
     await completed
 
     // 31 đoạn: Xoay chat tại đoạn 5, 10, 15, 20, 25, 30 (tổng 1 + 6 = 7 lần startNewConversation)
-    // Trình duyệt được giữ sống liên tục, KHÔNG bị tắt/khởi động lại (restartForRecovery = 0)
-    expect(restartForRecovery).toHaveBeenCalledTimes(0)
+    // Và tự khởi động lại sạch browser định kỳ ở đoạn 20 (restartForRecovery = 1)
+    expect(restartForRecovery).toHaveBeenCalledTimes(1)
     expect(startNewConversation).toHaveBeenCalledTimes(7)
     expect(sendAndWait).toHaveBeenCalledTimes(31)
     expect(persistence.values.get(jobId)).toMatchObject({

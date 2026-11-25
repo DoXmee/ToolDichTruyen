@@ -350,7 +350,7 @@ main=replace(
       }
     }
   };`,
-  `const EDGE_OPT_DISABLED_FEATURES = "PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,EdgeShopping,EdgeEntityExtraction,EdgeWallet,EdgeSidebar,EdgeWorkspaces,msEdgeAccountConsistency,Translate,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion";
+  `const EDGE_OPT_DISABLED_FEATURES = "AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,AutoDeElevate,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion,PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,EdgeShopping,EdgeEntityExtraction,EdgeWallet,EdgeSidebar,EdgeWorkspaces,msEdgeAccountConsistency,Translate,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion";
 const EDGE_OPT_TELEMETRY_PATTERNS = [
   /(?:^|\\.)sentry\\.io$/iu,
   /(?:^|\\.)browser-intake-datadoghq\\.com$/iu,
@@ -620,6 +620,132 @@ main=replace(
       if (this.page === page) this.page = void 0;
     });
     return page;`
+);
+main=replace(
+  main,
+  `  async startNewConversation() {
+    this.freshConversationRecoveryArmed = false;
+    await this.ensureReady();
+    const page = this.requirePage();
+    const previousConversation = await this.loadVerifiedToolConversation();
+    if (previousConversation) {
+      await this.cleanupPreviousToolConversation(page, previousConversation);
+    }
+    await this.resetToFreshConversationRoot(page, {`,
+  `  async startNewConversation() {
+    this.freshConversationRecoveryArmed = false;
+    await this.ensureReady();
+    let page = this.requirePage();
+    const previousConversation = await this.loadVerifiedToolConversation();
+    if (previousConversation) {
+      await this.cleanupPreviousToolConversation(page, previousConversation);
+    }
+    const isRealContext = Boolean(this.context && typeof this.context.route === "function");
+    if (previousConversation && isRealContext && this.context && !this.pageCrashed) {
+      const oldPage = page;
+      const optCtx = this.context;
+      optCtx.__creatingObserverPage = true;
+      try {
+        const freshPage = await this.context.newPage();
+        this.page = freshPage;
+        this.pageCrashed = false;
+        if (typeof freshPage.on === "function") {
+          freshPage.on("crash", () => {
+            if (this.page !== freshPage) return;
+            this.pageCrashed = true;
+            this.setStatus("error", providerStatusMessage(this.provider, "Tab ChatGPT vừa bị sập (Out of Memory). Tool sẽ tự khởi động lại..."));
+          });
+        }
+        freshPage.on("close", () => {
+          if (this.page === freshPage) this.page = void 0;
+        });
+        page = freshPage;
+      } finally {
+        optCtx.__creatingObserverPage = false;
+      }
+      await oldPage.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5e3 }).catch(() => void 0);
+      await oldPage.close().catch(() => void 0);
+    }
+    await this.resetToFreshConversationRoot(page, {`
+);
+main=replace(
+  main,
+  `        if (job.executionMode !== "api") {
+          await this.dependencies.chatGpt.selectProvider?.(job.aiProvider);
+        }`,
+  `        if (job.executionMode !== "api") {
+          await this.dependencies.chatGpt.selectProvider?.(job.aiProvider);
+          if (job.browserRecyclePending) {
+            job.browserRecyclePending = false;
+            job.browserRecycleSegmentCount = 0;
+            this.logActivity(job, \`Đang khởi động lại sạch trình duyệt \${providerLabel2} để giải phóng RAM tích lũy...\`);
+            if (this.dependencies.chatGpt.restartForRecovery) {
+              await this.dependencies.chatGpt.restartForRecovery();
+            } else if (typeof this.dependencies.chatGpt.close === "function") {
+              await this.dependencies.chatGpt.close().catch(() => void 0);
+            }
+            await this.checkpoint(job);
+          }
+        }`
+);
+main=replace(
+  main,
+  `    if (hasMoreSegments && job.aiProvider !== "gemini" && (job.conversationAccumulatedCharacters >= CONVERSATION_ROTATION_CHARACTER_THRESHOLD || job.conversationSegmentCount >= CONVERSATION_ROTATION_SEGMENT_CEILING)) {
+      this.logActivity(
+        job,
+        \`Đã hoàn thành \${job.conversationSegmentCount} đoạn (\${job.conversationAccumulatedCharacters.toLocaleString("vi-VN")} ký tự). Tự động tạo chat mới trong trình duyệt hiện tại để duy trì tốc độ và tránh lag.\`,
+        "info",
+        segment
+      );
+      job.conversationInitialized = false;
+      job.conversationHasBasePrompt = false;
+      job.conversationRecoveryPending = true;
+      job.conversationAccumulatedCharacters = 0;
+      job.conversationSegmentCount = 0;
+      await this.checkpoint(job);
+    }`,
+  `    const shouldRecycleBrowser = job.executionMode !== "api" && (job.browserRecycleSegmentCount ?? 0) >= 20;
+    if (hasMoreSegments && job.aiProvider !== "gemini" && (shouldRecycleBrowser || job.conversationAccumulatedCharacters >= CONVERSATION_ROTATION_CHARACTER_THRESHOLD || job.conversationSegmentCount >= CONVERSATION_ROTATION_SEGMENT_CEILING)) {
+      if (shouldRecycleBrowser) {
+        job.browserRecyclePending = true;
+        job.browserRecycleSegmentCount = 0;
+        this.logActivity(
+          job,
+          \`Đã dịch 20 đoạn liên tiếp. Sẽ tự khởi động lại sạch trình duyệt ở lượt kế tiếp để giải phóng RAM (giữ nguyên phiên đăng nhập).\`,
+          "info",
+          segment
+        );
+      } else {
+        this.logActivity(
+          job,
+          \`Đã hoàn thành \${job.conversationSegmentCount} đoạn (\${job.conversationAccumulatedCharacters.toLocaleString("vi-VN")} ký tự). Tự động thay tab chat mới sạch để duy trì tốc độ và tránh lag.\`,
+          "info",
+          segment
+        );
+      }
+      job.conversationInitialized = false;
+      job.conversationHasBasePrompt = false;
+      job.conversationRecoveryPending = true;
+      job.conversationAccumulatedCharacters = 0;
+      job.conversationSegmentCount = 0;
+      await this.checkpoint(job);
+    }`
+);
+main=replace(
+  main,
+  `    this.emit(job.id, "job-completed", {
+      translatedText: job.translatedText,
+      job: this.publicJob(job)
+    });
+  }`,
+  `    this.emit(job.id, "job-completed", {
+      translatedText: job.translatedText,
+      job: this.publicJob(job)
+    });
+    if (job.executionMode !== "api" && typeof this.dependencies.chatGpt?.close === "function") {
+      await this.dependencies.chatGpt.close().catch(() => void 0);
+    }
+  }`
 );
 main=replace(
   main,

@@ -1726,10 +1726,31 @@ export class ChatGptWebAdapter {
   public async startNewConversation(): Promise<void> {
     this.freshConversationRecoveryArmed = false;
     await this.ensureReady();
-    const page = this.requirePage();
+    let page = this.requirePage();
     const previousConversation = await this.loadVerifiedToolConversation();
     if (previousConversation) {
       await this.cleanupPreviousToolConversation(page, previousConversation);
+    }
+    const isRealContext = Boolean(
+      this.context && typeof (this.context as { route?: unknown }).route === "function",
+    );
+    if (previousConversation && isRealContext && this.context && !this.pageCrashed) {
+      // Replacing the SPA tab when rotating conversations forces Blink/Edge to
+      // reclaim accumulated DOM, WASM, and React state memory inside the browser.
+      const oldPage = page;
+      const optCtx = this.context as OptimizedBrowserContext;
+      optCtx.__creatingObserverPage = true;
+      try {
+        const freshPage = await this.context.newPage();
+        this.page = freshPage;
+        this.pageCrashed = false;
+        this.attachPageLifecycleListeners(freshPage, true);
+        page = freshPage;
+      } finally {
+        optCtx.__creatingObserverPage = false;
+      }
+      await oldPage.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 }).catch(() => undefined);
+      await oldPage.close().catch(() => undefined);
     }
     // ChatGPT's responsive sidebar can place an overlay over the visible
     // "New chat" link, causing Playwright's click action to time out even
@@ -2528,6 +2549,25 @@ export class ChatGptWebAdapter {
     );
   }
 
+  private attachPageLifecycleListeners(page: Page, isRealContext: boolean): void {
+    if (isRealContext && typeof page.on === "function") {
+      page.on("crash", () => {
+        if (this.page !== page) return;
+        this.pageCrashed = true;
+        this.setStatus(
+          "error",
+          providerStatusMessage(
+            this.provider,
+            "Tab ChatGPT vừa bị sập (Out of Memory). Tool sẽ tự khởi động lại...",
+          ),
+        );
+      });
+    }
+    page.on("close", () => {
+      if (this.page === page) this.page = undefined;
+    });
+  }
+
   private async getOrCreatePage(): Promise<Page> {
     if (!this.context) throw new Error("Trình duyệt ChatGPT chưa được mở.");
     const availablePages = this.context.pages().filter((candidate) => !candidate.isClosed());
@@ -2537,25 +2577,11 @@ export class ChatGptWebAdapter {
       ?? availablePages[0];
     const page = existing ?? (await this.context.newPage());
     this.pageCrashed = false;
-    if (typeof (this.context as { route?: unknown }).route === "function") {
+    const isRealContext = typeof (this.context as { route?: unknown }).route === "function";
+    if (isRealContext) {
       await closeSurplusContextPages(this.context as OptimizedBrowserContext, page);
-      if (typeof page.on === "function") {
-        page.on("crash", () => {
-          if (this.page !== page) return;
-          this.pageCrashed = true;
-          this.setStatus(
-            "error",
-            providerStatusMessage(
-              this.provider,
-              "Tab ChatGPT vừa bị sập (Out of Memory). Tool sẽ tự khởi động lại...",
-            ),
-          );
-        });
-      }
     }
-    page.on("close", () => {
-      if (this.page === page) this.page = undefined;
-    });
+    this.attachPageLifecycleListeners(page, isRealContext);
     return page;
   }
 

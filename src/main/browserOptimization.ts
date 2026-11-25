@@ -3,6 +3,22 @@ import path from "node:path";
 import type { BrowserContext, Page } from "playwright-core";
 
 export const EDGE_DISABLED_FEATURES = [
+  // Preserve Playwright's built-in Chromium stability/privacy disabled features
+  // because Chromium honors only the last --disable-features flag on CLI.
+  "AvoidUnnecessaryBeforeUnloadCheckSync",
+  "BoundaryEventDispatchTracksNodeRemoval",
+  "DestroyProfileOnBrowserClose",
+  "DialMediaRouteProvider",
+  "GlobalMediaControls",
+  "HttpsUpgrades",
+  "LensOverlay",
+  "PaintHolding",
+  "ThirdPartyStoragePartitioning",
+  "BlockOriginHeaderModificationOnRedirect",
+  "AutoDeElevate",
+  "msForceBrowserSignIn",
+  "msEdgeUpdateLaunchServicesPreferredVersion",
+  // Edge bloat / background features
   "PasswordManagerOnboarding",
   "PasswordLeakDetection",
   "AutofillServerCommunication",

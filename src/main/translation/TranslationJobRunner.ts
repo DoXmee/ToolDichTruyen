@@ -370,7 +370,7 @@ const MAX_CHATGPT_TO_KIMI_RESCUE_CYCLES = 3;
 
 export const CONVERSATION_ROTATION_CHARACTER_THRESHOLD = 32_000;
 export const CONVERSATION_ROTATION_SEGMENT_CEILING = 5;
-export const BROWSER_RECYCLE_SEGMENT_INTERVAL = 0;
+export const BROWSER_RECYCLE_SEGMENT_INTERVAL = 20;
 
 function normalizeAiProvider(provider: unknown): AiProvider {
   return provider === "kimi" || provider === "deepseek" || provider === "gemini"
@@ -1724,6 +1724,9 @@ export class TranslationJobRunner {
       translatedText: job.translatedText,
       job: this.publicJob(job),
     });
+    if (job.executionMode !== "api" && typeof this.dependencies.chatGpt.close === "function") {
+      await this.dependencies.chatGpt.close().catch(() => undefined);
+    }
   }
 
   /**
@@ -1745,6 +1748,17 @@ export class TranslationJobRunner {
       const providerLabel = aiProviderLabel(job.aiProvider);
       try {
         await this.dependencies.chatGpt.selectProvider?.(job.aiProvider);
+        if (job.browserRecyclePending && job.executionMode !== "api") {
+          job.browserRecyclePending = false;
+          job.browserRecycleSegmentCount = 0;
+          this.logActivity(job, `Đang khởi động lại sạch trình duyệt ${providerLabel} để giải phóng RAM tích lũy...`);
+          if (this.dependencies.chatGpt.restartForRecovery) {
+            await this.dependencies.chatGpt.restartForRecovery();
+          } else if (typeof this.dependencies.chatGpt.close === "function") {
+            await this.dependencies.chatGpt.close().catch(() => undefined);
+          }
+          await this.checkpoint(job);
+        }
         this.logActivity(job, `Đang kiểm tra phiên ${providerLabel} trước khi dịch tiếp.`);
         await this.dependencies.chatGpt.ensureReady();
         if (this.shouldStop(job, signal)) return;
@@ -3096,18 +3110,34 @@ export class TranslationJobRunner {
       + (segment.translatedText?.length ?? 0);
 
     const hasMoreSegments = job.segments.some((s) => s.status !== "completed");
+    const shouldRecycleBrowser =
+      BROWSER_RECYCLE_SEGMENT_INTERVAL > 0 &&
+      job.executionMode !== "api" &&
+      (job.browserRecycleSegmentCount ?? 0) >= BROWSER_RECYCLE_SEGMENT_INTERVAL;
     if (
       hasMoreSegments &&
       job.aiProvider !== "gemini" &&
-      (job.conversationAccumulatedCharacters >= CONVERSATION_ROTATION_CHARACTER_THRESHOLD ||
+      (shouldRecycleBrowser ||
+        job.conversationAccumulatedCharacters >= CONVERSATION_ROTATION_CHARACTER_THRESHOLD ||
         job.conversationSegmentCount >= CONVERSATION_ROTATION_SEGMENT_CEILING)
     ) {
-      this.logActivity(
-        job,
-        `Đã hoàn thành ${job.conversationSegmentCount} đoạn (${job.conversationAccumulatedCharacters.toLocaleString("vi-VN")} ký tự). Tự động tạo chat mới trong trình duyệt hiện tại để duy trì tốc độ và tránh lag.`,
-        "info",
-        segment,
-      );
+      if (shouldRecycleBrowser) {
+        job.browserRecyclePending = true;
+        job.browserRecycleSegmentCount = 0;
+        this.logActivity(
+          job,
+          `Đã dịch ${BROWSER_RECYCLE_SEGMENT_INTERVAL} đoạn liên tiếp. Sẽ tự khởi động lại sạch trình duyệt ở lượt kế tiếp để giải phóng RAM (giữ nguyên phiên đăng nhập).`,
+          "info",
+          segment,
+        );
+      } else {
+        this.logActivity(
+          job,
+          `Đã hoàn thành ${job.conversationSegmentCount} đoạn (${job.conversationAccumulatedCharacters.toLocaleString("vi-VN")} ký tự). Tự động thay tab chat mới sạch để duy trì tốc độ và tránh lag.`,
+          "info",
+          segment,
+        );
+      }
       job.conversationInitialized = false;
       job.conversationHasBasePrompt = false;
       job.conversationRecoveryPending = true;
