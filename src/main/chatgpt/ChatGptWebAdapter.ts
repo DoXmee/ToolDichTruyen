@@ -846,6 +846,7 @@ export class ChatGptWebAdapter {
   private cancellationInProgress?: Promise<void>;
   private snapshot: ChatGptStatusSnapshot = { status: "closed" };
   private operationInProgress = false;
+  private pageCrashed = false;
   private freshConversationRecoveryArmed = false;
   /**
    * DOM virtualization can remove earlier user turns from a long ChatGPT
@@ -1643,6 +1644,16 @@ export class ChatGptWebAdapter {
       return this.status();
     }
     const page = this.page;
+    if (this.pageCrashed || page.url().startsWith("chrome-error://")) {
+      this.setStatus(
+        "error",
+        providerStatusMessage(
+          this.provider,
+          "Tab ChatGPT vừa gặp sự cố bộ nhớ (Out of Memory). Đang khởi động lại phiên...",
+        ),
+      );
+      return this.status();
+    }
     /**
      * Google cannot be asked "is this session signed in?" through the login
      * URL: `accounts.google.com` appears on both the signed-out page (a hidden
@@ -1685,6 +1696,9 @@ export class ChatGptWebAdapter {
   }
 
   public async ensureReady(): Promise<void> {
+    if (this.pageCrashed || (this.page && !this.page.isClosed() && this.page.url().startsWith("chrome-error://"))) {
+      await this.closeAutomationContext();
+    }
     if (!this.context || !this.page || this.page.isClosed()) {
       await this.openLogin({ allowManualFallback: false });
     }
@@ -2398,6 +2412,7 @@ export class ChatGptWebAdapter {
   private async closeAutomationContext(options: { strict?: boolean } = {}): Promise<void> {
     const context = this.context;
     this.freshConversationRecoveryArmed = false;
+    this.pageCrashed = false;
     if (!options.strict) {
       this.context = undefined;
       this.page = undefined;
@@ -2521,8 +2536,22 @@ export class ChatGptWebAdapter {
       ?? chatGptPages[0]
       ?? availablePages[0];
     const page = existing ?? (await this.context.newPage());
+    this.pageCrashed = false;
     if (typeof (this.context as { route?: unknown }).route === "function") {
       await closeSurplusContextPages(this.context as OptimizedBrowserContext, page);
+      if (typeof page.on === "function") {
+        page.on("crash", () => {
+          if (this.page !== page) return;
+          this.pageCrashed = true;
+          this.setStatus(
+            "error",
+            providerStatusMessage(
+              this.provider,
+              "Tab ChatGPT vừa bị sập (Out of Memory). Tool sẽ tự khởi động lại...",
+            ),
+          );
+        });
+      }
     }
     page.on("close", () => {
       if (this.page === page) this.page = undefined;
@@ -3322,6 +3351,17 @@ export class ChatGptWebAdapter {
     try {
       while (Date.now() < deadline) {
         if (signal?.aborted) throw signal.reason ?? new Error("Đã hủy thao tác.");
+        if (this.pageCrashed || page.isClosed() || page.url().startsWith("chrome-error://")) {
+          this.pageCrashed = false;
+          await this.closeAutomationContext().catch(() => undefined);
+          await this.clearActiveToolConversationPointer().catch(() => undefined);
+          throw new ChatGptFreshChatRecoveryError(
+            providerStatusMessage(
+              this.provider,
+              "Tab ChatGPT vừa gặp sự cố bộ nhớ (Out of Memory / Crash). Tool đã đóng và sẽ khôi phục ngay trong phiên mới.",
+            ),
+          );
+        }
 
         if (this.provider === "kimi") {
           const continueResponse = await firstVisible(page, KIMI_CONTINUE_RESPONSE_SELECTORS);

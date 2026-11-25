@@ -48,11 +48,10 @@ export const OPTIMIZED_EDGE_AI_WEB_ARGS: readonly string[] = [
   "--disable-gpu-shader-disk-cache",
   "--disk-cache-size=16777216",
   "--media-cache-size=1",
-  "--renderer-process-limit=1",
+  "--renderer-process-limit=2",
   "--process-per-site",
-  "--js-flags=--max-old-space-size=512",
+  "--js-flags=--max-old-space-size=1536",
   "--disable-background-timer-throttling",
-  "--memory-model=low",
   "--enable-features=MemorySaver",
 ];
 
@@ -83,8 +82,7 @@ export const OPTIMIZED_EDGE_STORY_CRAWL_ARGS: readonly string[] = [
   "--media-cache-size=1",
   "--renderer-process-limit=2",
   "--process-per-site",
-  "--js-flags=--max-old-space-size=512",
-  "--memory-model=low",
+  "--js-flags=--max-old-space-size=1024",
   "--enable-features=MemorySaver",
 ];
 
@@ -109,7 +107,7 @@ export function buildEdgeManualLoginArgs(profileDirectory: string, url: string):
     "--disable-gpu-shader-disk-cache",
     "--disk-cache-size=16777216",
     "--media-cache-size=1",
-    "--js-flags=--max-old-space-size=512",
+    "--js-flags=--max-old-space-size=1024",
     `--disable-features=${EDGE_DISABLED_FEATURES}`,
     url,
   ];

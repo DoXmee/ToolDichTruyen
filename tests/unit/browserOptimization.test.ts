@@ -49,24 +49,24 @@ describe("browserOptimization", () => {
     }
   });
 
-  it("enforces memory, single-process/site, and lightweight GPU flags without disabling GPU", () => {
+  it("enforces memory, process limits, and lightweight GPU flags without disabling GPU or triggering OOM", () => {
     for (const args of [OPTIMIZED_EDGE_AI_WEB_ARGS, OPTIMIZED_EDGE_STORY_CRAWL_ARGS]) {
       expect(args).not.toContain("--disable-gpu");
+      expect(args).not.toContain("--memory-model=low");
       expect(args).toContain("--disable-gpu-shader-disk-cache");
-      expect(args).toContain("--js-flags=--max-old-space-size=512");
       expect(args).toContain("--disable-background-mode");
       expect(args).toContain("--hide-crash-restore-bubble");
       expect(args).toContain("--disable-session-crashed-bubble");
       expect(args).toContain("--process-per-site");
-      expect(args).toContain("--memory-model=low");
+      expect(args).toContain("--renderer-process-limit=2");
     }
-    expect(OPTIMIZED_EDGE_AI_WEB_ARGS).toContain("--renderer-process-limit=1");
-    expect(OPTIMIZED_EDGE_STORY_CRAWL_ARGS).toContain("--renderer-process-limit=2");
+    expect(OPTIMIZED_EDGE_AI_WEB_ARGS).toContain("--js-flags=--max-old-space-size=1536");
+    expect(OPTIMIZED_EDGE_STORY_CRAWL_ARGS).toContain("--js-flags=--max-old-space-size=1024");
 
     const loginArgs = buildEdgeManualLoginArgs("C:\\profile", "https://chatgpt.com/");
     expect(loginArgs).toContain("--user-data-dir=C:\\profile");
     expect(loginArgs).toContain("--disable-background-mode");
-    expect(loginArgs).toContain("--js-flags=--max-old-space-size=512");
+    expect(loginArgs).toContain("--js-flags=--max-old-space-size=1024");
     expect(loginArgs).not.toContain("--disable-gpu");
     expect(loginArgs[loginArgs.length - 1]).toBe("https://chatgpt.com/");
   });

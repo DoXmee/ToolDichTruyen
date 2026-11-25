@@ -2525,5 +2525,42 @@ describe('ChatGptWebAdapter', () => {
 
     await adapter.close()
   })
+
+  it('phát hiện ngay sự kiện tab crash (Out of Memory) khi đang chờ phản hồi và chuyển sang khôi phục tức thì', async () => {
+    const fake = createFakeBrowser({ composer: true })
+    const crashListeners: Array<() => void> = []
+    let contextClosed = false
+    const origOn = fake.page.on
+    fake.page.on = (event: string, listener: () => void) => {
+      if (event === 'crash') {
+        return crashListeners.push(listener)
+      }
+      return origOn(event, listener)
+    }
+    const origClose = fake.context.close
+    const contextWithRoute = {
+      ...fake.context,
+      route: async () => undefined,
+      close: async () => {
+        contextClosed = true
+        await origClose()
+      },
+    } as unknown as BrowserContext
+
+    const adapter = new ChatGptWebAdapter({
+      profileDirectory: 'fake-profile',
+      browserFactory: async () => contextWithRoute,
+    })
+    await adapter.openLogin()
+    expect(crashListeners.length).toBeGreaterThan(0)
+
+    const sendPromise = adapter.sendAndWait('Hãy dịch đoạn này.', { timeoutMs: 120_000 })
+    const assertion = expect(sendPromise).rejects.toBeInstanceOf(ChatGptFreshChatRecoveryError)
+    setTimeout(() => {
+      for (const listener of crashListeners) listener()
+    }, 50)
+    await assertion
+    expect(contextClosed).toBe(true)
+  })
 })
 

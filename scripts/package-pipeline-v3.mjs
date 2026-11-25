@@ -443,11 +443,10 @@ async function defaultBrowserFactory(options) {
       "--disable-gpu-shader-disk-cache",
       "--disk-cache-size=16777216",
       "--media-cache-size=1",
-      "--renderer-process-limit=1",
+      "--renderer-process-limit=2",
       "--process-per-site",
-      "--js-flags=--max-old-space-size=512",
+      "--js-flags=--max-old-space-size=1536",
       "--disable-background-timer-throttling",
-      "--memory-model=low",
       "--enable-features=MemorySaver"
     ]
   };
@@ -524,10 +523,79 @@ main=replace(
       "--disable-gpu-shader-disk-cache",
       "--disk-cache-size=16777216",
       "--media-cache-size=1",
-      "--js-flags=--max-old-space-size=512",
+      "--js-flags=--max-old-space-size=1024",
       \`--disable-features=\${EDGE_OPT_DISABLED_FEATURES}\`,
       options.url
     ],`
+);
+main=replace(
+  main,
+  `  operationInProgress = false;
+  freshConversationRecoveryArmed = false;`,
+  `  operationInProgress = false;
+  pageCrashed = false;
+  freshConversationRecoveryArmed = false;`
+);
+main=replace(
+  main,
+  `  async refreshStatus(waitMs = 0) {
+    if (!this.context || !this.page || this.page.isClosed()) {
+      this.setStatus("closed");
+      return this.status();
+    }
+    const page = this.page;`,
+  `  async refreshStatus(waitMs = 0) {
+    if (!this.context || !this.page || this.page.isClosed()) {
+      this.setStatus("closed");
+      return this.status();
+    }
+    const page = this.page;
+    if (this.pageCrashed || page.url().startsWith("chrome-error://")) {
+      this.setStatus(
+        "error",
+        providerStatusMessage(this.provider, "Tab ChatGPT vừa gặp sự cố bộ nhớ (Out of Memory). Đang khởi động lại phiên...")
+      );
+      return this.status();
+    }`
+);
+main=replace(
+  main,
+  `  async ensureReady() {
+    if (!this.context || !this.page || this.page.isClosed()) {
+      await this.openLogin({ allowManualFallback: false });
+    }`,
+  `  async ensureReady() {
+    if (this.pageCrashed || (this.page && !this.page.isClosed() && this.page.url().startsWith("chrome-error://"))) {
+      await this.closeAutomationContext();
+    }
+    if (!this.context || !this.page || this.page.isClosed()) {
+      await this.openLogin({ allowManualFallback: false });
+    }`
+);
+main=replace(
+  main,
+  `  async closeAutomationContext(options = {}) {
+    const context = this.context;
+    this.freshConversationRecoveryArmed = false;`,
+  `  async closeAutomationContext(options = {}) {
+    const context = this.context;
+    this.freshConversationRecoveryArmed = false;
+    this.pageCrashed = false;`
+);
+main=replace(
+  main,
+  `      while (Date.now() < deadline) {
+        if (signal?.aborted) throw signal.reason ?? new Error("Đã hủy thao tác.");`,
+  `      while (Date.now() < deadline) {
+        if (signal?.aborted) throw signal.reason ?? new Error("Đã hủy thao tác.");
+        if (this.pageCrashed || page.isClosed() || page.url().startsWith("chrome-error://")) {
+          this.pageCrashed = false;
+          await this.closeAutomationContext().catch(() => void 0);
+          await this.clearActiveToolConversationPointer().catch(() => void 0);
+          throw new ChatGptFreshChatRecoveryError(
+            providerStatusMessage(this.provider, "Tab ChatGPT vừa gặp sự cố bộ nhớ (Out of Memory / Crash). Tool đã đóng và sẽ khôi phục ngay trong phiên mới.")
+          );
+        }`
 );
 main=replace(
   main,
@@ -537,8 +605,16 @@ main=replace(
     });
     return page;`,
   `    const page = existing ?? await this.context.newPage();
+    this.pageCrashed = false;
     if (typeof this.context.route === "function") {
       await closeSurplusContextPages(this.context, page);
+      if (typeof page.on === "function") {
+        page.on("crash", () => {
+          if (this.page !== page) return;
+          this.pageCrashed = true;
+          this.setStatus("error", providerStatusMessage(this.provider, "Tab ChatGPT vừa bị sập (Out of Memory). Tool sẽ tự khởi động lại..."));
+        });
+      }
     }
     page.on("close", () => {
       if (this.page === page) this.page = void 0;
@@ -628,8 +704,7 @@ main=replace(
       "--media-cache-size=1",
       "--renderer-process-limit=2",
       "--process-per-site",
-      "--js-flags=--max-old-space-size=512",
-      "--memory-model=low",
+      "--js-flags=--max-old-space-size=1024",
       "--enable-features=MemorySaver"
     ],
     ...options.executablePath ? { executablePath: options.executablePath } : { channel: "msedge" }
